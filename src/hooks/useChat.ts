@@ -10,7 +10,6 @@ export function useChat(conversationId: string | null, model: string, windowFocu
   const [streaming, setStreaming] = useState(false);
   const [streamContent, setStreamContent] = useState("");
   const [streamThinking, setStreamThinking] = useState("");
-  const [totalTokens, setTotalTokens] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const messagesRef = useRef<ChatMessage[]>([]);
@@ -18,6 +17,11 @@ export function useChat(conversationId: string | null, model: string, windowFocu
   const focusedRef = useRef(windowFocused);
   const muteSoundsRef = useRef(muteSounds);
   const muteNotificationsRef = useRef(muteNotifications);
+
+  const totalTokens = messages.reduce(
+    (sum, m) => sum + (m.promptTokens || 0) + (m.outputTokens || 0),
+    0
+  );
 
   useEffect(() => {
     messagesRef.current = messages;
@@ -38,10 +42,6 @@ export function useChat(conversationId: string | null, model: string, windowFocu
   useEffect(() => {
     muteNotificationsRef.current = muteNotifications;
   }, [muteNotifications]);
-
-  useEffect(() => {
-    messagesRef.current = messages;
-  }, [messages]);
 
   useEffect(() => {
     if (!conversationId) {
@@ -81,20 +81,16 @@ export function useChat(conversationId: string | null, model: string, windowFocu
       const u2 = await listen<ChatDonePayload>("chat-done", (event) => {
         if (event.payload.conversation_id === conversationId) {
           setStreaming(false);
-          const { prompt_tokens, output_tokens } = event.payload;
+          const { prompt_tokens, output_tokens, completed_at } = event.payload;
           setStreamContent((prev) => {
             const thinking = thinkingRef.current.trim() || undefined;
             const msgs = messagesRef.current;
             if (prev) {
-              const updated = [...msgs, { role: "assistant" as const, content: prev, thinking, promptTokens: prompt_tokens, outputTokens: output_tokens }];
+              const updated = [...msgs, { role: "assistant" as const, content: prev, thinking, promptTokens: prompt_tokens, outputTokens: output_tokens, completedAt: completed_at }];
               setMessages(updated);
               saveConversationMessages(conversationId!, updated).catch(console.error);
-              const cumulative = msgs.reduce((sum, m) => sum + (m.promptTokens || 0) + (m.outputTokens || 0), 0) + prompt_tokens + output_tokens;
-              setTotalTokens(cumulative);
             } else {
               saveConversationMessages(conversationId!, msgs).catch(console.error);
-              const cumulative = msgs.reduce((sum, m) => sum + (m.promptTokens || 0) + (m.outputTokens || 0), 0);
-              setTotalTokens(cumulative);
             }
             return "";
           });
@@ -153,7 +149,7 @@ export function useChat(conversationId: string | null, model: string, windowFocu
       if (!conversationId || !content.trim() || streaming) return;
 
       setError(null);
-      const userMsg: ChatMessage = { role: "user", content: content.trim() };
+      const userMsg: ChatMessage = { role: "user", content: content.trim(), completedAt: new Date().toISOString() };
       const newMessages = [...messagesRef.current, userMsg];
       setMessages(newMessages);
       setStreaming(true);

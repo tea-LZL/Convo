@@ -10,6 +10,7 @@ export interface ChatMessage {
   thinking?: string;
   promptTokens?: number;
   outputTokens?: number;
+  completedAt?: string;
 }
 
 export interface Conversation {
@@ -36,4 +37,5 @@ export interface ChatDonePayload {
   conversation_id: string;
   prompt_tokens: number;
   output_tokens: number;
+  completed_at: string;
 }

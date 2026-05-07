@@ -68,12 +68,14 @@ pub async fn chat_stream(
                                     if chunk.done {
                                         let prompt_tokens = chunk.prompt_eval_count.unwrap_or(0);
                                         let output_tokens = chunk.eval_count.unwrap_or(0);
+                                        let completed_at = chrono::Utc::now().to_rfc3339();
                                         let _ = app_clone.emit(
                                             "chat-done",
                                             serde_json::json!({
                                                 "conversation_id": &conv_id,
                                                 "prompt_tokens": prompt_tokens,
                                                 "output_tokens": output_tokens,
+                                                "completed_at": completed_at,
                                             }),
                                         );
                                         break;

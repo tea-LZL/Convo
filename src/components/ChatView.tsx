@@ -4,6 +4,29 @@ import MessageBubble from "./MessageBubble";
 import InputArea from "./InputArea";
 import ContextMenu from "./ContextMenu";
 
+function formatDuration(start: Date, end: Date): string {
+  const diffMs = end.getTime() - start.getTime();
+  const secs = Math.floor(diffMs / 1000);
+  if (secs < 60) return `${secs}s`;
+  const mins = Math.floor(secs / 60);
+  const remSecs = secs % 60;
+  return `${mins}m ${remSecs}s`;
+}
+
+function formatUserTimestamp(iso?: string): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const day = d.getDate().toString().padStart(2, "0");
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const month = months[d.getMonth()];
+  const year = d.getFullYear();
+  let hours = d.getHours();
+  const minutes = d.getMinutes().toString().padStart(2, "0");
+  const ampm = hours >= 12 ? "PM" : "AM";
+  hours = hours % 12 || 12;
+  return `${day} ${month} ${year} ${hours}:${minutes} ${ampm}`;
+}
+
 interface ChatViewProps {
   messages: ChatMessage[];
   streaming: boolean;
@@ -97,16 +120,32 @@ export default function ChatView({
           </div>
         ) : (
           <div className="max-w-3xl mx-auto w-full">
-            {messages.map((msg, i) => (
-              <MessageBubble
-                key={i}
-                message={msg}
-                onContextMenu={handleCtx}
-                thinking={msg.thinking}
-                thinkingCollapsed={collapsedThinking.has(i)}
-                onToggleThinking={() => handleToggleThinking(i)}
-              />
-            ))}
+            {messages.map((msg, i) => {
+              const prevMsg = messages[i - 1];
+              const duration = msg.role === "assistant" && prevMsg?.role === "user" && prevMsg.completedAt && msg.completedAt
+                ? formatDuration(new Date(prevMsg.completedAt), new Date(msg.completedAt))
+                : undefined;
+
+              return (
+                <div key={i}>
+                  {msg.role === "user" && msg.completedAt && (
+                    <div className="flex justify-end px-4 py-1">
+                      <span className="text-[10px] text-gray-600 tabular-nums">
+                        {formatUserTimestamp(msg.completedAt)}
+                      </span>
+                    </div>
+                  )}
+                  <MessageBubble
+                    message={msg}
+                    onContextMenu={handleCtx}
+                    thinking={msg.thinking}
+                    thinkingCollapsed={collapsedThinking.has(i)}
+                    onToggleThinking={() => handleToggleThinking(i)}
+                    responseDuration={duration}
+                  />
+                </div>
+              );
+            })}
             {streaming && (
               <MessageBubble
                 message={{ role: "assistant", content: streamContent }}
