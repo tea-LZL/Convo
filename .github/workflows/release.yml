@@ -154,8 +154,8 @@ jobs:
           cd ..
 
           # Create the package archive with zstd compression
+          # Arch requires .PKGINFO and .MTREE first, without ./ prefix
           tar -cf - -C "$PKGDIR" \
-            --transform='s,^,./,' \
             .PKGINFO \
             .MTREE \
             usr/bin/convo \
