@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { PanelLeftClose, PanelLeftOpen, Settings } from "lucide-react";
+import { listen } from "@tauri-apps/api/event";
 import { listModels, getModelContextLength } from "./lib/commands";
 import type { OllamaModel } from "./types";
 import { useConversations } from "./hooks/useConversations";
@@ -9,6 +10,7 @@ import Sidebar from "./components/Sidebar";
 import ChatView from "./components/ChatView";
 import WelcomeScreen from "./components/WelcomeScreen";
 import SettingsPanel from "./components/SettingsPanel";
+import OllamaSetup from "./components/OllamaSetup";
 
 export default function App() {
   const [models, setModels] = useState<OllamaModel[]>([]);
@@ -21,6 +23,8 @@ export default function App() {
   const [windowFocused, setWindowFocused] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsOrigin, setSettingsOrigin] = useState({ x: 0, y: 0 });
+  const [ollamaSetupOpen, setOllamaSetupOpen] = useState(false);
+  const [ollamaSetupOrigin, setOllamaSetupOrigin] = useState({ x: 0, y: 0 });
   const settingsBtnRef = useRef<HTMLButtonElement>(null);
   const { settings, update: updateSettings } = useSettings();
 
@@ -46,6 +50,40 @@ export default function App() {
       })
       .catch(console.error);
   }, []);
+
+  useEffect(() => {
+    const unsubPull = listen("pull-done", async () => {
+      const m = await listModels().catch(() => []);
+      setModels(m);
+      if (m.length > 0 && !selectedModel) {
+        setSelectedModel(m[0].name);
+        getModelContextLength(m[0].name).then(setContextLength).catch(() => {});
+      }
+    });
+    const unsubCreate = listen("create-done", async () => {
+      const m = await listModels().catch(() => []);
+      setModels(m);
+      if (m.length > 0 && !selectedModel) {
+        setSelectedModel(m[0].name);
+        getModelContextLength(m[0].name).then(setContextLength).catch(() => {});
+      }
+    });
+    const unsubDelete = listen("delete-done", async () => {
+      const m = await listModels().catch(() => []);
+      setModels(m);
+      if (m.length === 0) {
+        setSelectedModel("");
+      } else if (!selectedModel || !m.some((model) => model.name === selectedModel)) {
+        setSelectedModel(m[0].name);
+        getModelContextLength(m[0].name).then(setContextLength).catch(() => {});
+      }
+    });
+    return () => {
+      unsubPull.then((u) => u());
+      unsubCreate.then((u) => u());
+      unsubDelete.then((u) => u());
+    };
+  }, [selectedModel]);
 
   const handleModelChange = useCallback((model: string) => {
     setSelectedModel(model);
@@ -130,7 +168,13 @@ export default function App() {
           onModelChange={handleModelChange}
         />
       ) : (
-        <WelcomeScreen onNewChat={handleNewConversation} />
+        <WelcomeScreen
+          onNewChat={handleNewConversation}
+          onSetupOllama={() => {
+            setOllamaSetupOrigin({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
+            setOllamaSetupOpen(true);
+          }}
+        />
       )}
 
       <button
@@ -168,6 +212,22 @@ export default function App() {
           onClose={() => setSettingsOpen(false)}
           originX={settingsOrigin.x}
           originY={settingsOrigin.y}
+          onOpenSetup={() => {
+            setSettingsOpen(false);
+            if (settingsBtnRef.current) {
+              const rect = settingsBtnRef.current.getBoundingClientRect();
+              setOllamaSetupOrigin({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
+            }
+            setOllamaSetupOpen(true);
+          }}
+        />
+      )}
+
+      {ollamaSetupOpen && (
+        <OllamaSetup
+          onClose={() => setOllamaSetupOpen(false)}
+          originX={ollamaSetupOrigin.x}
+          originY={ollamaSetupOrigin.y}
         />
       )}
     </div>

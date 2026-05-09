@@ -1,10 +1,11 @@
-import { Sparkles } from "lucide-react";
+import { Sparkles, Settings } from "lucide-react";
 
 interface WelcomeScreenProps {
   onNewChat: () => void;
+  onSetupOllama: () => void;
 }
 
-export default function WelcomeScreen({ onNewChat }: WelcomeScreenProps) {
+export default function WelcomeScreen({ onNewChat, onSetupOllama }: WelcomeScreenProps) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center p-8">
       <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-accent to-purple-400 flex items-center justify-center mb-6 shadow-lg shadow-accent/20">
@@ -16,13 +17,22 @@ export default function WelcomeScreen({ onNewChat }: WelcomeScreenProps) {
         <br />
         Chat privately with your own models on your machine.
       </p>
-      <button
-        onClick={onNewChat}
-        className="flex items-center gap-2 bg-accent hover:bg-accent-hover text-white rounded-xl px-6 py-3 text-sm font-medium transition-all hover:scale-105 active:scale-95"
-      >
-        <Sparkles size={18} />
-        Start a conversation
-      </button>
+      <div className="flex items-center gap-3">
+        <button
+          onClick={onNewChat}
+          className="flex items-center gap-2 bg-accent hover:bg-accent-hover text-white rounded-xl px-6 py-3 text-sm font-medium transition-all hover:scale-105 active:scale-95"
+        >
+          <Sparkles size={18} />
+          Start a conversation
+        </button>
+        <button
+          onClick={onSetupOllama}
+          className="flex items-center gap-2 bg-surface-300/50 hover:bg-surface-300 text-gray-300 hover:text-white rounded-xl px-4 py-3 text-sm font-medium transition-all"
+        >
+          <Settings size={18} />
+          Setup Ollama
+        </button>
+      </div>
     </div>
   );
 }

@@ -4,7 +4,7 @@ use tokio::io::AsyncBufReadExt;
 use tokio::sync::oneshot;
 
 use crate::conversation;
-use crate::ollama::{self, ChatMessage, OllamaModel};
+use crate::ollama::{self, ChatMessage, OllamaModel, RunningModel};
 use crate::streams::ActiveStreams;
 
 #[tauri::command]
@@ -192,4 +192,9 @@ pub fn get_messages(id: String) -> Result<Vec<ChatMessage>, String> {
 #[tauri::command]
 pub fn get_conversation(id: String) -> Result<conversation::Conversation, String> {
     conversation::get_conversation(&id)
+}
+
+#[tauri::command]
+pub async fn get_running_models() -> Result<Vec<RunningModel>, String> {
+    ollama::get_running_models().await
 }

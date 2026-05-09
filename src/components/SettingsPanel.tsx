@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { X, Volume2, VolumeX, Bell, BellOff } from "lucide-react";
+import { X, Volume2, VolumeX, Bell, BellOff, Cpu } from "lucide-react";
 
 interface SettingsPanelProps {
   muteSounds: boolean;
@@ -8,6 +8,7 @@ interface SettingsPanelProps {
   onClose: () => void;
   originX: number;
   originY: number;
+  onOpenSetup: () => void;
 }
 
 export default function SettingsPanel({
@@ -17,6 +18,7 @@ export default function SettingsPanel({
   onClose,
   originX,
   originY,
+  onOpenSetup,
 }: SettingsPanelProps) {
   const [visible, setVisible] = useState(false);
   const [closing, setClosing] = useState(false);
@@ -58,6 +60,17 @@ export default function SettingsPanel({
         </div>
 
         <div className="space-y-1 px-6">
+          <button
+            onClick={onOpenSetup}
+            className="w-full flex items-center gap-3 py-3 hover:bg-surface-300/30 -mx-2 px-2 rounded-lg transition-colors text-left"
+          >
+            <Cpu size={18} className="text-gray-400" />
+            <div>
+              <p className="text-sm text-white">Ollama Setup</p>
+              <p className="text-xs text-gray-500">Install and manage models</p>
+            </div>
+          </button>
+
           <div className="flex items-center justify-between py-3 border-b border-surface-400/30">
             <div className="flex items-center gap-3">
               {muteSounds ? (

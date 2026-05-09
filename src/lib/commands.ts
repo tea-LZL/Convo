@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import { type Conversation, type OllamaModel, type ChatMessage } from "../types";
+import { listen } from "@tauri-apps/api/event";
+import { type Conversation, type OllamaModel, type ChatMessage, type OllamaStatus, type LibraryModel, type PullProgress, type RunningModel } from "../types";
 
 export async function listModels(): Promise<OllamaModel[]> {
   return invoke("list_models");
@@ -60,4 +61,56 @@ export async function cancelChat(conversationId: string): Promise<void> {
 
 export async function getModelContextLength(model: string): Promise<number> {
   return invoke("get_model_context_length", { model });
+}
+
+export async function checkOllamaStatus(): Promise<OllamaStatus> {
+  return invoke("check_ollama_status");
+}
+
+export async function pullModel(name: string): Promise<void> {
+  return invoke("pull_model", { name });
+}
+
+export async function deleteModel(name: string): Promise<void> {
+  return invoke("delete_model", { name });
+}
+
+export async function getModelCatalog(): Promise<LibraryModel[]> {
+  return invoke("get_model_catalog");
+}
+
+export async function getRunningModels(): Promise<RunningModel[]> {
+  return invoke("get_running_models");
+}
+
+export async function createCustomModel(
+  name: string,
+  baseModel: string,
+  numCtx: number
+): Promise<void> {
+  return invoke("create_custom_model", { name, baseModel, numCtx });
+}
+
+export function onPullProgress(
+  handler: (progress: PullProgress) => void
+): Promise<() => void> {
+  return listen<PullProgress>("pull-progress", (event) => handler(event.payload));
+}
+
+export function onPullDone(handler: (name: string) => void): Promise<() => void> {
+  return listen<string>("pull-done", (event) => handler(event.payload));
+}
+
+export function onPullError(handler: (error: string) => void): Promise<() => void> {
+  return listen<string>("pull-error", (event) => handler(event.payload));
+}
+
+export function onCreateProgress(
+  handler: (status: string) => void
+): Promise<() => void> {
+  return listen<string>("create-progress", (event) => handler(event.payload));
+}
+
+export function onCreateDone(handler: (name: string) => void): Promise<() => void> {
+  return listen<string>("create-done", (event) => handler(event.payload));
 }

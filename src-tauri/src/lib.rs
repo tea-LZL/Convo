@@ -1,6 +1,7 @@
 mod commands;
 mod conversation;
 mod ollama;
+mod setup;
 mod streams;
 
 use streams::ActiveStreams;
@@ -22,6 +23,7 @@ pub fn run() {
             commands::delete_conversation,
             commands::get_messages,
             commands::get_conversation,
+            commands::get_running_models,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

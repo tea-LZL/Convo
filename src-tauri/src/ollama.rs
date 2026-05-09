@@ -124,3 +124,47 @@ pub async fn chat_stream(
 
     Ok(resp)
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RunningModelDetails {
+    pub parent_model: String,
+    pub format: String,
+    pub family: String,
+    pub families: Option<Vec<String>>,
+    pub parameter_size: String,
+    pub quantization_level: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RunningModel {
+    pub name: String,
+    pub model: String,
+    pub size: u64,
+    pub digest: String,
+    pub details: RunningModelDetails,
+    #[serde(rename = "expires_at")]
+    pub expires_at: String,
+    #[serde(rename = "size_vram")]
+    pub size_vram: u64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RunningModelsResponse {
+    pub models: Vec<RunningModel>,
+}
+
+pub async fn get_running_models() -> Result<Vec<RunningModel>, String> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .get("http://localhost:11434/api/ps")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to connect to Ollama: {}", e))?;
+
+    let body: RunningModelsResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse response: {}", e))?;
+
+    Ok(body.models)
+}

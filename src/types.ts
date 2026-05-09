@@ -39,3 +39,45 @@ export interface ChatDonePayload {
   output_tokens: number;
   completed_at: string;
 }
+
+export interface OllamaStatus {
+  installed: boolean;
+  running: boolean;
+  version: string;
+}
+
+export interface LibraryModel {
+  name: string;
+  description: string;
+  size: string;
+  macos_only: boolean;
+  pull_count?: string;
+  tags?: string[];
+}
+
+export interface PullProgress {
+  status: string;
+  digest: string;
+  total: number;
+  completed: number;
+  percent: number;
+}
+
+export interface RunningModelDetails {
+  parent_model: string;
+  format: string;
+  family: string;
+  families: string[] | null;
+  parameter_size: string;
+  quantization_level: string;
+}
+
+export interface RunningModel {
+  name: string;
+  model: string;
+  size: number;
+  digest: string;
+  details: RunningModelDetails;
+  expires_at: string;
+  size_vram: number;
+}
