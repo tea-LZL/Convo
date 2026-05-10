@@ -121,15 +121,23 @@ export default function App() {
     setActiveConversationId(id);
   }, []);
 
+  useEffect(() => {
+    if (
+      activeConversationId &&
+      conversations.length > 0 &&
+      !conversations.some((c) => c.id === activeConversationId)
+    ) {
+      setActiveConversationId(null);
+    }
+  }, [conversations, activeConversationId]);
+
   const handleDeleteConversation = useCallback(
     async (id: string) => {
-      if (id === activeConversationId) {
-        setActiveConversationId(null);
-      }
+      setActiveConversationId((prev) => (prev === id ? null : prev));
       await removeConv(id);
       await refreshConvs();
     },
-    [activeConversationId, removeConv, refreshConvs]
+    [removeConv, refreshConvs]
   );
 
   return (

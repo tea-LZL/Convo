@@ -1,6 +1,7 @@
 import { Plus, MessageSquare } from "lucide-react";
 import type { Conversation } from "../types";
 import ConversationItem from "./ConversationItem";
+import ModelStatusCard from "./ModelStatusCard";
 
 interface SidebarProps {
   conversations: Conversation[];
@@ -21,6 +22,8 @@ export default function Sidebar({
 }: SidebarProps) {
   return (
     <div className="w-64 h-full bg-surface-200 border-r border-surface-400 flex flex-col shrink-0 relative">
+      <ModelStatusCard />
+
       <div className="p-3 border-b border-surface-400">
         <button
           onClick={onNewConversation}

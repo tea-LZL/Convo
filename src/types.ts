@@ -80,4 +80,5 @@ export interface RunningModel {
   details: RunningModelDetails;
   expires_at: string;
   size_vram: number;
+  context_length: number;
 }

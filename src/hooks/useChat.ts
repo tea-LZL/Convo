@@ -144,9 +144,14 @@ export function useChat(conversationId: string | null, model: string, windowFocu
     };
   }, [conversationId]);
 
+  const conversationIdRef = useRef(conversationId);
+  useEffect(() => {
+    conversationIdRef.current = conversationId;
+  }, [conversationId]);
+
   const send = useCallback(
     async (content: string) => {
-      if (!conversationId || !content.trim() || streaming) return;
+      if (!conversationIdRef.current || !content.trim() || streaming) return;
 
       setError(null);
       const userMsg: ChatMessage = { role: "user", content: content.trim(), completedAt: new Date().toISOString() };
@@ -159,20 +164,20 @@ export function useChat(conversationId: string | null, model: string, windowFocu
 
       try {
         const cleanMessages = newMessages.map(({ thinking: _, ...rest }) => rest);
-        await chatStream(conversationId, model, cleanMessages);
+        await chatStream(conversationIdRef.current, model, cleanMessages);
       } catch (e) {
         setStreaming(false);
         setError(String(e));
       }
     },
-    [conversationId, model, streaming]
+    [model, streaming]
   );
 
   const stopStreaming = useCallback(() => {
-    if (conversationId) {
-      cancelChat(conversationId).catch(console.error);
+    if (conversationIdRef.current) {
+      cancelChat(conversationIdRef.current).catch(console.error);
     }
-  }, [conversationId]);
+  }, []);
 
   return {
     messages,

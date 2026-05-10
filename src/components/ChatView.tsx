@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import type { ChatMessage, OllamaModel, RunningModel } from "../types";
-import { getRunningModels } from "../lib/commands";
+import type { ChatMessage, OllamaModel } from "../types";
 import MessageBubble from "./MessageBubble";
 import InputArea from "./InputArea";
 import ContextMenu from "./ContextMenu";
@@ -81,18 +80,6 @@ export default function ChatView({
     msgIndex: null,
     isThinking: false,
   });
-  const [runningModel, setRunningModel] = useState<RunningModel | null>(null);
-
-  useEffect(() => {
-    if (!selectedModel) {
-      setRunningModel(null);
-      return;
-    }
-    getRunningModels().then((rms) => {
-      const match = rms.find((m) => m.name === selectedModel || m.model === selectedModel);
-      setRunningModel(match || null);
-    }).catch(() => {});
-  }, [selectedModel, streaming]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -127,37 +114,6 @@ export default function ChatView({
   return (
     <div className="flex-1 flex flex-col min-w-0 h-full relative">
       <div className="flex-1 overflow-y-auto pb-36">
-        {runningModel && (
-          <div className="max-w-3xl mx-auto w-full px-4 pt-4">
-            <div className="flex items-center gap-4 px-4 py-2.5 bg-surface-200/50 border border-surface-400/20 rounded-xl text-xs">
-              <span className="font-medium text-white">{runningModel.name}</span>
-              <span className="text-gray-500">{Math.round(runningModel.size / 1024 / 1024 / 1024)} GB</span>
-              <span className="text-gray-500">
-                {(() => {
-                  const gpuPct = Math.round((runningModel.size_vram / runningModel.size) * 100);
-                  const cpuPct = 100 - gpuPct;
-                  return `${cpuPct}%/${gpuPct}% CPU/GPU`;
-                })()}
-              </span>
-              <span className="text-gray-500">{contextLength}</span>
-              <span className="text-gray-500 ml-auto">
-                {(() => {
-                  const expires = new Date(runningModel.expires_at);
-                  const now = new Date();
-                  const diffMs = expires.getTime() - now.getTime();
-                  if (diffMs <= 0) return "unloading";
-                  const secs = Math.floor(diffMs / 1000);
-                  if (secs < 60) return `${secs} seconds from now`;
-                  const mins = Math.floor(secs / 60);
-                  if (mins < 60) return `${mins} minute${mins > 1 ? "s" : ""} from now`;
-                  const hours = Math.floor(mins / 60);
-                  return `${hours} hour${hours > 1 ? "s" : ""} from now`;
-                })()}
-              </span>
-            </div>
-          </div>
-        )}
-
         {isEmpty ? (
           <div className="flex items-center justify-center h-full">
             <p className="text-gray-500 text-sm">Send a message to start the conversation.</p>

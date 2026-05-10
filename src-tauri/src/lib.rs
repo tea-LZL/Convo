@@ -24,6 +24,11 @@ pub fn run() {
             commands::get_messages,
             commands::get_conversation,
             commands::get_running_models,
+            setup::check_ollama_status,
+            setup::get_model_catalog,
+            setup::pull_model,
+            setup::delete_model,
+            setup::create_custom_model,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

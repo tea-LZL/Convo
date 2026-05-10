@@ -146,6 +146,8 @@ pub struct RunningModel {
     pub expires_at: String,
     #[serde(rename = "size_vram")]
     pub size_vram: u64,
+    #[serde(rename = "context_length")]
+    pub context_length: u32,
 }
 
 #[derive(Debug, Deserialize)]
