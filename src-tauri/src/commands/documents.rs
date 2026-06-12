@@ -64,6 +64,121 @@ pub fn delete_document(pool: State<'_, Arc<DbPool>>, id: String) -> Result<(), S
     Ok(())
 }
 
+#[tauri::command]
+pub async fn ai_edit_document(
+    pool: State<'_, Arc<DbPool>>,
+    current_text: String,
+    instruction: String,
+    selection: Option<String>,
+    model_id: Option<String>,
+    provider_id: Option<String>,
+) -> Result<String, String> {
+    use crate::providers::types::{ChatRequest, MessageContent};
+    use crate::providers::{openai_compat::OpenAiCompatProvider, ollama::OllamaProvider, Provider};
+
+    // Resolve provider/model
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    let (provider_id, model_id): (String, String) = match (provider_id, model_id) {
+        (Some(p), Some(m)) => (p, m),
+        _ => {
+            // Fall back to the default provider
+            let p: Option<String> = conn
+                .query_row("SELECT id FROM providers WHERE is_default = 1 LIMIT 1", [], |r| r.get(0))
+                .ok();
+            let Some(p) = p else { return Err("No default provider configured".into()); };
+            // Pick the first cached model
+            let m: Option<String> = conn
+                .query_row(
+                    "SELECT name FROM models WHERE provider_id = ?1 ORDER BY name LIMIT 1",
+                    rusqlite::params![p],
+                    |r| r.get(0),
+                )
+                .ok();
+            let Some(m) = m else { return Err("No models cached for default provider. Open a chat to discover models first.".into()); };
+            (p, m)
+        }
+    };
+    let (kind, base_url): (String, String) = conn
+        .query_row(
+            "SELECT kind, COALESCE(base_url, '') FROM providers WHERE id = ?1",
+            rusqlite::params![provider_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|e| format!("Provider: {}", e))?;
+    drop(conn);
+    let api_key = crate::services::get_api_key(&provider_id);
+
+    let provider: Box<dyn Provider> = match kind.as_str() {
+        "ollama" => Box::new(OllamaProvider::new(base_url, api_key)),
+        "openai_compat" => Box::new(OpenAiCompatProvider::new(base_url, api_key)),
+        other => return Err(format!("Unknown provider kind: {}", other)),
+    };
+
+    // Build the system prompt and the request. We ask the model to return
+    // the FULLY EDITED document (not a diff) so the frontend can show a
+    // before/after diff. We instruct it to output only the new text, no
+    // commentary, no markdown fences.
+    let system = "You are a precise document editor. Apply the user's instruction to the document and output ONLY the resulting full document text. Do not include any commentary, explanations, or markdown formatting. Preserve the document's existing style and content unless the instruction explicitly says to change it. Do not add or remove blank lines unnecessarily. Output the full document every time.".to_string();
+    let user_text = match selection.as_ref().filter(|s| !s.is_empty()) {
+        Some(sel) => format!(
+            "Document:\n```\n{}\n```\n\nSelection to edit:\n```\n{}\n```\n\nInstruction: {}\n\nReturn the FULL document with the selection replaced by your edit.",
+            current_text, sel, instruction
+        ),
+        None => format!(
+            "Document:\n```\n{}\n```\n\nInstruction: {}\n\nReturn the FULL document with the instruction applied.",
+            current_text, instruction
+        ),
+    };
+
+    let req = ChatRequest {
+        model: model_id.clone(),
+        messages: vec![MessageContent {
+            role: "user".into(),
+            content: user_text,
+            thinking: None,
+            images: vec![],
+        }],
+        stream: false,
+        system: Some(system),
+        temperature: Some(0.2),
+        top_p: None,
+        top_k: None,
+        num_ctx: None,
+        repeat_penalty: None,
+        stop: None,
+    };
+    let response = provider.chat_stream(req).await?;
+    // Collect the full response
+    use futures_util::StreamExt;
+    let mut stream = response;
+    let mut out = String::new();
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(chunk) => {
+                if let Some(msg) = chunk.message {
+                    out.push_str(&msg.content);
+                }
+                if chunk.done {
+                    break;
+                }
+            }
+            Err(e) => return Err(format!("AI edit error: {}", e)),
+        }
+    }
+    // Strip any leading/trailing code fences the model may have added.
+    let trimmed = out.trim();
+    if let Some(rest) = trimmed.strip_prefix("```") {
+        // skip first line (language tag)
+        if let Some(idx) = rest.find('\n') {
+            let body = &rest[idx + 1..];
+            if let Some(b) = body.strip_suffix("```") {
+                return Ok(b.trim_end_matches('\n').to_string());
+            }
+        }
+    }
+    Ok(out)
+}
+
 #[derive(serde::Deserialize)]
 pub struct DocumentInput {
     pub id: Option<String>,

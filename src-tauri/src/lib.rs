@@ -143,6 +143,7 @@ pub fn run() {
             documents_cmd::list_documents,
             documents_cmd::upsert_document,
             documents_cmd::delete_document,
+            documents_cmd::ai_edit_document,
             // Attachments
             attachments_cmd::add_attachment,
             attachments_cmd::get_attachment_data,
@@ -154,7 +155,11 @@ pub fn run() {
             // Compare
             compare_cmd::run_compare,
             compare_cmd::cancel_compare,
+            compare_cmd::cancel_compare_column,
             compare_cmd::save_compare_winner,
+            compare_cmd::list_compare_runs,
+            compare_cmd::get_compare_run,
+            compare_cmd::save_compare_as_session,
             // Slash commands
             slash_cmd::list_slash_commands,
             slash_cmd::upsert_slash_command,

@@ -128,6 +128,25 @@ export interface CompareConfig {
   top_p?: number;
 }
 
+export interface CompareRunResult {
+  content: string;
+  thinking: string;
+  prompt_tokens?: number;
+  output_tokens?: number;
+  duration_ms?: number;
+  cancelled?: boolean;
+  error?: string | null;
+}
+
+export interface CompareRunSummary {
+  id: string;
+  prompt: string;
+  config_json: string;
+  results_json: string | null;
+  winner_index: number | null;
+  created_at: string;
+}
+
 export interface DiscoveredServer {
   base_url: string;
   kind: string;
@@ -308,6 +327,14 @@ export const api = {
   upsertDocument: (doc: Partial<Document> & { title: string; content: string }) =>
     invoke<string>("upsert_document", { doc }),
   deleteDocument: (id: string) => invoke<void>("delete_document", { id }),
+  aiEditDocument: (opts: { currentText: string; instruction: string; selection?: string | null; modelId?: string | null; providerId?: string | null }) =>
+    invoke<string>("ai_edit_document", {
+      currentText: opts.currentText,
+      instruction: opts.instruction,
+      selection: opts.selection ?? null,
+      modelId: opts.modelId ?? null,
+      providerId: opts.providerId ?? null,
+    }),
 
   // Attachments
   addAttachment: (opts: { name: string; mime: string; dataBase64: string; sessionId: string | null; messageId: string | null }) =>
@@ -338,8 +365,14 @@ export const api = {
   // Compare
   runCompare: (config: CompareConfig) => invoke<string>("run_compare", { config }),
   cancelCompare: (runId: string) => invoke<void>("cancel_compare", { runId }),
+  cancelCompareColumn: (runId: string, index: number) =>
+    invoke<void>("cancel_compare_column", { runId, index }),
   saveCompareWinner: (runId: string, winnerIndex: number) =>
     invoke<void>("save_compare_winner", { runId, winnerIndex }),
+  saveCompareAsSession: (runId: string, winnerIndex: number) =>
+    invoke<string>("save_compare_as_session", { runId, winnerIndex }),
+  listCompareRuns: (limit?: number) => invoke<CompareRunSummary[]>("list_compare_runs", { limit: limit ?? 50 }),
+  getCompareRun: (id: string) => invoke<CompareRunSummary>("get_compare_run", { id }),
 
   // Slash commands
   listSlashCommands: () => invoke<Array<{ id: string; name: string; description: string | null; body: string; preset_id: string | null; created_at: string }>>("list_slash_commands"),

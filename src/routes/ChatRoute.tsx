@@ -5,7 +5,6 @@ import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { ChatViewNew } from "../components/chat/ChatViewNew";
 import { useSessionsStore } from "../stores/sessions";
-import { api } from "../lib/api";
 
 export function ChatRoute() {
   const { sessionId } = useParams();
@@ -33,6 +32,23 @@ export function ChatRoute() {
       navigate("/chat", { replace: true });
     }
   }, [activeId, sessionId, navigate]);
+
+  // Listen for "Insert into chat" from other routes (e.g. Documents)
+  useEffect(() => {
+    const onInsert = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { text: string; title?: string };
+      const input = document.querySelector<HTMLTextAreaElement>("[data-chat-input]");
+      if (!input) return;
+      const tag = detail.title ? `[From ${detail.title}]\n` : "";
+      const text = `${tag}\n\`\`\`\n${detail.text}\n\`\`\`\n\n`;
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(input, text);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.focus();
+    };
+    window.addEventListener("convo:insert-into-chat", onInsert);
+    return () => window.removeEventListener("convo:insert-into-chat", onInsert);
+  }, []);
 
   if (loading) {
     return (
