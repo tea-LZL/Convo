@@ -8,10 +8,12 @@ mod streams;
 mod themes;
 
 use commands::attachments as attachments_cmd;
+use commands::backup as backup_cmd;
 use commands::chat as chat_cmd;
 use commands::chat_stream as chat_stream_cmd;
 use commands::compare as compare_cmd;
 use commands::documents as documents_cmd;
+use commands::hardware as hardware_cmd;
 use commands::memory as memory_cmd;
 use commands::models as models_cmd;
 use commands::notes as notes_cmd;
@@ -24,6 +26,7 @@ use commands::themes as themes_cmd;
 use services as services_mod;
 
 use state::AppState;
+use tauri::Manager;
 
 pub fn run() {
     let pool = match db::init_pool() {
@@ -70,6 +73,31 @@ pub fn run() {
             // Ensure built-in themes are inserted
             if let Err(e) = services_mod::ensure_builtin_themes() {
                 eprintln!("WARN: builtin themes: {}", e);
+            }
+            // Register global shortcut: Ctrl+Shift+Space toggles main window.
+            // Best-effort: if the platform doesn't allow it (e.g. unsupported
+            // by the desktop env), we just log and continue.
+            use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+            let shortcut = Shortcut::new(
+                Some(Modifiers::CONTROL | Modifiers::SHIFT),
+                Code::Space,
+            );
+            let app_for_gs = handle.clone();
+            match app.global_shortcut().on_shortcut(shortcut, move |_app, _sc, event| {
+                if event.state() == ShortcutState::Pressed {
+                    if let Some(win) = app_for_gs.get_webview_window("main") {
+                        let visible = win.is_visible().unwrap_or(false);
+                        if visible {
+                            let _ = win.hide();
+                        } else {
+                            let _ = win.show();
+                            let _ = win.set_focus();
+                        }
+                    }
+                }
+            }) {
+                Ok(_) => tracing::info!("Global shortcut Ctrl+Shift+Space registered"),
+                Err(e) => tracing::warn!("Could not register global shortcut: {}", e),
             }
             Ok(())
         })
@@ -169,6 +197,13 @@ pub fn run() {
             slash_cmd::list_slash_commands,
             slash_cmd::upsert_slash_command,
             slash_cmd::delete_slash_command,
+            // Hardware
+            hardware_cmd::get_hardware,
+            hardware_cmd::recommend_models,
+            // Diagnostics + backup
+            settings_cmd::get_diagnostics,
+            backup_cmd::export_backup,
+            backup_cmd::import_backup,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
