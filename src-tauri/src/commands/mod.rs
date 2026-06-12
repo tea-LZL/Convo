@@ -4,6 +4,7 @@ pub mod chat_stream;
 pub mod compare;
 pub mod documents;
 pub mod memory;
+pub mod models;
 pub mod notes;
 pub mod search;
 pub mod sessions;

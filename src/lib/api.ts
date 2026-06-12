@@ -79,6 +79,20 @@ export interface Preset {
   updated_at: string;
 }
 
+export interface Model {
+  id: string;
+  provider_id: string;
+  name: string;
+  family: string | null;
+  parameter_size: string | null;
+  quantization: string | null;
+  context_length: number | null;
+  size_bytes: number | null;
+  supports_thinking: boolean;
+  supports_vision: boolean;
+  last_seen: string;
+}
+
 export interface Provider {
   id: string;
   kind: "ollama" | "openai_compat";
@@ -103,6 +117,8 @@ export interface Session {
   updated_at: string;
   snippet?: string;
 }
+
+export type SessionWithSnippet = Session & { snippet: string };
 
 export interface CompareConfig {
   prompt: string;
@@ -212,12 +228,18 @@ export const api = {
       groupId: opts.groupId ?? null,
     }),
   renameSession: (id: string, title: string) => invoke<void>("rename_session", { id, title }),
+  updateSessionModel: (id: string, modelId: string, providerId?: string | null, presetId?: string | null) =>
+    invoke<void>("update_session_model", { id, modelId, providerId: providerId ?? null, presetId: presetId ?? null }),
   deleteSession: (id: string) => invoke<void>("delete_session", { id }),
   setSessionPinned: (id: string, pinned: boolean) =>
     invoke<void>("set_session_pinned", { id, pinned }),
   setSessionArchived: (id: string, archived: boolean) =>
     invoke<void>("set_session_archived", { id, archived }),
-  searchSessions: (query: string) => invoke<Array<Session>>("search_sessions", { query }),
+  searchSessions: (query: string) => invoke<Array<SessionWithSnippet>>("search_sessions", { query }),
+  exportSessionMarkdown: (id: string) => invoke<string>("export_session_markdown", { id }),
+  listModelsForProvider: (providerId: string) => invoke<Model[]>("list_models_for_provider", { providerId }),
+  listAllModels: () => invoke<Model[]>("list_all_models"),
+  refreshModels: (providerId: string) => invoke<Model[]>("refresh_models", { providerId }),
 
   // Messages
   listMessages: (sessionId: string) => invoke<ChatMessage[]>("list_messages", { sessionId }),
@@ -286,6 +308,15 @@ export const api = {
   upsertDocument: (doc: Partial<Document> & { title: string; content: string }) =>
     invoke<string>("upsert_document", { doc }),
   deleteDocument: (id: string) => invoke<void>("delete_document", { id }),
+
+  // Attachments
+  addAttachment: (opts: { name: string; mime: string; dataBase64: string; sessionId: string | null; messageId: string | null }) =>
+    invoke<{ id: string; name: string; mime: string; size: number; kind: string; blob_path: string | null; width: number | null; height: number | null; extracted_text: string | null; created_at: string }>(
+      "add_attachment",
+      opts
+    ),
+  getAttachmentData: (id: string) => invoke<string>("get_attachment_data", { id }),
+  deleteAttachment: (id: string) => invoke<void>("delete_attachment", { id }),
 
   // Ollama (legacy)
   listModels: () => invoke<OllamaModel[]>("list_models"),

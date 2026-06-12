@@ -13,6 +13,7 @@ use commands::chat_stream as chat_stream_cmd;
 use commands::compare as compare_cmd;
 use commands::documents as documents_cmd;
 use commands::memory as memory_cmd;
+use commands::models as models_cmd;
 use commands::notes as notes_cmd;
 use commands::search as search_cmd;
 use commands::sessions as sessions_cmd;
@@ -83,10 +84,17 @@ pub fn run() {
             sessions_cmd::list_sessions,
             sessions_cmd::create_session,
             sessions_cmd::rename_session,
+            sessions_cmd::update_session_model,
             sessions_cmd::delete_session,
             sessions_cmd::set_session_pinned,
             sessions_cmd::set_session_archived,
             sessions_cmd::search_sessions,
+            sessions_cmd::export_session_markdown,
+            // Models
+            models_cmd::list_models_for_provider,
+            models_cmd::list_all_models,
+            models_cmd::refresh_models,
+            models_cmd::list_local_servers,
             // Messages + chat
             chat_cmd::list_messages,
             chat_cmd::save_messages,
