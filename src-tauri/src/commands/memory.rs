@@ -217,6 +217,7 @@ pub fn set_session_memory_overrides(
 }
 
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MemoryInput {
     pub id: Option<String>,
     pub kind: String,

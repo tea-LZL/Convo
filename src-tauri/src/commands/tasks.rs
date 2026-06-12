@@ -79,6 +79,7 @@ pub fn complete_task(pool: State<'_, Arc<DbPool>>, id: String, completed: bool) 
 }
 
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TaskInput {
     pub id: Option<String>,
     pub title: String,

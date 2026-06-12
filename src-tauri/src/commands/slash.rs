@@ -74,6 +74,7 @@ pub fn delete_slash_command(pool: State<'_, Arc<DbPool>>, id: String) -> Result<
 }
 
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SlashCommandInput {
     pub id: Option<String>,
     pub name: String,

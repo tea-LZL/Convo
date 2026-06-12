@@ -18,6 +18,7 @@ pub struct ChatHistoryMessage {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ChatStreamArgs {
     pub session_id: String,
     pub model: String,

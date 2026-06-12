@@ -99,6 +99,7 @@ pub fn search_notes(pool: State<'_, Arc<DbPool>>, query: String) -> Result<Vec<N
 }
 
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct NoteInput {
     pub id: Option<String>,
     pub title: Option<String>,
