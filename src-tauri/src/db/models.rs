@@ -110,6 +110,9 @@ pub struct Note {
     pub id: String,
     pub title: Option<String>,
     pub body: String,
+    pub tags: Option<String>,
+    pub source_session_id: Option<String>,
+    pub source_message_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -133,8 +136,15 @@ pub struct MemoryItem {
     pub title: Option<String>,
     pub content: String,
     pub tags: Option<String>,
+    pub is_enabled: bool,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MemorySearchHit {
+    pub item: MemoryItem,
+    pub snippet: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
