@@ -11,6 +11,7 @@ import { useGlobalKeyHandler } from "../hooks/useGlobalKeyHandler";
 import { useThemeStore } from "../stores/theme";
 import { useShortcutsStore } from "../stores/shortcuts";
 import { usePaletteStore } from "../stores/palette";
+import { useMemoryStore } from "../stores/memory";
 import { ChatRoute } from "../routes/ChatRoute";
 import { CompareRoute } from "../routes/CompareRoute";
 import { DocumentsRoute } from "../routes/DocumentsRoute";
@@ -38,6 +39,7 @@ export default function App() {
   useEffect(() => {
     initTheme();
     tourInit();
+    useMemoryStore.getState().refresh();
   }, [initTheme, tourInit]);
 
   useEffect(() => {

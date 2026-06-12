@@ -14,7 +14,7 @@ fn now() -> String {
 pub fn list_notes(pool: State<'_, Arc<DbPool>>) -> Result<Vec<Note>, String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
     let mut stmt = conn
-        .prepare("SELECT id, title, body, created_at, updated_at FROM notes ORDER BY updated_at DESC")
+        .prepare("SELECT id, title, body, tags, source_session_id, source_message_id, created_at, updated_at FROM notes ORDER BY updated_at DESC")
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| {
@@ -22,8 +22,11 @@ pub fn list_notes(pool: State<'_, Arc<DbPool>>) -> Result<Vec<Note>, String> {
                 id: row.get(0)?,
                 title: row.get(1)?,
                 body: row.get(2)?,
-                created_at: row.get(3)?,
-                updated_at: row.get(4)?,
+                tags: row.get(3)?,
+                source_session_id: row.get(4)?,
+                source_message_id: row.get(5)?,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -33,19 +36,19 @@ pub fn list_notes(pool: State<'_, Arc<DbPool>>) -> Result<Vec<Note>, String> {
 #[tauri::command]
 pub fn upsert_note(pool: State<'_, Arc<DbPool>>, note: NoteInput) -> Result<String, String> {
     let is_update = note.id.is_some();
-    let id = note.id.unwrap_or_else(|| Uuid::new_v4().to_string());
+    let id = note.id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
     let conn = pool.get().map_err(|e| e.to_string())?;
     if is_update {
         conn.execute(
-            "UPDATE notes SET title = ?1, body = ?2, updated_at = ?3 WHERE id = ?4",
-            params![note.title, note.body, now(), id],
+            "UPDATE notes SET title = ?1, body = ?2, tags = ?3, source_session_id = ?4, source_message_id = ?5, updated_at = ?6 WHERE id = ?7",
+            params![note.title, note.body, note.tags, note.source_session_id, note.source_message_id, now(), id],
         )
         .map_err(|e| e.to_string())?;
     } else {
         let ts = now();
         conn.execute(
-            "INSERT INTO notes (id, title, body, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)",
-            params![id, note.title, note.body, ts],
+            "INSERT INTO notes (id, title, body, tags, source_session_id, source_message_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+            params![id, note.title, note.body, note.tags, note.source_session_id, note.source_message_id, ts],
         )
         .map_err(|e| e.to_string())?;
     }
@@ -60,9 +63,47 @@ pub fn delete_note(pool: State<'_, Arc<DbPool>>, id: String) -> Result<(), Strin
     Ok(())
 }
 
+#[tauri::command]
+pub fn search_notes(pool: State<'_, Arc<DbPool>>, query: String) -> Result<Vec<Note>, String> {
+    if query.trim().is_empty() {
+        return list_notes(pool);
+    }
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    let q = format!("%{}%", query.to_lowercase());
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, title, body, tags, source_session_id, source_message_id, created_at, updated_at
+             FROM notes
+             WHERE LOWER(IFNULL(title, '')) LIKE ?1
+                OR LOWER(body) LIKE ?1
+                OR LOWER(IFNULL(tags, '')) LIKE ?1
+             ORDER BY updated_at DESC
+             LIMIT 100",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![q], |row| {
+            Ok(Note {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                body: row.get(2)?,
+                tags: row.get(3)?,
+                source_session_id: row.get(4)?,
+                source_message_id: row.get(5)?,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
+}
+
 #[derive(serde::Deserialize)]
 pub struct NoteInput {
     pub id: Option<String>,
     pub title: Option<String>,
     pub body: String,
+    pub tags: Option<String>,
+    pub source_session_id: Option<String>,
+    pub source_message_id: Option<String>,
 }

@@ -7,6 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 import { api, ChatMessage, Preset } from "../lib/api";
 import { useSessionsStore } from "../stores/sessions";
 import { useSettingsStore } from "../stores/settings";
+import { useMemoryStore } from "../stores/memory";
 import { playDoneSound, playSendSound } from "../utils/sounds";
 import { sendNotification } from "@tauri-apps/plugin-notification";
 import { toast } from "../stores/toasts";
@@ -382,6 +383,10 @@ export function useChat(activeId: string | null, currentPreset: Preset | null, m
       playSendSound(muteSoundsRef.current);
 
       const preset = options?.presetOverride !== undefined ? options.presetOverride : presetRef.current;
+      const memoryBlock = useMemoryStore.getState().buildContextBlock();
+      const systemOverride = options?.systemOverride;
+      const presetSystem = systemOverride ?? preset?.system_prompt;
+      const fullSystem = [presetSystem, memoryBlock].filter(Boolean).join("\n\n") || undefined;
       const cleanMessages = newMessages.map((m) => ({
         role: m.role,
         content: m.content,
@@ -393,7 +398,7 @@ export function useChat(activeId: string | null, currentPreset: Preset | null, m
           sessionId: cid,
           model: modelRef.current,
           messages: cleanMessages,
-          system: options?.systemOverride ?? preset?.system_prompt ?? undefined,
+          system: fullSystem,
           temperature: preset?.temperature ?? undefined,
           topP: preset?.top_p ?? undefined,
           topK: preset?.top_k ?? undefined,

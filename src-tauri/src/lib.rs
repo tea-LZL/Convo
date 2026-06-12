@@ -139,6 +139,11 @@ pub fn run() {
             memory_cmd::upsert_memory,
             memory_cmd::delete_memory,
             memory_cmd::toggle_memory,
+            memory_cmd::search_memory,
+            memory_cmd::get_enabled_memory,
+            memory_cmd::get_session_memory_overrides,
+            memory_cmd::set_session_memory_overrides,
+            memory_cmd::extract_facts_from_session,
             // Documents
             documents_cmd::list_documents,
             documents_cmd::upsert_document,

@@ -658,6 +658,29 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
           >
             Delete message
           </button>
+          <div className="my-1 border-t border-border/60" />
+          <button
+            onClick={async () => {
+              setContextMenu(null);
+              if (contextMenu.msgIndex === null) return;
+              const m = chat.messages[contextMenu.msgIndex];
+              if (!m) return;
+              const title = m.content.split("\n")[0].slice(0, 60);
+              const body = `${m.content}\n\n---\n_Saved from chat on ${new Date().toLocaleString()}_`;
+              try {
+                await api.upsertNote({
+                  title,
+                  body,
+                  source_session_id: sessionId,
+                  source_message_id: m.id,
+                });
+                toast.success("Saved to note");
+              } catch (e) { toast.error(String(e)); }
+            }}
+            className="w-full text-left px-3 py-1.5 text-xs text-text-muted hover:bg-surface-2 hover:text-text"
+          >
+            Save to note
+          </button>
         </div>
       )}
     </div>

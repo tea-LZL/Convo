@@ -10,10 +10,14 @@ pub mod models;
 pub type DbPool = Pool<SqliteConnectionManager>;
 pub type DbConn = r2d2::PooledConnection<SqliteConnectionManager>;
 
-const MIGRATION_SQL: &str = include_str!("../../migrations/V001__initial_schema.sql");
+const MIGRATION_V001: &str = include_str!("../../migrations/V001__initial_schema.sql");
+const MIGRATION_V002: &str = include_str!("../../migrations/V002__fts_and_skills.sql");
 
 fn migrations() -> Migrations<'static> {
-    Migrations::new(vec![M::up(MIGRATION_SQL)])
+    Migrations::new(vec![
+        M::up(MIGRATION_V001),
+        M::up(MIGRATION_V002),
+    ])
 }
 
 pub fn data_dir() -> PathBuf {

@@ -163,6 +163,9 @@ export interface Note {
   id: string;
   title: string | null;
   body: string;
+  tags: string | null;
+  source_session_id: string | null;
+  source_message_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -184,9 +187,21 @@ export interface MemoryItem {
   title: string | null;
   content: string;
   tags: string | null;
-  is_enabled?: number;
+  is_enabled: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export interface MemorySearchHit {
+  item: MemoryItem;
+  snippet: string;
+}
+
+export interface ExtractedFact {
+  kind: string;
+  title: string | null;
+  content: string;
+  tags: string | null;
 }
 
 export interface Document {
@@ -306,8 +321,18 @@ export const api = {
 
   // Notes
   listNotes: () => invoke<Note[]>("list_notes"),
-  upsertNote: (note: Partial<Note> & { body: string }) => invoke<string>("upsert_note", { note }),
+  upsertNote: (note: Partial<Note> & { body: string }) => invoke<string>("upsert_note", {
+    note: {
+      id: note.id ?? null,
+      title: note.title ?? null,
+      body: note.body,
+      tags: note.tags ?? null,
+      source_session_id: note.source_session_id ?? null,
+      source_message_id: note.source_message_id ?? null,
+    },
+  }),
   deleteNote: (id: string) => invoke<void>("delete_note", { id }),
+  searchNotes: (query: string) => invoke<Note[]>("search_notes", { query }),
 
   // Tasks
   listTasks: () => invoke<Task[]>("list_tasks"),
@@ -316,11 +341,33 @@ export const api = {
   completeTask: (id: string, completed: boolean) => invoke<void>("complete_task", { id, completed }),
 
   // Memory
-  listMemory: () => invoke<MemoryItem[]>("list_memory"),
-  upsertMemory: (item: Partial<MemoryItem> & { kind: string; content: string }) =>
-    invoke<string>("upsert_memory", { item }),
+  listMemory: (kind?: string) => invoke<MemoryItem[]>("list_memory", { kind: kind ?? null }),
+  upsertMemory: (item: Partial<MemoryItem> & { kind: string; content: string; is_enabled?: boolean; tags?: string | null }) =>
+    invoke<string>("upsert_memory", {
+      item: {
+        id: item.id ?? null,
+        kind: item.kind,
+        title: item.title ?? null,
+        content: item.content,
+        tags: item.tags ?? null,
+        is_enabled: item.is_enabled === false ? 0 : 1,
+      },
+    }),
   deleteMemory: (id: string) => invoke<void>("delete_memory", { id }),
   toggleMemory: (id: string, enabled: boolean) => invoke<void>("toggle_memory", { id, enabled }),
+  searchMemory: (query: string, kind?: string) =>
+    invoke<MemorySearchHit[]>("search_memory", { query, kind: kind ?? null, limit: 30 }),
+  getEnabledMemory: () => invoke<MemoryItem[]>("get_enabled_memory"),
+  getSessionMemoryOverrides: (sessionId: string) =>
+    invoke<string[]>("get_session_memory_overrides", { sessionId }),
+  setSessionMemoryOverrides: (sessionId: string, itemIds: string[]) =>
+    invoke<void>("set_session_memory_overrides", { sessionId, itemIds }),
+  extractFactsFromSession: (sessionId: string, modelId?: string, providerId?: string) =>
+    invoke<ExtractedFact[]>("extract_facts_from_session", {
+      sessionId,
+      modelId: modelId ?? null,
+      providerId: providerId ?? null,
+    }),
 
   // Documents
   listDocuments: () => invoke<Document[]>("list_documents"),
