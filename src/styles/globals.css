@@ -1,0 +1,188 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Default (Dark) theme — overridden by inline <style> from theme loader ── */
+:root,
+[data-theme-mode="dark"] {
+  --color-bg: #0f1014;
+  --color-surface-1: #16181d;
+  --color-surface-2: #1c1f26;
+  --color-surface-3: #22262f;
+  --color-surface-4: #2a2f3a;
+  --color-border: #2e3340;
+  --color-border-strong: #3a4050;
+  --color-text: #e6e8ee;
+  --color-text-muted: #8d95a7;
+  --color-text-subtle: #5b6271;
+  --color-accent: #7c6df0;
+  --color-accent-hover: #8e7ff5;
+  --color-accent-muted: #5a4bd1;
+  --color-success: #4ade80;
+  --color-warn: #facc15;
+  --color-error: #f87171;
+  --color-user-bubble: #22252d;
+  --color-assistant-accent: #7c6df0;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+  --shadow-panel: 0 8px 32px rgba(0, 0, 0, 0.4);
+  --shadow-modal: 0 24px 64px rgba(0, 0, 0, 0.5);
+  --font-ui: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;
+}
+
+[data-theme-mode="light"] {
+  --color-bg: #fafbfc;
+  --color-surface-1: #ffffff;
+  --color-surface-2: #f3f4f7;
+  --color-surface-3: #e9ebf0;
+  --color-surface-4: #dde0e6;
+  --color-border: #dde0e6;
+  --color-border-strong: #c5c9d2;
+  --color-text: #1a1c20;
+  --color-text-muted: #5b6271;
+  --color-text-subtle: #8d95a7;
+  --color-accent: #5b4cd1;
+  --color-accent-hover: #6e5fe5;
+  --color-accent-muted: #7c6df0;
+  --color-success: #16a34a;
+  --color-warn: #d97706;
+  --color-error: #dc2626;
+  --color-user-bubble: #eef0f4;
+  --color-assistant-accent: #5b4cd1;
+  --shadow-panel: 0 8px 32px rgba(0, 0, 0, 0.08);
+  --shadow-modal: 0 24px 64px rgba(0, 0, 0, 0.16);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+  font-family: var(--font-ui);
+  font-feature-settings: "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-surface-4);
+  border-radius: 6px;
+  border: 2px solid var(--color-bg);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-border-strong);
+}
+
+textarea::-webkit-scrollbar {
+  display: none;
+}
+
+.prose {
+  max-width: none;
+}
+.prose pre {
+  background: var(--color-surface-1);
+  border-radius: 8px;
+  padding: 16px;
+  border: 1px solid var(--color-border);
+}
+.prose code {
+  background: var(--color-surface-2);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.875em;
+  font-family: var(--font-mono);
+}
+.prose pre code {
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+}
+
+/* Focus ring */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Utility for glass surfaces */
+.glass {
+  background: color-mix(in oklab, var(--color-surface-1) 80%, transparent);
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+}
+
+/* Markdown code block hover */
+.code-block-wrap {
+  position: relative;
+}
+.code-block-wrap .code-lang {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-subtle);
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.code-block-wrap:hover .code-lang {
+  opacity: 1;
+}
+.code-block-wrap .code-copy {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  font-size: 11px;
+  color: var(--color-text-subtle);
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  padding: 2px 6px;
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 0.2s;
+  cursor: pointer;
+}
+.code-block-wrap:hover .code-copy {
+  opacity: 1;
+}
+.code-block-wrap .code-copy:hover {
+  color: var(--color-text);
+  background: var(--color-surface-3);
+}

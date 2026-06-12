@@ -1,80 +1,120 @@
 # Convo
 
-A sleek, native desktop chat application for Linux that connects to local Ollama models. Built with Tauri v2, React, and TypeScript — styled like modern AI assistants (Codex/Cursor).
+A self-hosted AI workspace for Linux — multi-provider chat, model comparison, documents, notes, tasks, and memory, all in a native desktop app. Inspired by the depth of [Odysseus](https://github.com/pewdiepie-archdaemon/odysseus) and the simplicity of native desktop tools.
 
-![Preview](https://github.com/user-attachments/assets/preview.png)
+Built with Tauri v2 (Rust) + React + TypeScript + Tailwind. Local-first, privacy-first, no telemetry.
+
+> **v0.4 — Major rewrite.** This release re-architects Convo from a single-purpose Ollama chat client into a full self-hosted AI workspace, modeled on Odysseus's breadth. SQLite replaces the JSON store, a provider abstraction enables any OpenAI-compatible backend, and a modular route shell hosts chat, compare, documents, notes, tasks, and memory.
 
 ## Features
 
-- **Local AI Models** — Connects to your local Ollama instance (qwen3.5, gemma4, etc.)
-- **Real-time Streaming** — SSE streaming with live token-by-token rendering
-- **Thinking Display** — Shows model reasoning/thinking in collapsible cards
-- **Accurate Token Tracking** — Real prompt + output token counts from Ollama, with model-specific context window awareness
-- **Custom Context Menu** — Right-click messages to copy, regenerate, or toggle thinking cards
-- **Sound Effects** — Subtle Web Audio API sounds for send and response completion
-- **Desktop Notifications** — Notifies when a response completes while the window is unfocused
-- **Settings Panel** — Ripple animation reveal, toggle sounds and notifications
-- **Conversation Management** — Create, rename (double-click), delete conversations
-- **Model Switching** — Inline dropdown with model size display
-- **Markdown & Code** — Full markdown rendering with syntax-highlighted code blocks
+- **Multi-provider chat** — Ollama + any OpenAI-compatible endpoint (OpenRouter, vLLM, llama.cpp, etc.). Local server auto-discovery scans ports 8000-8020.
+- **Presets** — Saved system prompts + temperature, top_p, top_k, num_ctx, repeat_penalty, stop. Built-ins: Default, Concise, Code, Socratic, Pirate.
+- **Model comparison** — Side-by-side or 3-/4-way blind A/B test the same prompt across different models.
+- **Documents** — Multi-tab markdown editor with auto-save and per-doc tabs.
+- **Notes & Tasks** — Quick notes and to-do list. Tasks have priority, due dates, and completion state.
+- **Memory** — Categorized long-term context (user preferences, project facts, skills). Included with every chat.
+- **Themes** — 6 built-in themes (Default Dark, Default Light, Solar, Forest, Mono, High Contrast) + user-defined custom themes. Light/dark/system modes.
+- **Command palette** — `Ctrl/Cmd+K` for everything: switch models, open settings, run slash commands, navigate routes.
+- **Keyboard shortcuts** — Rebindable, with Mac/Windows display. Defaults: ⌘K palette, ⌘B sidebar, ⌘N new chat, ⌘, settings, ⌘/ focus input, ⌘⇧F search.
+- **Streaming** — Real-time token rendering with thinking cards. Cancel mid-stream. Background session caching.
+- **Search** — Cross-session full-text search.
+- **Sessions** — Pin, archive, group, rename, delete. Auto-saved.
+- **Tauri-native** — System notifications, file system access, OS keyring for API keys, tray-ready.
+- **Migrated data** — Existing `conversations.json` is auto-imported into SQLite on first launch of v0.4+.
 
 ## Tech Stack
 
-| Layer | Technology |
-|-------|-----------|
-| Framework | Tauri v2 |
-| Frontend | React + TypeScript |
-| Styling | Tailwind CSS |
-| Backend | Rust (tokio, reqwest) |
-| AI Runtime | Ollama (local) |
+| Layer    | Technology                                                |
+| -------- | --------------------------------------------------------- |
+| Shell    | Tauri v2 (Rust)                                           |
+| Backend  | Rust (tokio, reqwest, rusqlite + r2d2, async-trait)       |
+| DB       | SQLite (`~/.local/share/convo/convo.db`) with migrations  |
+| Frontend | React 18 + TypeScript                                     |
+| State    | Zustand (with persist middleware)                         |
+| Routing  | react-router-dom v6                                       |
+| Styling  | Tailwind CSS + CSS custom properties                      |
+| Markdown | react-markdown + remark-gfm + react-syntax-highlighter    |
+| Secrets  | OS keyring (via `keyring` crate)                           |
+
+## Architecture
+
+```
+src/
+  app/         # App shell, providers, router
+  routes/      # Top-level views: Chat, Compare, Documents, Notes, Tasks, Memory, Settings, About
+  components/
+    ui/        # Design system: Button, Modal, Panel, Switch, Select, Slider, Tabs, Tooltip, ...
+    chat/      # ChatViewNew
+    sidebar/   # Sidebar
+    tour/      # TourOverlay
+  hooks/       # useChat, useGlobalKeyHandler
+  lib/         # api.ts (Tauri command wrappers)
+  stores/      # Zustand stores: theme, toasts, settings, sessions, palette, shortcuts, tour
+  styles/      # globals.css (CSS vars, scrollbar, focus)
+  types/       # Shared types
+
+src-tauri/src/
+  lib.rs                       # Tauri builder, plugin/state wiring
+  db/                          # SQLite pool + migrations + models
+    legacy.rs                  # conversations.json -> SQLite import
+  providers/                   # Provider trait + Ollama + OpenAI-compat + discovery
+  commands/                    # Tauri command handlers (chat, sessions, presets, ...)
+  streams.rs                   # Active chat streams + cancel tokens
+  services.rs                  # Providers, themes, settings, app info
+  state.rs                     # Tauri state container
+  themes.rs                    # Built-in theme definitions
+```
 
 ## Prerequisites
 
 - [Rust](https://rustup.rs/) (latest stable)
 - [Node.js](https://nodejs.org/) (v18+)
-- [Ollama](https://ollama.com/) running locally
-- `webkit2gtk-4.1` (Arch Linux: `pacman -S webkit2gtk-4.1`)
+- [Ollama](https://ollama.com/) running locally (or any OpenAI-compatible endpoint)
+- `webkit2gtk-4.1` (Arch: `pacman -S webkit2gtk-4.1`)
 
 ## Getting Started
 
 ```bash
-# Clone the repository
 git clone git@github.com:tea-LZL/Convo.git
 cd Convo
-
-# Install frontend dependencies
 npm install
-
-# Install Rust dependencies (automatic on first build)
-
-# Run in development mode
-cargo tauri dev
-
-# Build for release
-cargo tauri build
+cargo tauri dev      # development
+cargo tauri build    # release build (.deb)
 ```
 
 ## Configuration
 
-Ollama must be running at `http://localhost:11434`. Pull your preferred models:
+Data lives at `~/.local/share/convo/`:
 
-```bash
-ollama pull qwen3.5:27b
-ollama pull gemma4:26b
-```
+- `convo.db` — SQLite database (sessions, messages, presets, providers, etc.)
+- `blobs/` — attachment file storage
+- `themes/` — exported user themes
+- `logs/convo.log` — application log
 
-Conversation data is stored at `~/.local/share/convo/conversations.json`.
+API keys are stored in the OS keyring (`com.tea.convo` service), not in the database.
 
-## Screenshots
+## Keyboard Shortcuts
 
-### Chat View
-![Chat View](https://github.com/user-attachments/assets/chat-view.png)
+| Combo       | Action                    |
+| ----------- | ------------------------- |
+| `Ctrl+K`    | Command palette           |
+| `Ctrl+N`    | New chat                  |
+| `Ctrl+B`    | Toggle sidebar            |
+| `Ctrl+,`    | Settings                  |
+| `Ctrl+/`    | Focus input               |
+| `Ctrl+Shift+F` | Search sessions        |
+| `Esc`       | Cancel stream / close overlay |
 
-### Settings Panel
-![Settings](https://github.com/user-attachments/assets/settings.png)
+All shortcuts are rebindable in Settings → Shortcuts.
 
-### Thinking Display
-![Thinking](https://github.com/user-attachments/assets/thinking.png)
+## Roadmap
+
+See [ROADMAP](#) for the full picture. Active phases (post-v0.4):
+
+- **Phase 2** — Streaming renderer improvements (Odysseus-style segmenter), slash commands, web search integration, file attachments.
+- **Phase 3** — Memory auto-extraction, vector search, document AI editing.
+- **Phase 4** — Hardware-aware model recommendations, diagnostics, imports from ChatGPT/Claude.
 
 ## License
 

@@ -1,7 +1,10 @@
+/**
+ * Entry point. Bootstraps React + global providers.
+ */
 import React from "react";
 import ReactDOM from "react-dom/client";
-import App from "./App";
-import "./App.css";
+import App from "./app/App";
+import "./styles/globals.css";
 
 document.addEventListener("contextmenu", (e) => {
   if ((e.target as HTMLElement).closest("[data-ctx]")) return;
@@ -11,5 +14,5 @@ document.addEventListener("contextmenu", (e) => {
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <App />
-  </React.StrictMode>,
+  </React.StrictMode>
 );

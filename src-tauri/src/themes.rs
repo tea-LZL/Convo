@@ -1,0 +1,227 @@
+use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BuiltinTheme {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub tokens_json: &'static str,
+}
+
+pub fn builtin_themes() -> &'static [BuiltinTheme] {
+    static CACHE: OnceLock<Vec<BuiltinTheme>> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        vec![
+            BuiltinTheme {
+                id: "default-dark",
+                name: "Default (Dark)",
+                tokens_json: DEFAULT_DARK,
+            },
+            BuiltinTheme {
+                id: "default-light",
+                name: "Default (Light)",
+                tokens_json: DEFAULT_LIGHT,
+            },
+            BuiltinTheme {
+                id: "solar",
+                name: "Solar",
+                tokens_json: SOLAR,
+            },
+            BuiltinTheme {
+                id: "forest",
+                name: "Forest",
+                tokens_json: FOREST,
+            },
+            BuiltinTheme {
+                id: "mono",
+                name: "Mono",
+                tokens_json: MONO,
+            },
+            BuiltinTheme {
+                id: "high-contrast",
+                name: "High Contrast",
+                tokens_json: HIGH_CONTRAST,
+            },
+        ]
+    })
+}
+
+const DEFAULT_DARK: &str = r##"{
+  "mode": "dark",
+  "color.bg": "#0f1014",
+  "color.surface.1": "#16181d",
+  "color.surface.2": "#1c1f26",
+  "color.surface.3": "#22262f",
+  "color.surface.4": "#2a2f3a",
+  "color.border": "#2e3340",
+  "color.border.strong": "#3a4050",
+  "color.text": "#e6e8ee",
+  "color.text.muted": "#8d95a7",
+  "color.text.subtle": "#5b6271",
+  "color.accent": "#7c6df0",
+  "color.accent.hover": "#8e7ff5",
+  "color.accent.muted": "#5a4bd1",
+  "color.success": "#4ade80",
+  "color.warn": "#facc15",
+  "color.error": "#f87171",
+  "color.user.bubble": "#22252d",
+  "color.assistant.accent": "#7c6df0",
+  "radius.sm": "6px",
+  "radius.md": "10px",
+  "radius.lg": "16px",
+  "radius.xl": "24px",
+  "shadow.panel": "0 8px 32px rgba(0,0,0,0.4)",
+  "shadow.modal": "0 24px 64px rgba(0,0,0,0.5)",
+  "font.ui": "Inter, system-ui, sans-serif",
+  "font.mono": "JetBrains Mono, ui-monospace, monospace"
+}"##;
+
+const DEFAULT_LIGHT: &str = r##"{
+  "mode": "light",
+  "color.bg": "#fafbfc",
+  "color.surface.1": "#ffffff",
+  "color.surface.2": "#f3f4f7",
+  "color.surface.3": "#e9ebf0",
+  "color.surface.4": "#dde0e6",
+  "color.border": "#dde0e6",
+  "color.border.strong": "#c5c9d2",
+  "color.text": "#1a1c20",
+  "color.text.muted": "#5b6271",
+  "color.text.subtle": "#8d95a7",
+  "color.accent": "#5b4cd1",
+  "color.accent.hover": "#6e5fe5",
+  "color.accent.muted": "#7c6df0",
+  "color.success": "#16a34a",
+  "color.warn": "#d97706",
+  "color.error": "#dc2626",
+  "color.user.bubble": "#eef0f4",
+  "color.assistant.accent": "#5b4cd1",
+  "radius.sm": "6px",
+  "radius.md": "10px",
+  "radius.lg": "16px",
+  "radius.xl": "24px",
+  "shadow.panel": "0 8px 32px rgba(0,0,0,0.08)",
+  "shadow.modal": "0 24px 64px rgba(0,0,0,0.16)",
+  "font.ui": "Inter, system-ui, sans-serif",
+  "font.mono": "JetBrains Mono, ui-monospace, monospace"
+}"##;
+
+const SOLAR: &str = r##"{
+  "mode": "dark",
+  "color.bg": "#0d1117",
+  "color.surface.1": "#161b22",
+  "color.surface.2": "#1c2128",
+  "color.surface.3": "#22272e",
+  "color.surface.4": "#2d333b",
+  "color.border": "#30363d",
+  "color.border.strong": "#444c56",
+  "color.text": "#e6edf3",
+  "color.text.muted": "#8b949e",
+  "color.text.subtle": "#6e7681",
+  "color.accent": "#f0883e",
+  "color.accent.hover": "#f59e4f",
+  "color.accent.muted": "#bd581d",
+  "color.success": "#3fb950",
+  "color.warn": "#d29922",
+  "color.error": "#f85149",
+  "color.user.bubble": "#1c2128",
+  "color.assistant.accent": "#f0883e",
+  "radius.sm": "6px",
+  "radius.md": "10px",
+  "radius.lg": "16px",
+  "radius.xl": "24px",
+  "shadow.panel": "0 8px 32px rgba(0,0,0,0.5)",
+  "shadow.modal": "0 24px 64px rgba(0,0,0,0.6)",
+  "font.ui": "Inter, system-ui, sans-serif",
+  "font.mono": "JetBrains Mono, ui-monospace, monospace"
+}"##;
+
+const FOREST: &str = r##"{
+  "mode": "dark",
+  "color.bg": "#0a110d",
+  "color.surface.1": "#101813",
+  "color.surface.2": "#161e18",
+  "color.surface.3": "#1c261f",
+  "color.surface.4": "#243028",
+  "color.border": "#2a362c",
+  "color.border.strong": "#3a4a3c",
+  "color.text": "#e8efe8",
+  "color.text.muted": "#8fa897",
+  "color.text.subtle": "#5e7561",
+  "color.accent": "#5fb37d",
+  "color.accent.hover": "#71c08c",
+  "color.accent.muted": "#3d8a59",
+  "color.success": "#7fcf95",
+  "color.warn": "#e0b860",
+  "color.error": "#d57070",
+  "color.user.bubble": "#161e18",
+  "color.assistant.accent": "#5fb37d",
+  "radius.sm": "6px",
+  "radius.md": "10px",
+  "radius.lg": "16px",
+  "radius.xl": "24px",
+  "shadow.panel": "0 8px 32px rgba(0,0,0,0.4)",
+  "shadow.modal": "0 24px 64px rgba(0,0,0,0.5)",
+  "font.ui": "Inter, system-ui, sans-serif",
+  "font.mono": "JetBrains Mono, ui-monospace, monospace"
+}"##;
+
+const MONO: &str = r##"{
+  "mode": "dark",
+  "color.bg": "#0a0a0a",
+  "color.surface.1": "#111111",
+  "color.surface.2": "#171717",
+  "color.surface.3": "#1d1d1d",
+  "color.surface.4": "#252525",
+  "color.border": "#262626",
+  "color.border.strong": "#3a3a3a",
+  "color.text": "#ededed",
+  "color.text.muted": "#9a9a9a",
+  "color.text.subtle": "#666666",
+  "color.accent": "#d4d4d4",
+  "color.accent.hover": "#ededed",
+  "color.accent.muted": "#a3a3a3",
+  "color.success": "#a3e635",
+  "color.warn": "#facc15",
+  "color.error": "#ef4444",
+  "color.user.bubble": "#171717",
+  "color.assistant.accent": "#d4d4d4",
+  "radius.sm": "2px",
+  "radius.md": "4px",
+  "radius.lg": "6px",
+  "radius.xl": "8px",
+  "shadow.panel": "0 8px 32px rgba(0,0,0,0.6)",
+  "shadow.modal": "0 24px 64px rgba(0,0,0,0.7)",
+  "font.ui": "JetBrains Mono, ui-monospace, monospace",
+  "font.mono": "JetBrains Mono, ui-monospace, monospace"
+}"##;
+
+const HIGH_CONTRAST: &str = r##"{
+  "mode": "dark",
+  "color.bg": "#000000",
+  "color.surface.1": "#0a0a0a",
+  "color.surface.2": "#121212",
+  "color.surface.3": "#1a1a1a",
+  "color.surface.4": "#222222",
+  "color.border": "#ffffff",
+  "color.border.strong": "#ffffff",
+  "color.text": "#ffffff",
+  "color.text.muted": "#cccccc",
+  "color.text.subtle": "#999999",
+  "color.accent": "#ffff00",
+  "color.accent.hover": "#ffff66",
+  "color.accent.muted": "#cccc00",
+  "color.success": "#00ff00",
+  "color.warn": "#ffaa00",
+  "color.error": "#ff5555",
+  "color.user.bubble": "#121212",
+  "color.assistant.accent": "#ffff00",
+  "radius.sm": "2px",
+  "radius.md": "4px",
+  "radius.lg": "6px",
+  "radius.xl": "8px",
+  "shadow.panel": "0 0 0 1px #ffffff",
+  "shadow.modal": "0 0 0 2px #ffffff",
+  "font.ui": "Inter, system-ui, sans-serif",
+  "font.mono": "JetBrains Mono, ui-monospace, monospace"
+}"##;
