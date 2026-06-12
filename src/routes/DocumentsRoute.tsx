@@ -1,128 +1,593 @@
-import { useEffect, useState } from "react";
-import { FileText, Plus, Trash2, Edit3, Save, X, Download } from "lucide-react";
+/**
+ * Documents route — multi-tab editor with AI edit assist, Tauri file open/save,
+ * Insert into chat.
+ */
+import { useEffect, useState, useCallback, useRef } from "react";
+import Markdown from "react-markdown";
+import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
+import remarkGfm from "remark-gfm";
+import { FileText, Plus, Trash2, Download, Upload, Sparkles, X, Check, Save, MoreHorizontal, Eye, Edit3, MessageSquarePlus } from "lucide-react";
 import { api, Document } from "../lib/api";
 import { Button } from "../components/ui/Button";
+import { Dropdown } from "../components/ui/Dropdown";
 import { EmptyState } from "../components/ui/EmptyState";
+import { Modal } from "../components/ui/Modal";
+import { TextArea, TextInput } from "../components/ui/Form";
+import { diffLines, diffStats } from "../lib/diff";
 import { toast } from "../stores/toasts";
 
+interface Tab {
+  id: string;
+  title: string;
+  content: string;
+  dirty: boolean;
+  /** If loaded from disk, remember the path for save-in-place. */
+  diskPath: string | null;
+  /** True when content matches the persisted DB copy. */
+  savedToDb: boolean;
+}
+
 export function DocumentsRoute() {
-  const [docs, setDocs] = useState<Document[]>([]);
+  const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [content, setContent] = useState("");
-  const [title, setTitle] = useState("");
-  const [dirty, setDirty] = useState(false);
+  const [showAiEdit, setShowAiEdit] = useState(false);
+  const [showPreview, setShowPreview] = useState(false);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiInstruction, setAiInstruction] = useState("");
+  const [pendingDiff, setPendingDiff] = useState<{ original: string; proposed: string; instruction: string } | null>(null);
+  const [selection, setSelection] = useState("");
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     const d = await api.listDocuments();
-    setDocs(d);
-    if (d.length > 0 && !activeId) {
-      setActiveId(d[0].id);
-      setTitle(d[0].title);
-      setContent(d[0].content);
-    }
-  };
+    setTabs((prevTabs) => {
+      // Keep open tabs in sync with the DB
+      const known = new Map(d.map((x) => [x.id, x]));
+      const next: Tab[] = [];
+      for (const t of prevTabs) {
+        if (!t.diskPath) {
+          // DB-backed tab — refresh from server
+          const fresh = known.get(t.id);
+          if (fresh) {
+            if (!t.dirty) {
+              next.push({ ...t, content: fresh.content, title: fresh.title, savedToDb: true });
+            } else {
+              next.push(t);
+            }
+            known.delete(t.id);
+          } else if (!t.dirty) {
+            // Tab was deleted from DB, drop it
+            continue;
+          } else {
+            next.push(t);
+          }
+        } else {
+          next.push(t);
+        }
+      }
+      // Add new docs from DB that aren't open
+      for (const [id, doc] of known) {
+        next.push({
+          id,
+          title: doc.title,
+          content: doc.content,
+          dirty: false,
+          diskPath: null,
+          savedToDb: true,
+        });
+      }
+      return next;
+    });
+  }, []);
 
-  useEffect(() => { refresh(); }, []);
+  useEffect(() => {
+    (async () => {
+      const d = await api.listDocuments();
+      if (d.length > 0) {
+        setTabs(d.map((doc) => ({
+          id: doc.id,
+          title: doc.title,
+          content: doc.content,
+          dirty: false,
+          diskPath: null,
+          savedToDb: true,
+        })));
+        setActiveId(d[0].id);
+      }
+    })();
+  }, []);
 
-  const active = docs.find((d) => d.id === activeId);
+  const active = tabs.find((t) => t.id === activeId);
 
-  const createNew = async () => {
+  const createNew = useCallback(async () => {
     try {
       const id = await api.upsertDocument({ title: "Untitled", content: "", kind: "markdown" });
       await refresh();
       setActiveId(id);
-      setTitle("Untitled");
-      setContent("");
-      setDirty(false);
     } catch (e) { toast.error(String(e)); }
+  }, [refresh]);
+
+  const updateActive = (patch: Partial<Tab>) => {
+    if (!activeId) return;
+    setTabs((prev) =>
+      prev.map((t) => (t.id === activeId ? { ...t, ...patch, dirty: !patch.savedToDb ? true : t.dirty } : t))
+    );
   };
 
-  const save = async () => {
-    if (!activeId) return;
+  const save = useCallback(async (id: string = activeId!) => {
+    const t = tabs.find((x) => x.id === id);
+    if (!t) return;
     try {
-      await api.upsertDocument({ id: activeId, title: title || "Untitled", content, kind: "markdown" });
-      setDirty(false);
-      await refresh();
-      toast.success("Saved");
-    } catch (e) { toast.error(String(e)); }
-  };
+      if (t.diskPath) {
+        const { writeTextFile } = await import("@tauri-apps/plugin-fs");
+        await writeTextFile(t.diskPath, t.content);
+        setTabs((prev) => prev.map((x) => (x.id === id ? { ...x, dirty: false, savedToDb: true } : x)));
+        toast.success("Saved to disk");
+      } else {
+        await api.upsertDocument({ id, title: t.title || "Untitled", content: t.content, kind: "markdown" });
+        setTabs((prev) => prev.map((x) => (x.id === id ? { ...x, dirty: false, savedToDb: true } : x)));
+        toast.success("Saved");
+      }
+    } catch (e) {
+      toast.error(String(e));
+    }
+  }, [tabs, activeId]);
+
+  const saveAll = useCallback(async () => {
+    const dirty = tabs.filter((t) => t.dirty);
+    for (const t of dirty) {
+      try {
+        if (t.diskPath) {
+          const { writeTextFile } = await import("@tauri-apps/plugin-fs");
+          await writeTextFile(t.diskPath, t.content);
+        } else {
+          await api.upsertDocument({ id: t.id, title: t.title, content: t.content, kind: "markdown" });
+        }
+      } catch (e) { console.error(e); }
+    }
+    setTabs((prev) => prev.map((t) => ({ ...t, dirty: false, savedToDb: true })));
+    await refresh();
+    toast.success(`Saved ${dirty.length} document(s)`);
+  }, [tabs, refresh]);
 
   const remove = async (id: string) => {
-    await api.deleteDocument(id);
-    if (activeId === id) {
-      setActiveId(null);
-      setContent("");
-      setTitle("");
+    const t = tabs.find((x) => x.id === id);
+    if (!t) return;
+    if (t.dirty && !confirm(`Discard unsaved changes to "${t.title}"?`)) return;
+    if (!t.diskPath) {
+      try { await api.deleteDocument(id); } catch (e) { console.error(e); }
     }
+    setTabs((prev) => prev.filter((x) => x.id !== id));
+    if (activeId === id) setActiveId(null);
     await refresh();
   };
 
-  const exportDoc = () => {
-    const blob = new Blob([content], { type: "text/markdown" });
+  const openFromDisk = async () => {
+    try {
+      const { open: openDialog } = await import("@tauri-apps/plugin-dialog");
+      const { readTextFile } = await import("@tauri-apps/plugin-fs");
+      const selected = await openDialog({
+        multiple: false,
+        directory: false,
+        filters: [
+          { name: "Text", extensions: ["md", "txt", "markdown", "json", "yaml", "yml", "toml", "csv", "ts", "tsx", "js", "jsx", "py", "rs", "go", "sh", "html", "css"] },
+        ],
+      });
+      if (!selected) return;
+      const path = Array.isArray(selected) ? selected[0] : selected;
+      if (!path) return;
+      const content = await readTextFile(path);
+      const fileName = path.split("/").pop() || "Untitled";
+      // Open as unsaved tab pointing at the disk path
+      const id = `disk:${path}`;
+      setTabs((prev) => {
+        if (prev.find((t) => t.id === id)) {
+          setActiveId(id);
+          return prev;
+        }
+        return [
+          ...prev,
+          { id, title: fileName, content, dirty: false, diskPath: path, savedToDb: true },
+        ];
+      });
+      setActiveId(id);
+    } catch (e) { toast.error(String(e)); }
+  };
+
+  const saveToDisk = async () => {
+    if (!active || !active.diskPath) return;
+    try {
+      const { writeTextFile } = await import("@tauri-apps/plugin-fs");
+      await writeTextFile(active.diskPath, active.content);
+      setTabs((prev) => prev.map((t) => (t.id === active.id ? { ...t, dirty: false, savedToDb: true } : t)));
+      toast.success("Saved to disk");
+    } catch (e) { toast.error(String(e)); }
+  };
+
+  const exportDoc = async () => {
+    if (!active) return;
+    const blob = new Blob([active.content], { type: "text/markdown" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${title || "document"}.md`;
+    a.download = `${active.title || "document"}.md`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
-  return (
-    <div className="flex-1 flex h-full min-h-0">
-      <aside className="w-60 bg-surface-1 border-r border-border flex flex-col shrink-0">
-        <div className="p-3 border-b border-border flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-text">Documents</h2>
-          <Button size="xs" variant="primary" onClick={createNew} icon={<Plus size={12} />}>New</Button>
-        </div>
-        <div className="flex-1 overflow-y-auto py-1">
-          {docs.length === 0 ? (
-            <div className="p-4 text-xs text-text-muted text-center">No documents yet</div>
-          ) : (
-            docs.map((d) => (
-              <button
-                key={d.id}
-                onClick={() => { if (dirty) save().catch(console.error); setActiveId(d.id); setTitle(d.title); setContent(d.content); setDirty(false); }}
-                className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-1.5 hover:bg-surface-2 ${d.id === activeId ? "bg-surface-2 text-text" : "text-text-muted"}`}
-              >
-                <FileText size={11} className="shrink-0" />
-                <span className="truncate flex-1">{d.title}</span>
-                <button onClick={(e) => { e.stopPropagation(); remove(d.id); }} className="text-text-subtle hover:text-error opacity-0 group-hover:opacity-100">
-                  <Trash2 size={10} />
-                </button>
-              </button>
-            ))
-          )}
-        </div>
-      </aside>
-      <div className="flex-1 flex flex-col min-w-0">
-        {activeId ? (
-          <>
-            <div className="flex items-center gap-2 px-4 h-12 border-b border-border bg-surface-1/40 backdrop-blur">
-              <input
-                value={title}
-                onChange={(e) => { setTitle(e.target.value); setDirty(true); }}
-                className="bg-transparent text-sm font-medium text-text focus:outline-none flex-1"
-              />
-              {dirty && <span className="text-[10px] text-warn">● unsaved</span>}
-              <Button size="sm" variant="ghost" onClick={exportDoc} icon={<Download size={12} />}>Export</Button>
-              <Button size="sm" variant="primary" onClick={save} disabled={!dirty} icon={<Save size={12} />}>Save</Button>
-            </div>
-            <textarea
-              value={content}
-              onChange={(e) => { setContent(e.target.value); setDirty(true); }}
-              placeholder="Start writing… (markdown supported)"
-              className="flex-1 bg-bg text-sm text-text placeholder:text-text-subtle p-6 focus:outline-none resize-none font-mono"
-            />
-          </>
-        ) : (
+  const runAiEdit = async () => {
+    if (!active || !aiInstruction.trim()) return;
+    setAiBusy(true);
+    try {
+      const proposed = await api.aiEditDocument({
+        currentText: active.content,
+        instruction: aiInstruction,
+        selection: selection || null,
+      });
+      setPendingDiff({ original: active.content, proposed, instruction: aiInstruction });
+      setShowAiEdit(false);
+    } catch (e) {
+      toast.error(String(e));
+    }
+    setAiBusy(false);
+  };
+
+  const acceptDiff = () => {
+    if (!pendingDiff || !activeId) return;
+    updateActive({ content: pendingDiff.proposed });
+    setPendingDiff(null);
+    setAiInstruction("");
+    setSelection("");
+    toast.success("Edit applied");
+  };
+
+  const rejectDiff = () => {
+    setPendingDiff(null);
+    setAiInstruction("");
+    setSelection("");
+  };
+
+  const insertIntoChat = () => {
+    if (!active) return;
+    const sel = selection || active.content;
+    const event = new CustomEvent("convo:insert-into-chat", { detail: { text: sel, title: active.title } });
+    window.dispatchEvent(event);
+    toast.info("Inserted into chat composer");
+  };
+
+  // Track selection in the textarea
+  const onSelect = () => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    const start = ta.selectionStart;
+    const end = ta.selectionEnd;
+    if (start !== end) {
+      setSelection(ta.value.slice(start, end));
+    } else {
+      setSelection("");
+    }
+  };
+
+  // Save shortcut
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+        e.preventDefault();
+        if (activeId) save();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [activeId, save]);
+
+  if (tabs.length === 0) {
+    return (
+      <div className="flex-1 flex h-full">
+        <aside className="w-60 bg-surface-1 border-r border-border flex flex-col shrink-0">
+          <div className="p-3 border-b border-border flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-text">Documents</h2>
+            <Button size="xs" variant="primary" onClick={createNew} icon={<Plus size={12} />}>New</Button>
+          </div>
+          <div className="flex-1 flex items-center justify-center text-xs text-text-subtle p-4 text-center">
+            No documents yet
+          </div>
+        </aside>
+        <div className="flex-1 flex flex-col min-w-0">
           <EmptyState
             icon={<FileText size={32} />}
             title="No document open"
-            description="Create a new document or select one from the sidebar."
-            action={<Button onClick={createNew} variant="primary" icon={<Plus size={14} />}>New document</Button>}
+            description="Create a new document or open one from disk."
+            action={
+              <div className="flex gap-2">
+                <Button onClick={createNew} variant="primary" icon={<Plus size={14} />}>New</Button>
+                <Button onClick={openFromDisk} variant="secondary" icon={<Upload size={14} />}>Open from disk</Button>
+              </div>
+            }
           />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex-1 flex flex-col h-full min-h-0">
+      {/* Tab bar */}
+      <div className="flex items-center gap-1 px-2 h-10 border-b border-border bg-surface-1/40 backdrop-blur overflow-x-auto">
+        {tabs.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setActiveId(t.id)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-t-md border-b-2 transition-colors shrink-0 ${
+              t.id === activeId
+                ? "bg-surface-2 text-text border-b-accent"
+                : "text-text-muted border-b-transparent hover:bg-surface-2 hover:text-text"
+            }`}
+          >
+            <FileText size={11} className="text-text-subtle shrink-0" />
+            <span className="truncate max-w-[140px]">{t.title || "Untitled"}</span>
+            {t.dirty && <span className="w-1.5 h-1.5 rounded-full bg-warn" />}
+            {!t.diskPath && (
+              <span
+                onClick={(e) => { e.stopPropagation(); remove(t.id); }}
+                className="text-text-subtle hover:text-error ml-1 px-0.5"
+                title="Close"
+              >
+                ×
+              </span>
+            )}
+            {t.diskPath && (
+              <span
+                onClick={(e) => { e.stopPropagation(); remove(t.id); }}
+                className="text-text-subtle hover:text-error ml-1 px-0.5"
+                title="Close (unsaved will be lost)"
+              >
+                ×
+              </span>
+            )}
+          </button>
+        ))}
+        <button
+          onClick={createNew}
+          className="text-text-subtle hover:text-text p-1.5 rounded-md hover:bg-surface-2 shrink-0"
+          title="New document"
+        >
+          <Plus size={12} />
+        </button>
+        <button
+          onClick={openFromDisk}
+          className="text-text-subtle hover:text-text p-1.5 rounded-md hover:bg-surface-2 shrink-0"
+          title="Open from disk"
+        >
+          <Upload size={12} />
+        </button>
+        <div className="flex-1" />
+        {tabs.some((t) => t.dirty) && (
+          <Button size="xs" variant="ghost" onClick={saveAll} icon={<Save size={11} />}>
+            Save all
+          </Button>
+        )}
+      </div>
+      {active && (
+        <div className="flex-1 flex flex-col min-h-0">
+          <div className="flex items-center gap-2 px-4 h-10 border-b border-border bg-surface-1/40 backdrop-blur">
+            <input
+              value={active.title}
+              onChange={(e) => updateActive({ title: e.target.value, savedToDb: false })}
+              placeholder="Title"
+              className="bg-transparent text-sm font-medium text-text placeholder:text-text-subtle focus:outline-none flex-1 min-w-0"
+            />
+            {active.diskPath && (
+              <span className="text-[10px] text-text-subtle font-mono truncate max-w-[280px]">{active.diskPath}</span>
+            )}
+            {active.dirty && <span className="text-[10px] text-warn">● unsaved</span>}
+            <span className="text-[10px] text-text-subtle tabular-nums">
+              {active.content.length} chars · {active.content.split(/\s+/).filter(Boolean).length} words
+            </span>
+            <Button
+              size="xs"
+              variant={showPreview ? "primary" : "ghost"}
+              icon={showPreview ? <Edit3 size={11} /> : <Eye size={11} />}
+              onClick={() => setShowPreview((p) => !p)}
+            >
+              {showPreview ? "Edit" : "Preview"}
+            </Button>
+            <Dropdown
+              align="right"
+              menuClassName="w-48"
+              trigger={
+                <button className="text-text-subtle hover:text-text p-1.5 rounded-md hover:bg-surface-2">
+                  <MoreHorizontal size={14} />
+                </button>
+              }
+            >
+              {() => (
+                <div className="py-1">
+                  <button
+                    onClick={() => setShowAiEdit(true)}
+                    className="w-full text-left px-3 py-1.5 text-xs text-text-muted hover:bg-surface-2 hover:text-text flex items-center gap-1.5"
+                  >
+                    <Sparkles size={11} className="text-accent" /> Ask AI to edit
+                  </button>
+                  <button
+                    onClick={insertIntoChat}
+                    className="w-full text-left px-3 py-1.5 text-xs text-text-muted hover:bg-surface-2 hover:text-text flex items-center gap-1.5"
+                    disabled={!active.content.trim()}
+                  >
+                    <MessageSquarePlus size={11} /> Insert into chat
+                  </button>
+                  {active.diskPath ? (
+                    <button
+                      onClick={saveToDisk}
+                      className="w-full text-left px-3 py-1.5 text-xs text-text-muted hover:bg-surface-2 hover:text-text flex items-center gap-1.5"
+                      disabled={!active.dirty}
+                    >
+                      <Save size={11} /> Save to disk
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => save()}
+                      className="w-full text-left px-3 py-1.5 text-xs text-text-muted hover:bg-surface-2 hover:text-text flex items-center gap-1.5"
+                      disabled={!active.dirty}
+                    >
+                      <Save size={11} /> Save
+                    </button>
+                  )}
+                  <button
+                    onClick={exportDoc}
+                    className="w-full text-left px-3 py-1.5 text-xs text-text-muted hover:bg-surface-2 hover:text-text flex items-center gap-1.5"
+                  >
+                    <Download size={11} /> Export as Markdown
+                  </button>
+                </div>
+              )}
+            </Dropdown>
+          </div>
+          {showPreview ? (
+            <div className="flex-1 overflow-y-auto p-6 prose prose-invert prose-sm max-w-3xl mx-auto w-full">
+              <MarkdownPreview content={active.content} />
+            </div>
+          ) : (
+            <textarea
+              ref={textareaRef}
+              value={active.content}
+              onChange={(e) => updateActive({ content: e.target.value, savedToDb: false })}
+              onSelect={onSelect}
+              onKeyUp={onSelect}
+              onClick={onSelect}
+              placeholder="Start writing… (markdown supported)"
+              className="flex-1 bg-bg text-sm text-text placeholder:text-text-subtle p-6 focus:outline-none resize-none font-mono"
+            />
+          )}
+          {selection && (
+            <div className="px-4 py-1.5 bg-accent/10 border-t border-accent/30 text-[11px] text-accent flex items-center justify-between">
+              <span>{selection.length} chars selected</span>
+              <button onClick={() => { setSelection(""); window.getSelection()?.removeAllRanges(); }} className="hover:text-text">Clear</button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* AI Edit modal */}
+      <Modal
+        open={showAiEdit}
+        onClose={() => setShowAiEdit(false)}
+        title="Ask AI to edit"
+        description={selection ? `Editing ${selection.length} chars of selection` : "Editing the whole document"}
+        size="md"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setShowAiEdit(false)}>Cancel</Button>
+            <Button variant="primary" onClick={runAiEdit} disabled={!aiInstruction.trim() || aiBusy} loading={aiBusy} icon={<Sparkles size={12} />}>
+              Generate edit
+            </Button>
+          </>
+        }
+      >
+        <TextArea
+          value={aiInstruction}
+          onChange={setAiInstruction}
+          placeholder="e.g. Make this more concise, fix grammar, convert to bullet points, add a TL;DR section…"
+          rows={4}
+          autoFocus
+        />
+      </Modal>
+
+      {/* Diff preview */}
+      <Modal
+        open={!!pendingDiff}
+        onClose={rejectDiff}
+        title="AI edit preview"
+        description={pendingDiff ? `"${pendingDiff.instruction}"` : ""}
+        size="xl"
+        footer={
+          <>
+            <Button variant="ghost" onClick={rejectDiff} icon={<X size={12} />}>Reject</Button>
+            <Button variant="primary" onClick={acceptDiff} icon={<Check size={12} />}>Accept</Button>
+          </>
+        }
+      >
+        {pendingDiff && <DiffPreview original={pendingDiff.original} proposed={pendingDiff.proposed} />}
+      </Modal>
+    </div>
+  );
+}
+
+function DiffPreview({ original, proposed }: { original: string; proposed: string }) {
+  const ops = diffLines(original, proposed);
+  const stats = diffStats(ops);
+  return (
+    <div>
+      <div className="flex items-center gap-2 text-xs mb-2">
+        <span className="text-success">+{stats.added} added</span>
+        <span className="text-error">−{stats.removed} removed</span>
+      </div>
+      <div className="bg-surface-1 border border-border rounded-md overflow-hidden text-xs font-mono leading-relaxed max-h-[50vh] overflow-y-auto">
+        {ops.length === 0 ? (
+          <div className="p-3 text-text-muted">No changes</div>
+        ) : (
+          ops.map((op, i) => {
+            const lines = op.value.split("\n");
+            return (
+              <div key={i}>
+                {lines.map((line, j) => {
+                  if (line === "" && j === lines.length - 1) return null;
+                  const prefix = op.kind === "add" ? "+" : op.kind === "remove" ? "−" : " ";
+                  const cls =
+                    op.kind === "add"
+                      ? "bg-success/10 text-success"
+                      : op.kind === "remove"
+                      ? "bg-error/10 text-error"
+                      : "text-text-muted";
+                  return (
+                    <div key={j} className={`flex items-start gap-2 px-3 py-0.5 ${cls}`}>
+                      <span className="w-3 text-text-subtle text-right select-none">{prefix}</span>
+                      <span className="whitespace-pre-wrap break-words flex-1">{line || " "}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })
         )}
       </div>
     </div>
+  );
+}
+
+function MarkdownPreview({ content }: { content: string }) {
+  return (
+    <Markdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        code({ className, children, ...props }: any) {
+          const match = /language-(\w+)/.exec(className || "");
+          const codeStr = String(children).replace(/\n$/, "");
+          const inline = !match && !String(children).includes("\n");
+          if (inline) {
+            return <code className="bg-surface-2 rounded px-1 py-0.5 text-xs" {...props}>{children}</code>;
+          }
+          return (
+            <div className="code-block-wrap my-2">
+              <button
+                className="code-copy"
+                onClick={(e: any) => { navigator.clipboard.writeText(codeStr); e.preventDefault(); }}
+              >Copy</button>
+              <span className="code-lang">{match ? match[1] : "code"}</span>
+              <SyntaxHighlighter
+                style={oneDark}
+                language={match ? match[1] : "text"}
+                PreTag="div"
+                customStyle={{ margin: 0, borderRadius: 10, border: "1px solid var(--color-border)", background: "var(--color-surface-1)" }}
+              >
+                {codeStr}
+              </SyntaxHighlighter>
+            </div>
+          );
+        },
+      }}
+    >
+      {content}
+    </Markdown>
   );
 }
