@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { HashRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Sidebar } from "../components/sidebar/Sidebar";
 import { CommandPalette } from "../components/CommandPalette";
+import { SessionSearch } from "../components/SessionSearch";
 import { ToastViewport } from "../stores/toasts";
 import { useGlobalKeyHandler } from "../hooks/useGlobalKeyHandler";
 import { useThemeStore } from "../stores/theme";
@@ -88,6 +89,7 @@ export default function App() {
           </Routes>
         </main>
         <CommandPalette />
+        <SessionSearch />
         <ToastViewport />
         <TourOverlay />
       </div>

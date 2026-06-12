@@ -42,14 +42,14 @@ export const useToastStore = create<ToastState>((set) => ({
 }));
 
 export const toast = {
-  info: (message: string, title?: string) =>
-    useToastStore.getState().push({ variant: "info", message, title }),
-  success: (message: string, title?: string) =>
-    useToastStore.getState().push({ variant: "success", message, title }),
-  warn: (message: string, title?: string) =>
-    useToastStore.getState().push({ variant: "warn", message, title }),
-  error: (message: string, title?: string) =>
-    useToastStore.getState().push({ variant: "error", message, title }),
+  info: (message: string, title?: string, durationMs?: number) =>
+    useToastStore.getState().push({ variant: "info", message, title, durationMs }),
+  success: (message: string, title?: string, durationMs?: number) =>
+    useToastStore.getState().push({ variant: "success", message, title, durationMs }),
+  warn: (message: string, title?: string, durationMs?: number) =>
+    useToastStore.getState().push({ variant: "warn", message, title, durationMs }),
+  error: (message: string, title?: string, durationMs?: number) =>
+    useToastStore.getState().push({ variant: "error", message, title, durationMs }),
 };
 
 const ICONS: Record<ToastVariant, ReactNode> = {

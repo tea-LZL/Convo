@@ -107,6 +107,23 @@ pub fn rename_session(
 }
 
 #[tauri::command]
+pub fn update_session_model(
+    pool: State<'_, Arc<DbPool>>,
+    id: String,
+    model_id: String,
+    provider_id: Option<String>,
+    preset_id: Option<String>,
+) -> Result<(), String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE sessions SET model_id = ?1, provider_id = ?2, preset_id = ?3, updated_at = ?4 WHERE id = ?5",
+        params![model_id, provider_id, preset_id, now(), id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 pub fn delete_session(pool: State<'_, Arc<DbPool>>, id: String) -> Result<(), String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM sessions WHERE id = ?1", params![id])
@@ -184,4 +201,62 @@ pub struct SessionSearchResult {
     pub title: String,
     pub updated_at: String,
     pub snippet: String,
+}
+
+#[tauri::command]
+pub fn export_session_markdown(
+    pool: State<'_, Arc<DbPool>>,
+    id: String,
+) -> Result<String, String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    let (title, model_id, created_at, updated_at): (String, Option<String>, String, String) = conn
+        .query_row(
+            "SELECT title, model_id, created_at, updated_at FROM sessions WHERE id = ?1",
+            params![id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .map_err(|e| format!("Session lookup: {}", e))?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT role, content, thinking, created_at FROM messages WHERE session_id = ?1 ORDER BY created_at ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    let messages: Vec<(String, String, Option<String>, String)> = rows
+        .collect::<Result<_, _>>()
+        .map_err(|e| e.to_string())?;
+
+    let mut md = String::new();
+    md.push_str(&format!("# {}\n\n", title));
+    md.push_str(&format!("*Exported from Convo · {}*\n\n", updated_at));
+    if let Some(m) = model_id {
+        md.push_str(&format!("**Model:** `{}`\n\n", m));
+    }
+    md.push_str("---\n\n");
+    for (role, content, thinking, ts) in messages {
+        let label = match role.as_str() {
+            "user" => "**You**",
+            "assistant" => "**Assistant**",
+            "system" => "**System**",
+            _ => "**Tool**",
+        };
+        md.push_str(&format!("### {} · {}\n\n", label, ts));
+        if let Some(t) = thinking {
+            if !t.is_empty() {
+                md.push_str(&format!("<details><summary>Thinking</summary>\n\n{}\n\n</details>\n\n", t));
+            }
+        }
+        md.push_str(&content);
+        md.push_str("\n\n");
+    }
+    Ok(md)
 }
