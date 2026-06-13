@@ -236,6 +236,93 @@ export interface AppInfo {
   arch: string;
 }
 
+export interface ProviderStatus {
+  id: string;
+  name: string;
+  kind: string;
+  is_default: boolean;
+  has_api_key: boolean;
+  model_count: number;
+  last_seen: string | null;
+  reachable: boolean | null;
+  reachable_msg: string | null;
+}
+
+export interface DbStats {
+  ok: boolean;
+  size_bytes: number;
+  wal_size_bytes: number;
+  schema_version: number;
+  tables: Array<[string, number]>;
+  page_count: number;
+  page_size: number;
+}
+
+export interface Counts {
+  sessions: number;
+  messages: number;
+  notes: number;
+  tasks: number;
+  documents: number;
+  memory_items: number;
+  enabled_memory: number;
+  compare_runs: number;
+  attachments: number;
+}
+
+export interface StorageStats {
+  blobs_bytes: number;
+  logs_bytes: number;
+  themes_bytes: number;
+}
+
+export interface DiagnosticsReport {
+  app: {
+    version: string;
+    data_dir: string;
+    db_path: string;
+    os: string;
+    arch: string;
+    uptime_secs: number;
+  };
+  db: DbStats;
+  providers: ProviderStatus[];
+  counts: Counts;
+  storage: StorageStats;
+  recent_logs: string[];
+}
+
+export interface HardwareReport {
+  os: string;
+  arch: string;
+  cpu_brand: string;
+  cpu_cores: number;
+  total_memory_bytes: number;
+  available_memory_bytes: number;
+  gpus: Array<{
+    name: string;
+    vendor: string;
+    vram_bytes: number | null;
+  }>;
+}
+
+export interface ModelFit {
+  name: string;
+  family: string;
+  size_label: string;
+  fits: boolean;
+  reason: string;
+  recommended_quant: string | null;
+}
+
+export interface FitReport {
+  ram_bytes: number;
+  vram_bytes: number;
+  fits: ModelFit[];
+  partial: ModelFit[];
+  too_big: ModelFit[];
+}
+
 export const api = {
   // Settings
   getSetting: (key: string) => invoke<string | null>("get_setting", { key }),
@@ -426,4 +513,13 @@ export const api = {
   upsertSlashCommand: (cmd: { id?: string; name: string; description?: string; body: string; preset_id?: string }) =>
     invoke<string>("upsert_slash_command", { cmd }),
   deleteSlashCommand: (id: string) => invoke<void>("delete_slash_command", { id }),
+
+  // Hardware + recommendations
+  getHardware: () => invoke<HardwareReport>("get_hardware"),
+  recommendModels: (hw: HardwareReport) => invoke<FitReport>("recommend_models", { hw }),
+
+  // Diagnostics + backup
+  getDiagnostics: () => invoke<DiagnosticsReport>("get_diagnostics"),
+  exportBackup: (destPath: string) => invoke<string>("export_backup", { destPath }),
+  importBackup: (srcPath: string) => invoke<string>("import_backup", { srcPath }),
 };

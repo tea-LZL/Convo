@@ -41,6 +41,12 @@ base64 = "0.22"
 # Secrets (optional; ignored at compile time if unavailable)
 keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native-sync-persistent"] }
 
+# Hardware detection
+sysinfo = "0.31"
+
+# Backup ZIP
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

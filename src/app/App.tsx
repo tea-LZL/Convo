@@ -20,6 +20,8 @@ import { TasksRoute } from "../routes/TasksRoute";
 import { MemoryRoute } from "../routes/MemoryRoute";
 import { SettingsRoute } from "../routes/SettingsRoute";
 import { AboutRoute } from "../routes/AboutRoute";
+import { DiagnosticsRoute } from "../routes/DiagnosticsRoute";
+import { HardwareRoute } from "../routes/HardwareRoute";
 import { TourOverlay } from "../components/tour/TourOverlay";
 import { useTourStore } from "../stores/tour";
 import { api } from "../lib/api";
@@ -85,6 +87,8 @@ export default function App() {
             <Route path="/notes" element={<NotesRoute />} />
             <Route path="/tasks" element={<TasksRoute />} />
             <Route path="/memory" element={<MemoryRoute />} />
+            <Route path="/hardware" element={<HardwareRoute />} />
+            <Route path="/diagnostics" element={<DiagnosticsRoute />} />
             <Route path="/settings/*" element={<SettingsRoute />} />
             <Route path="/about" element={<AboutRoute />} />
             <Route path="*" element={<Navigate to="/chat" replace />} />

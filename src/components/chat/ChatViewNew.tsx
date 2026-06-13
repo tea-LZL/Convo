@@ -56,7 +56,7 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
   const attachments = useAttachments(sessionId);
 
   const currentPreset = presets.find((p) => p.id === presetId) || null;
-  const chat = useChat(sessionId, currentPreset, modelId);
+  const chat = useChat(sessionId, currentPreset, modelId, presetId);
 
   // Stream renderer instance for the live tail
   const tailContainerRef = useRef<HTMLDivElement>(null);
@@ -64,6 +64,37 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
   const frozenContainerRef = useRef<HTMLDivElement>(null);
   const lastStreamContent = useRef<string>("");
   const lastStreamThinking = useRef<string>("");
+  const contextMenuRef = useRef<HTMLDivElement>(null);
+
+  // Close the right-click context menu on left-click outside of it, on
+  // Esc, and on scroll. We deliberately do NOT listen for contextmenu
+  // here: a right-click that opens the menu fires its own onContextMenu
+  // handler, and a document-level contextmenu listener would race with
+  // it (the new menu's ref is unset when the listener first fires, so
+  // the listener sees the click as "outside" and clears the menu before
+  // the new one can render). Right-clicking on empty chat area leaves
+  // the menu open until the user left-clicks, presses Esc, or scrolls.
+  useEffect(() => {
+    if (!contextMenu) return;
+    const onLeftClick = (e: MouseEvent) => {
+      if (e.button !== 0) return; // left-click only
+      if (contextMenuRef.current && !contextMenuRef.current.contains(e.target as Node)) {
+        setContextMenu(null);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setContextMenu(null);
+    };
+    const onScroll = () => setContextMenu(null);
+    document.addEventListener("mousedown", onLeftClick);
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("scroll", onScroll, true);
+    return () => {
+      document.removeEventListener("mousedown", onLeftClick);
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("scroll", onScroll, true);
+    };
+  }, [contextMenu]);
 
   // Load providers, presets, models
   useEffect(() => {
@@ -572,6 +603,7 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
       {/* Context menu */}
       {contextMenu && (
         <div
+          ref={contextMenuRef}
           className="fixed z-[100] min-w-[180px] glass border border-border rounded-lg shadow-modal py-1 animate-scale-in"
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onClick={() => setContextMenu(null)}

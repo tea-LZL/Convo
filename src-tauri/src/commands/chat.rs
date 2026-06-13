@@ -184,6 +184,7 @@ pub fn delete_preset(pool: State<'_, Arc<DbPool>>, id: String) -> Result<(), Str
 }
 
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MessageInput {
     pub id: String,
     pub role: String,
@@ -196,6 +197,7 @@ pub struct MessageInput {
 }
 
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PresetInput {
     pub id: Option<String>,
     pub name: String,

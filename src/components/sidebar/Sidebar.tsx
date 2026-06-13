@@ -3,7 +3,7 @@
  */
 import { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { MessageSquare, FileText, StickyNote, ListTodo, Brain, Settings, ChevronLeft, Plus, Search, BookOpen, GitCompareArrows } from "lucide-react";
+import { MessageSquare, FileText, StickyNote, ListTodo, Brain, Settings, ChevronLeft, Plus, Search, BookOpen, GitCompareArrows, Cpu, Activity } from "lucide-react";
 import { useSessionsStore } from "../../stores/sessions";
 import { IconButton } from "../ui/IconButton";
 import { Tooltip } from "../ui/Form";
@@ -156,6 +156,32 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
           ))}
         </div>
       )}
+
+      {!location.pathname.startsWith("/chat") && <div className="flex-1" />}
+
+      <div className="border-t border-border/40 px-2 py-1.5">
+        <div className="text-[10px] uppercase tracking-wider text-text-subtle font-semibold px-2 py-1">
+          Tools
+        </div>
+        <button
+          onClick={() => navigate("/hardware")}
+          className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm transition-colors ${
+            location.pathname === "/hardware" ? "bg-accent/15 text-accent" : "text-text-muted hover:text-text hover:bg-surface-2"
+          }`}
+        >
+          <Cpu size={14} />
+          Hardware scan
+        </button>
+        <button
+          onClick={() => navigate("/diagnostics")}
+          className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm transition-colors ${
+            location.pathname === "/diagnostics" ? "bg-accent/15 text-accent" : "text-text-muted hover:text-text hover:bg-surface-2"
+          }`}
+        >
+          <Activity size={14} />
+          Diagnostics
+        </button>
+      </div>
 
       <div className="border-t border-border p-2 flex items-center gap-1">
         <IconButton

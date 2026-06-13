@@ -3,8 +3,10 @@
  */
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import { Plus, Sparkles, Cpu, Search, BookOpen, Settings, KeyRound, FileText, ListTodo, StickyNote, Brain } from "lucide-react";
 import { ChatViewNew } from "../components/chat/ChatViewNew";
 import { useSessionsStore } from "../stores/sessions";
+import { api } from "../lib/api";
 
 export function ChatRoute() {
   const { sessionId } = useParams();
@@ -13,12 +15,19 @@ export function ChatRoute() {
   const activeId = useSessionsStore((s) => s.activeId);
   const refresh = useSessionsStore((s) => s.refresh);
   const [loading, setLoading] = useState(true);
+  const [hasProviders, setHasProviders] = useState<boolean | null>(null);
 
   useEffect(() => {
     (async () => {
       await refresh();
       if (sessionId && sessionId !== activeId) {
         setActive(sessionId);
+      }
+      try {
+        const ps = await api.listProviders();
+        setHasProviders(ps.length > 0);
+      } catch {
+        setHasProviders(true); // optimistic
       }
       setLoading(false);
     })();
@@ -50,6 +59,15 @@ export function ChatRoute() {
     return () => window.removeEventListener("convo:insert-into-chat", onInsert);
   }, []);
 
+  // Poll for provider changes (e.g. after Settings → Providers add)
+  useEffect(() => {
+    const onFocus = () => {
+      api.listProviders().then((ps) => setHasProviders(ps.length > 0)).catch(() => {});
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, []);
+
   if (loading) {
     return (
       <div className="flex-1 flex items-center justify-center text-text-subtle">
@@ -63,19 +81,75 @@ export function ChatRoute() {
   }
 
   if (!activeId) {
-    return <EmptyChat />;
+    return <EmptyChat hasProviders={hasProviders} />;
   }
 
   return <ChatViewNew key={activeId} sessionId={activeId} />;
 }
 
-function EmptyChat() {
+function EmptyChat({ hasProviders }: { hasProviders: boolean | null }) {
   const create = useSessionsStore((s) => s.create);
   const navigate = useNavigate();
   const handleNew = async () => {
     const s = await create();
     navigate(`/chat/${s.id}`);
   };
+
+  if (hasProviders === false) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center p-8 max-w-2xl mx-auto">
+        <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-accent to-accent-muted flex items-center justify-center mb-6 shadow-modal">
+          <span className="text-3xl">✦</span>
+        </div>
+        <h1 className="text-2xl font-semibold text-text mb-2">Welcome to Convo</h1>
+        <p className="text-text-muted text-sm mb-8 text-center max-w-md">
+          Your local AI workspace. Connect a model backend to get started.
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full max-w-xl mb-8">
+          <button
+            onClick={() => navigate("/settings/providers")}
+            className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/50 rounded-xl p-4 text-left transition-all group"
+          >
+            <KeyRound size={18} className="text-accent mb-2" />
+            <div className="text-sm font-medium text-text">Add Ollama</div>
+            <div className="text-xs text-text-muted mt-0.5">Local-first. Run models on your machine.</div>
+          </button>
+          <button
+            onClick={() => navigate("/settings/providers")}
+            className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/50 rounded-xl p-4 text-left transition-all group"
+          >
+            <Settings size={18} className="text-accent mb-2" />
+            <div className="text-sm font-medium text-text">Add OpenAI-compatible</div>
+            <div className="text-xs text-text-muted mt-0.5">OpenRouter, vLLM, llama.cpp, etc.</div>
+          </button>
+          <button
+            onClick={() => navigate("/hardware")}
+            className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/50 rounded-xl p-4 text-left transition-all group"
+          >
+            <Cpu size={18} className="text-accent mb-2" />
+            <div className="text-sm font-medium text-text">Hardware scan</div>
+            <div className="text-xs text-text-muted mt-0.5">See which models fit your machine.</div>
+          </button>
+          <button
+            onClick={() => navigate("/about")}
+            className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/50 rounded-xl p-4 text-left transition-all group"
+          >
+            <BookOpen size={18} className="text-accent mb-2" />
+            <div className="text-sm font-medium text-text">About Convo</div>
+            <div className="text-xs text-text-muted mt-0.5">Local-first, private, no telemetry.</div>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const starters = [
+    "Explain how Rust's borrow checker works, with examples.",
+    "Write a Python function to merge two sorted lists without built-in sort.",
+    "Brainstorm 5 unique names for a local-first AI workspace.",
+    "Help me debug a Tauri command that's returning the wrong type.",
+  ];
+
   return (
     <div className="flex-1 flex flex-col items-center justify-center p-8">
       <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-accent to-accent-muted flex items-center justify-center mb-6 shadow-modal">
@@ -87,11 +161,35 @@ function EmptyChat() {
       </p>
       <button
         onClick={handleNew}
-        className="inline-flex items-center gap-2 bg-accent hover:bg-accent-hover text-white rounded-xl px-6 py-3 text-sm font-medium transition-all hover:scale-105 active:scale-95"
+        className="inline-flex items-center gap-2 bg-accent hover:bg-accent-hover text-white rounded-xl px-6 py-3 text-sm font-medium transition-all hover:scale-105 active:scale-95 mb-8"
       >
-        <span>＋</span>
+        <Plus size={16} />
         New conversation
       </button>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full max-w-2xl">
+        {starters.map((s, i) => (
+          <button
+            key={i}
+            onClick={async () => {
+              const sess = await create();
+              navigate(`/chat/${sess.id}`);
+              // Pre-fill input with the starter
+              setTimeout(() => {
+                const input = document.querySelector<HTMLTextAreaElement>("[data-chat-input]");
+                if (input) {
+                  const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+                  setter.call(input, s);
+                  input.dispatchEvent(new Event("input", { bubbles: true }));
+                  input.focus();
+                }
+              }, 200);
+            }}
+            className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/50 rounded-lg p-3 text-left text-xs text-text-muted hover:text-text transition-colors"
+          >
+            {s}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

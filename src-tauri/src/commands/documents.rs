@@ -180,6 +180,7 @@ pub async fn ai_edit_document(
 }
 
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DocumentInput {
     pub id: Option<String>,
     pub title: String,

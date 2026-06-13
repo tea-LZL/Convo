@@ -1,4 +1,5 @@
 use rusqlite::params;
+use serde::Serialize;
 use std::sync::Arc;
 use tauri::State;
 use crate::db::DbPool;
@@ -34,4 +35,252 @@ pub fn get_all_settings(pool: State<'_, Arc<DbPool>>) -> Result<Vec<(String, Str
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
         .map_err(|e| e.to_string())?;
     rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct DiagnosticsReport {
+    pub app: AppInfo,
+    pub db: DbStats,
+    pub providers: Vec<ProviderStatus>,
+    pub counts: Counts,
+    pub storage: StorageStats,
+    pub recent_logs: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct AppInfo {
+    pub version: String,
+    pub data_dir: String,
+    pub db_path: String,
+    pub os: String,
+    pub arch: String,
+    pub uptime_secs: u64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct DbStats {
+    pub ok: bool,
+    pub size_bytes: u64,
+    pub wal_size_bytes: u64,
+    pub schema_version: i64,
+    pub tables: Vec<(String, i64)>,
+    pub page_count: i64,
+    pub page_size: i64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct ProviderStatus {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub is_default: bool,
+    pub has_api_key: bool,
+    pub model_count: i64,
+    pub last_seen: Option<String>,
+    pub reachable: Option<bool>,
+    pub reachable_msg: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct Counts {
+    pub sessions: i64,
+    pub messages: i64,
+    pub notes: i64,
+    pub tasks: i64,
+    pub documents: i64,
+    pub memory_items: i64,
+    pub enabled_memory: i64,
+    pub compare_runs: i64,
+    pub attachments: i64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct StorageStats {
+    pub blobs_bytes: u64,
+    pub logs_bytes: u64,
+    pub themes_bytes: u64,
+}
+
+#[tauri::command]
+pub async fn get_diagnostics(pool: State<'_, Arc<DbPool>>) -> Result<DiagnosticsReport, String> {
+    let app = AppInfo {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        data_dir: crate::db::data_dir().to_string_lossy().to_string(),
+        db_path: crate::db::db_path().to_string_lossy().to_string(),
+        os: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+        uptime_secs: 0, // placeholder; could track process start
+    };
+
+    // DB stats
+    let db = {
+        let conn = pool.get().map_err(|e| e.to_string())?;
+        let size = std::fs::metadata(crate::db::db_path()).map(|m| m.len()).unwrap_or(0);
+        let wal_path = crate::db::db_path().with_extension("db-wal");
+        let wal = std::fs::metadata(&wal_path).map(|m| m.len()).unwrap_or(0);
+        let page_count: i64 = conn.query_row("PRAGMA page_count", [], |r| r.get(0)).unwrap_or(0);
+        let page_size: i64 = conn.query_row("PRAGMA page_size", [], |r| r.get(0)).unwrap_or(0);
+        let schema_version: i64 = conn.query_row("SELECT COALESCE(MAX(version), 0) FROM schema_version", [], |r| r.get(0)).unwrap_or(0);
+
+        let table_names = vec![
+            "providers", "models", "sessions", "session_groups", "messages",
+            "message_branches", "presets", "attachments", "documents", "notes",
+            "tasks", "memory_items", "search_config", "settings", "themes",
+            "compare_runs", "slash_commands", "session_overrides",
+        ];
+        let mut tables: Vec<(String, i64)> = Vec::new();
+        for t in table_names {
+            let count: rusqlite::Result<i64> = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {}", t), [], |r| r.get(0));
+            if let Ok(n) = count {
+                tables.push((t.to_string(), n));
+            }
+        }
+        DbStats {
+            ok: true,
+            size_bytes: size,
+            wal_size_bytes: wal,
+            schema_version,
+            tables,
+            page_count,
+            page_size,
+        }
+    };
+
+    // Counts
+    let counts = {
+        let conn = pool.get().map_err(|e| e.to_string())?;
+        let count = |t: &str| -> i64 {
+            conn.query_row(&format!("SELECT COUNT(*) FROM {}", t), [], |r| r.get(0))
+                .unwrap_or(0)
+        };
+        Counts {
+            sessions: count("sessions"),
+            messages: count("messages"),
+            notes: count("notes"),
+            tasks: count("tasks"),
+            documents: count("documents"),
+            memory_items: count("memory_items"),
+            enabled_memory: conn
+                .query_row("SELECT COUNT(*) FROM memory_items WHERE is_enabled = 1", [], |r| r.get(0))
+                .unwrap_or(0),
+            compare_runs: count("compare_runs"),
+            attachments: count("attachments"),
+        }
+    };
+
+    // Provider statuses — collect rows first (tight scope), then probe (async)
+    let provider_rows: Vec<(String, String, String, bool, Option<String>)> = {
+        let conn = pool.get().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT id, name, kind, is_default, base_url FROM providers")
+            .map_err(|e| e.to_string())?;
+        let rows: Result<Vec<(String, String, String, bool, Option<String>)>, rusqlite::Error> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, i64>(3)? != 0, r.get(4)?)))
+            .map_err(|e| e.to_string())?
+            .collect();
+        rows.map_err(|e| e.to_string())?
+    };
+
+    // Per-provider model counts and last-seen (also tight scope)
+    struct ProviderMeta {
+        model_count: i64,
+        last_seen: Option<String>,
+    }
+    let mut provider_metas: std::collections::HashMap<String, ProviderMeta> = std::collections::HashMap::new();
+    {
+        let conn = pool.get().map_err(|e| e.to_string())?;
+        for (id, _, _, _, _) in &provider_rows {
+            let model_count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM models WHERE provider_id = ?1", params![id], |r| r.get(0))
+                .unwrap_or(0);
+            let last_seen: Option<String> = conn
+                .query_row(
+                    "SELECT MAX(last_seen) FROM models WHERE provider_id = ?1",
+                    params![id],
+                    |r| r.get(0),
+                )
+                .ok()
+                .flatten();
+            provider_metas.insert(id.clone(), ProviderMeta { model_count, last_seen });
+        }
+    }
+
+    // Now probe each provider (no DB connection held during awaits)
+    let mut providers: Vec<ProviderStatus> = Vec::new();
+    for (id, name, kind, is_default, base_url) in provider_rows {
+        let meta = provider_metas.remove(&id).unwrap_or(ProviderMeta { model_count: 0, last_seen: None });
+        let has_api_key = crate::services::get_api_key(&id).is_some();
+        let (reachable, reachable_msg) = if let Some(url) = base_url {
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_millis(800))
+                .build()
+                .ok();
+            if let Some(client) = client {
+                let probe_url = if kind == "ollama" {
+                    format!("{}/api/tags", url.trim_end_matches('/'))
+                } else {
+                    format!("{}/v1/models", url.trim_end_matches('/'))
+                };
+                match client.get(&probe_url).send().await {
+                    Ok(r) if r.status().is_success() => (Some(true), Some(format!("{} OK", r.status().as_u16()))),
+                    Ok(r) => (Some(false), Some(format!("HTTP {}", r.status().as_u16()))),
+                    Err(e) => (Some(false), Some(e.to_string())),
+                }
+            } else {
+                (None, None)
+            }
+        } else {
+            (None, None)
+        };
+        providers.push(ProviderStatus {
+            id,
+            name,
+            kind,
+            is_default,
+            has_api_key,
+            model_count: meta.model_count,
+            last_seen: meta.last_seen,
+            reachable,
+            reachable_msg,
+        });
+    }
+
+    // Storage stats
+    let blobs_dir = crate::db::data_dir().join("blobs");
+    let logs_dir = crate::db::data_dir().join("logs");
+    let themes_dir = crate::db::data_dir().join("themes");
+    fn dir_size(path: &std::path::Path) -> u64 {
+        let mut total = 0u64;
+        if let Ok(rd) = std::fs::read_dir(path) {
+            for entry in rd.flatten() {
+                if let Ok(meta) = entry.metadata() {
+                    if meta.is_file() {
+                        total += meta.len();
+                    } else if meta.is_dir() {
+                        total += dir_size(&entry.path());
+                    }
+                }
+            }
+        }
+        total
+    }
+    let storage = StorageStats {
+        blobs_bytes: dir_size(&blobs_dir),
+        logs_bytes: dir_size(&logs_dir),
+        themes_bytes: dir_size(&themes_dir),
+    };
+
+    // Recent log lines (last 200 from the tail of convo.log)
+    let recent_logs: Vec<String> = {
+        let log_path = logs_dir.join("convo.log");
+        if let Ok(data) = std::fs::read_to_string(&log_path) {
+            let lines: Vec<&str> = data.lines().rev().take(200).collect();
+            lines.into_iter().rev().map(|s| s.to_string()).collect()
+        } else {
+            vec![]
+        }
+    };
+
+    Ok(DiagnosticsReport { app, db, providers, counts, storage, recent_logs })
 }

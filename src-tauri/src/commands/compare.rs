@@ -10,6 +10,7 @@ use crate::providers::types::{ChatRequest, MessageContent};
 use crate::streams::ActiveStreams;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct CompareConfig {
     pub prompt: String,
     pub models: Vec<CompareModelConfig>,
@@ -19,6 +20,7 @@ pub struct CompareConfig {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct CompareModelConfig {
     pub provider_id: String,
     pub model: String,

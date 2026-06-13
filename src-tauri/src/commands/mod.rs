@@ -1,8 +1,10 @@
 pub mod attachments;
+pub mod backup;
 pub mod chat;
 pub mod chat_stream;
 pub mod compare;
 pub mod documents;
+pub mod hardware;
 pub mod memory;
 pub mod models;
 pub mod notes;
