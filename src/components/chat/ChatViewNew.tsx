@@ -155,11 +155,27 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
     return () => { cancelled = true; };
   }, [providerId]);
 
-  // When modelId changes, persist on the session
+  // Persist the chosen preset to the DB. This runs whenever presetId
+  // changes — including BEFORE modelId or sessionLoaded are set. The
+  // ref guard ensures we only write when the value actually differs
+  // from the last write, so we don't burn a write on every render.
+  // Without this, a quick dropdown change made before the session
+  // row finishes loading would be lost when the user navigated away.
+  const lastPersistedPresetRef = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    if (!sessionLoaded) return;
+    if (lastPersistedPresetRef.current === presetId) return;
+    lastPersistedPresetRef.current = presetId;
+    api.updateSessionModel(sessionId, modelId || "", providerId, presetId).catch(console.error);
+  }, [presetId, sessionLoaded, sessionId, modelId, providerId]);
+
+  // When modelId or providerId changes, persist the full (model,
+  // provider, preset) tuple. Gated on having a real modelId to avoid
+  // an empty-string write while the model is still loading.
   useEffect(() => {
     if (!sessionLoaded || !modelId) return;
     api.updateSessionModel(sessionId, modelId, providerId, presetId).catch(console.error);
-  }, [modelId, providerId, presetId, sessionId, sessionLoaded]);
+  }, [modelId, providerId, sessionId, sessionLoaded]);
 
   // Resolve context length when model changes
   useEffect(() => {
