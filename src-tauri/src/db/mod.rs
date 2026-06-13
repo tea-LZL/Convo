@@ -12,11 +12,13 @@ pub type DbConn = r2d2::PooledConnection<SqliteConnectionManager>;
 
 const MIGRATION_V001: &str = include_str!("../../migrations/V001__initial_schema.sql");
 const MIGRATION_V002: &str = include_str!("../../migrations/V002__fts_and_skills.sql");
+const MIGRATION_V003: &str = include_str!("../../migrations/V003__drop_presets.sql");
 
 fn migrations() -> Migrations<'static> {
     Migrations::new(vec![
         M::up(MIGRATION_V001),
         M::up(MIGRATION_V002),
+        M::up(MIGRATION_V003),
     ])
 }
 
