@@ -2,14 +2,15 @@
  * useChat — thin React wrapper around the long-lived chatStream store.
  *
  * The store is responsible for listener wiring and per-session state;
- * this hook just subscribes to a single session's state and exposes
- * send/stop/reload actions. Because the listeners live in the store, a
- * session that's actively streaming keeps updating its state in the
- * background even when the user navigates to another session — when
- * they come back, the latest state is already there.
+ * this hook just exposes per-slice selectors and the send/stop/reload
+ * actions. Each slice is its own Zustand subscription, so a component
+ * using this hook only re-renders when one of the slices it actually
+ * reads changes. The previous version subscribed to a global version
+ * counter, which caused 60Hz re-renders on every chunk arrival even
+ * for components that didn't care about streaming state.
  */
-import { useEffect, useRef } from "react";
-import { getSessionState, loadSessionMessages, sendMessage, stopStream, clearSessionMessages, SessionState, useChatStreamStore } from "../stores/chatStream";
+import { useCallback, useEffect, useMemo, useRef } from "react";
+import { loadSessionMessages, sendMessage, stopStream, clearSessionMessages, SessionState, useChatStreamStore } from "../stores/chatStream";
 
 export interface UseChat {
   messages: SessionState["messages"];
@@ -24,17 +25,41 @@ export interface UseChat {
   reload: () => Promise<void>;
 }
 
+const EMPTY_MESSAGES: SessionState["messages"] = [];
+
 export function useChat(
   sessionId: string | null,
   modelName: string
 ): UseChat {
-  // Subscribe to the store version so we re-render on any change.
-  // We also reach into the per-session slot for the current snapshot.
-  const version = useChatStreamStore((s) => s.version);
+  // Per-slice subscriptions. Each `useChatStreamStore` call is its
+  // own subscription; Zustand compares the returned value with the
+  // previous via Object.is, so a primitive slice re-renders only on
+  // value change, and a stable array slice (e.g. messages) only
+  // re-renders when the array reference changes.
+  const streaming = useChatStreamStore(
+    (s) => (sessionId ? s.sessions[sessionId]?.streaming ?? false : false)
+  );
+  const streamContent = useChatStreamStore(
+    (s) => (sessionId ? s.sessions[sessionId]?.streamContent ?? "" : "")
+  );
+  const streamThinking = useChatStreamStore(
+    (s) => (sessionId ? s.sessions[sessionId]?.streamThinking ?? "" : "")
+  );
+  const messages = useChatStreamStore(
+    (s) => (sessionId ? s.sessions[sessionId]?.messages ?? EMPTY_MESSAGES : EMPTY_MESSAGES)
+  );
+  const error = useChatStreamStore(
+    (s) => (sessionId ? s.sessions[sessionId]?.error ?? null : null)
+  );
+  const loadingMessages = useChatStreamStore(
+    (s) => (sessionId ? s.sessions[sessionId]?.loadingMessages ?? false : false)
+  );
 
-  // Track which sessions we've kicked off a load for; we want to fire
-  // loadSessionMessages exactly once per sessionId (unless reload() is
-  // called explicitly).
+  // Fire loadSessionMessages exactly once per sessionId. The
+  // previous version used a `version` counter in the deps so any
+  // store update would re-check; that was the 60Hz amplifier. The
+  // load is idempotent (the store guards against double-loads via
+  // the `loadedFor` ref below) so we can drop the version dep.
   const loadedFor = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!sessionId) return;
@@ -44,39 +69,47 @@ export function useChat(
       console.error("loadSessionMessages:", e);
       loadedFor.current.delete(sessionId);
     });
-  }, [sessionId, version]);
+  }, [sessionId]);
 
-  const snap: SessionState = sessionId
-    ? getSessionState(sessionId)
-    : { messages: [], streaming: false, streamContent: "", streamThinking: "", error: null, loadingMessages: false };
-
-  const totalTokens = snap.messages.reduce(
-    (sum, m) => sum + (m.prompt_tokens || 0) + (m.output_tokens || 0),
-    0
+  const totalTokens = useMemo(
+    () => messages.reduce(
+      (sum, m) => sum + (m.prompt_tokens || 0) + (m.output_tokens || 0),
+      0
+    ),
+    [messages]
   );
 
-  return {
-    messages: snap.messages,
-    streaming: snap.streaming,
-    streamContent: snap.streamContent,
-    streamThinking: snap.streamThinking,
-    totalTokens,
-    error: snap.error,
-    loadingMessages: snap.loadingMessages,
-    send: async (text, options) => {
+  const send = useCallback(
+    async (text: string, options?: { systemOverride?: string }) => {
       if (!sessionId) return;
       await sendMessage(sessionId, text, modelName, {
         systemOverride: options?.systemOverride,
       });
     },
-    stop: async () => {
-      if (!sessionId) return;
-      await stopStream(sessionId);
-    },
-    reload: async () => {
-      if (!sessionId) return;
-      await clearSessionMessages(sessionId);
-      await loadSessionMessages(sessionId);
-    },
+    [sessionId, modelName]
+  );
+
+  const stop = useCallback(async () => {
+    if (!sessionId) return;
+    await stopStream(sessionId);
+  }, [sessionId]);
+
+  const reload = useCallback(async () => {
+    if (!sessionId) return;
+    await clearSessionMessages(sessionId);
+    await loadSessionMessages(sessionId);
+  }, [sessionId]);
+
+  return {
+    messages,
+    streaming,
+    streamContent,
+    streamThinking,
+    totalTokens,
+    error,
+    loadingMessages,
+    send,
+    stop,
+    reload,
   };
 }

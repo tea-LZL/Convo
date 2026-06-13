@@ -3,7 +3,7 @@
  * Phase 3: streaming segmenter, slash commands, attachments, per-session
  * model persistence, message editing.
  */
-import { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Send, Square, ChevronUp, Plus, Paperclip, X, ChevronDown, Search, ArrowUp, Sparkles, RefreshCw, Edit2, Check, MoreHorizontal, Trash2 } from "lucide-react";
 import Markdown from "react-markdown";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
@@ -20,6 +20,7 @@ import { useAttachments, PendingAttachment } from "../../hooks/useAttachments";
 import { filterCommands, parseCommand, runCommand, SlashCommandContext } from "../../lib/slashCommands";
 import { useNavigate } from "react-router-dom";
 import { toast } from "../../stores/toasts";
+import { useChatStreamStore } from "../../stores/chatStream";
 
 function formatModelLabel(name: string): string {
   const parts = name.split(":");
@@ -55,12 +56,10 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
 
   const chat = useChat(sessionId, modelId);
 
-  // Stream renderer instance for the live tail
-  const tailContainerRef = useRef<HTMLDivElement>(null);
-  const tailRendererRef = useRef<StreamRenderer | null>(null);
-  const frozenContainerRef = useRef<HTMLDivElement>(null);
-  const lastStreamContent = useRef<string>("");
-  const lastStreamThinking = useRef<string>("");
+  // Stream renderer is now owned by StreamingSection. The parent
+  // only keeps the scroll container ref and the stick-to-bottom
+  // sentinel (shared with StreamingSection so the renderer's
+  // onAfterRender can decide whether to follow the tail).
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
   const contextMenuRef = useRef<HTMLDivElement>(null);
@@ -168,49 +167,8 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
     });
   }, [modelId, models]);
 
-  // Stream renderer setup
-  useEffect(() => {
-    if (!chat.streaming) {
-      tailRendererRef.current?.destroy();
-      tailRendererRef.current = null;
-      lastStreamContent.current = "";
-      lastStreamThinking.current = "";
-      return;
-    }
-    if (!tailContainerRef.current) return;
-    if (!tailRendererRef.current) {
-      const r = createStreamRenderer(tailContainerRef.current, {
-        // Run the auto-scroll inside the renderer's rAF, after the
-        // DOM has been updated. Single rAF for both the text write
-        // and the scroll read — eliminates the 1-frame lag that
-        // was visible as scroll jitter on long replies.
-        onAfterRender: () => {
-          if (!stickToBottom.current) return;
-          const el = chatScrollRef.current;
-          if (!el) return;
-          el.scrollTop = el.scrollHeight;
-        },
-      });
-      r.start();
-      tailRendererRef.current = r;
-    }
-    const r = tailRendererRef.current;
-    if (chat.streamContent !== lastStreamContent.current) {
-      const delta = chat.streamContent.slice(lastStreamContent.current.length);
-      lastStreamContent.current = chat.streamContent;
-      r.append(delta);
-    }
-    if (chat.streamThinking !== lastStreamThinking.current) {
-      lastStreamThinking.current = chat.streamThinking;
-    }
-  }, [chat.streaming, chat.streamContent, chat.streamThinking]);
-
-  useEffect(() => {
-    return () => {
-      tailRendererRef.current?.destroy();
-      tailRendererRef.current = null;
-    };
-  }, []);
+  // The stream renderer setup and its cleanup now live inside
+  // StreamingSection. See the per-slice sub-components below.
 
   // Auto-scroll the chat to the latest token while streaming, but
   // only if the user hasn't scrolled up to read history. We track
@@ -233,17 +191,9 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
   // message list changes without a stream being active — a
   // finished assistant message is appended, the user navigates
   // back to the chat, etc. One rAF is enough: nothing else is
-  // racing to read scrollHeight in this code path.
-  useEffect(() => {
-    if (chat.streaming) return;
-    if (!stickToBottom.current) return;
-    const el = chatScrollRef.current;
-    if (!el) return;
-    const raf = requestAnimationFrame(() => {
-      el.scrollTop = el.scrollHeight;
-    });
-    return () => cancelAnimationFrame(raf);
-  }, [chat.messages.length, chat.streaming]);
+  // The non-streaming scroll-to-bottom on messages.length change
+  // is now handled inside MessageList, which subscribes to the
+  // messages slice and calls onBumpScroll on length change.
 
   // Persist user message + attachments after send
   const onSend = async (text: string) => {
@@ -291,6 +241,32 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
   };
 
   const isEmpty = chat.messages.length === 0 && !chat.streaming;
+
+  // Stable scroll callback. Passed to MessageList (called on
+  // messages.length change) and StreamingSection (called from
+  // the renderer's onAfterRender). The function identity is
+  // stable across renders, so the children don't re-render when
+  // the parent re-renders on stream updates.
+  const bumpScroll = useCallback(() => {
+    if (!stickToBottom.current) return;
+    const el = chatScrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, []);
+
+  // Stable "resend" callback. Used by MessageRow's "Save & resend"
+  // button. Truncates the conversation to before this message,
+  // saves, reloads, and sends the new content. Stable identity
+  // so the message list's useMemo doesn't invalidate.
+  const onResend = useCallback(async (msgIndex: number, content: string) => {
+    const truncated = chat.messages.slice(0, msgIndex);
+    try {
+      await api.saveMessages(sessionId, truncated);
+    } catch (e) { console.error(e); }
+    setEditingMessageId(null);
+    await chat.reload();
+    await chat.send(content);
+  }, [chat.messages, chat.reload, chat.send, sessionId]);
 
   const slashCtx: SlashCommandContext = {
     sessionId,
@@ -431,118 +407,25 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
             Send a message to start the conversation.
           </div>
         ) : (
-          <div className="max-w-3xl mx-auto w-full py-4">
-            {chat.messages.map((msg, i) => {
-              const thinkingOpen = !collapsedThinking.has(i);
-              const atts = parseAttachments(msg.attachments_json);
-              return (
-                <div
-                  key={msg.id}
-                  data-ctx
-                  className="px-4 py-2.5 group"
-                  onContextMenu={(e) => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, content: msg.content, role: msg.role as "user" | "assistant", msgIndex: i, isThinking: false }); }}
-                >
-                  {atts.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5 mb-2">
-                      {atts.map((a) => <AttachmentChip key={a.id} att={a} />)}
-                    </div>
-                  )}
-                  {msg.role === "assistant" && msg.thinking && (
-                    <div className="mb-3 bg-surface-2/50 border border-border rounded-xl overflow-hidden">
-                      <button
-                        onClick={() => setCollapsedThinking((s) => { const n = new Set(s); n.has(i) ? n.delete(i) : n.add(i); return n; })}
-                        className="w-full flex items-center gap-2 px-3 py-2 bg-surface-2/40 hover:bg-surface-3/70 text-text-muted hover:text-text text-xs"
-                      >
-                        <span>✦</span>
-                        <span className="flex-1 text-left font-medium">Thinking</span>
-                        <ChevronDown size={12} className={`transition-transform ${thinkingOpen ? "" : "-rotate-90"}`} />
-                      </button>
-                      {thinkingOpen && (
-                        <div className="px-3 pb-2.5 pt-1 text-xs text-text-muted leading-relaxed whitespace-pre-wrap">
-                          {msg.thinking}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  {editingMessageId === msg.id ? (
-                    <div className="bg-surface-2 border border-border rounded-md p-2">
-                      <textarea
-                        value={editingText}
-                        onChange={(e) => setEditingText(e.target.value)}
-                        rows={Math.max(2, Math.min(10, editingText.split("\n").length + 1))}
-                        className="w-full bg-transparent text-sm text-text focus:outline-none resize-none"
-                        autoFocus
-                      />
-                      <div className="flex items-center gap-1 justify-end mt-1">
-                        <Button size="xs" variant="ghost" onClick={() => setEditingMessageId(null)}>Cancel</Button>
-                        <Button
-                          size="xs"
-                          variant="primary"
-                          onClick={async () => {
-                            const newContent = editingText.trim();
-                            if (!newContent) return;
-                            // Truncate to just before this message
-                            const truncated = chat.messages.slice(0, i);
-                            try {
-                              await api.saveMessages(sessionId, truncated);
-                            } catch (e) { console.error(e); }
-                            setEditingMessageId(null);
-                            await chat.reload();
-                            await chat.send(newContent);
-                          }}
-                          icon={<Check size={12} />}
-                        >
-                          Save & resend
-                        </Button>
-                      </div>
-                    </div>
-                  ) : msg.role === "user" ? (
-                    <div className="bg-userbubble rounded-2xl px-3.5 py-2 text-sm text-text whitespace-pre-wrap break-words inline-block max-w-[85%]">
-                      {msg.content}
-                      <div className="mt-1 flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100">
-                        <IconButton icon={<Edit2 size={11} />} label="Edit & resend" size="sm" onClick={() => { setEditingMessageId(msg.id); setEditingText(msg.content); }} />
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="prose prose-invert prose-sm leading-relaxed max-w-none break-words">
-                      <MarkdownRenderer content={msg.content} />
-                    </div>
-                  )}
-                  {msg.role === "assistant" && msg.created_at && (
-                    <div className="mt-3 flex items-center justify-between">
-                      <span className="text-[10px] text-text-subtle tabular-nums">
-                        {formatTimestamp(msg.created_at)}
-                      </span>
-                      <span className="text-[10px] text-text-subtle tabular-nums">
-                        {msg.prompt_tokens !== null && msg.output_tokens !== null
-                          ? `${msg.prompt_tokens + msg.output_tokens} tokens`
-                          : ""}
-                      </span>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-            {chat.streaming && (
-              <div className="px-4 py-2.5">
-                {chat.streamThinking && (
-                  <div className="mb-3 bg-surface-2/50 border border-border rounded-xl p-3 text-xs text-text-muted">
-                    <span className="text-text-muted font-medium block mb-1">✦ Thinking</span>
-                    <div className="whitespace-pre-wrap">{chat.streamThinking}</div>
-                  </div>
-                )}
-                {/* Frozen + tail containers for the stream renderer */}
-                <div ref={tailContainerRef} className="prose prose-invert prose-sm leading-relaxed max-w-none break-words min-h-[1em]" />
-                {!chat.streamContent && !chat.streamThinking && (
-                  <div className="inline-flex gap-1 items-end h-5">
-                    <span className="w-1.5 h-1.5 bg-text-muted rounded-full animate-pulse-dot" />
-                    <span className="w-1.5 h-1.5 bg-text-muted rounded-full animate-pulse-dot" style={{ animationDelay: "0.2s" }} />
-                    <span className="w-1.5 h-1.5 bg-text-muted rounded-full animate-pulse-dot" style={{ animationDelay: "0.4s" }} />
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
+          <>
+            <MessageList
+              sessionId={sessionId}
+              editingMessageId={editingMessageId}
+              editingText={editingText}
+              setEditingMessageId={setEditingMessageId}
+              setEditingText={setEditingText}
+              collapsedThinking={collapsedThinking}
+              setCollapsedThinking={setCollapsedThinking}
+              setContextMenu={setContextMenu}
+              onBumpScroll={bumpScroll}
+              onResend={onResend}
+            />
+            <StreamingSection
+              sessionId={sessionId}
+              stickToBottomRef={stickToBottom}
+              onBumpScroll={bumpScroll}
+            />
+          </>
         )}
       </div>
 
@@ -733,42 +616,398 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
   );
 }
 
-function MarkdownRenderer({ content }: { content: string }) {
+// Module-level constants. Stable references so React.memo's shallow
+// prop comparison sees only `content` change between renders. The
+// `code` function takes all its data from props — no outer state
+// captured — so it's safe to share across all MarkdownRenderer
+// instances.
+const REMARK_PLUGINS = [remarkGfm];
+
+const MARKDOWN_COMPONENTS = {
+  code({ className, children, ...props }: any) {
+    const match = /language-(\w+)/.exec(className || "");
+    const codeStr = String(children).replace(/\n$/, "");
+    const inline = !match && !String(children).includes("\n");
+    if (inline) {
+      return <code className="bg-surface-2 rounded px-1 py-0.5 text-xs" {...props}>{children}</code>;
+    }
+    return (
+      <div className="code-block-wrap my-2">
+        <button
+          className="code-copy"
+          onClick={(e) => { navigator.clipboard.writeText(codeStr); e.preventDefault(); }}
+        >
+          Copy
+        </button>
+        <span className="code-lang">{match ? match[1] : "code"}</span>
+        <SyntaxHighlighter
+          style={oneDark}
+          language={match ? match[1] : "text"}
+          PreTag="div"
+          customStyle={{ margin: 0, borderRadius: 10, border: "1px solid var(--color-border)", background: "var(--color-surface-1)" }}
+        >
+          {codeStr}
+        </SyntaxHighlighter>
+      </div>
+    );
+  },
+};
+
+/**
+ * Wrapped in React.memo. With the module-level REMARK_PLUGINS and
+ * MARKDOWN_COMPONENTS above, the only prop the parent ever changes
+ * between renders is `content`. When the message row re-renders
+ * with the same content (e.g. every chunk-bump on a static
+ * completed message), the memo skips the re-render and
+ * react-markdown + react-syntax-highlighter are not invoked.
+ *
+ * This is the load-bearing optimization for the stream-time lag:
+ * v0.6.5's incremental DOM fix was correct but the parent
+ * re-rendered 60Hz and re-parsed markdown on every static message
+ * each time, saturating the main thread.
+ */
+const MarkdownRenderer = React.memo(function MarkdownRenderer({ content }: { content: string }) {
   return (
-    <Markdown
-      remarkPlugins={[remarkGfm]}
-      components={{
-        code({ className, children, ...props }) {
-          const match = /language-(\w+)/.exec(className || "");
-          const codeStr = String(children).replace(/\n$/, "");
-          const inline = !match && !String(children).includes("\n");
-          if (inline) {
-            return <code className="bg-surface-2 rounded px-1 py-0.5 text-xs" {...props}>{children}</code>;
-          }
-          return (
-            <div className="code-block-wrap my-2">
-              <button
-                className="code-copy"
-                onClick={(e) => { navigator.clipboard.writeText(codeStr); e.preventDefault(); }}
-              >
-                Copy
-              </button>
-              <span className="code-lang">{match ? match[1] : "code"}</span>
-              <SyntaxHighlighter
-                style={oneDark}
-                language={match ? match[1] : "text"}
-                PreTag="div"
-                customStyle={{ margin: 0, borderRadius: 10, border: "1px solid var(--color-border)", background: "var(--color-surface-1)" }}
-              >
-                {codeStr}
-              </SyntaxHighlighter>
-            </div>
-          );
-        },
-      }}
-    >
+    <Markdown remarkPlugins={REMARK_PLUGINS} components={MARKDOWN_COMPONENTS}>
       {content}
     </Markdown>
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Per-slice sub-components. v0.6.6: the previous design had one parent
+// ChatViewNew that subscribed to the chatStream store via useChat and
+// re-rendered 60 times per second during streaming. Every chunk-bump
+// iterated the entire message list and re-parsed markdown for every
+// completed message — saturating the main thread and making scroll
+// and clicks feel laggy.
+//
+// The fix is structural: split the message list and the streaming tail
+// into separate components with their own Zustand subscriptions. The
+// parent no longer subscribes to streaming slices, so a chunk-bump
+// only re-renders the streaming section, not the whole tree. The
+// message list subscribes only to the messages array (stable across
+// stream updates), and per-row React.memo skips the markdown re-parse
+// for static messages.
+// ---------------------------------------------------------------------------
+
+const EMPTY_MESSAGES_LIST: ChatMessage[] = [];
+
+interface MessageRowProps {
+  msg: ChatMessage;
+  i: number;
+  sessionId: string;
+  editingMessageId: string | null;
+  editingText: string;
+  setEditingMessageId: (id: string | null) => void;
+  setEditingText: (text: string) => void;
+  collapsedThinking: Set<number>;
+  setCollapsedThinking: (updater: (s: Set<number>) => Set<number>) => void;
+  setContextMenu: (m: { x: number; y: number; content: string; role: "user" | "assistant"; msgIndex: number | null; isThinking: boolean } | null) => void;
+  onResend: (msgIndex: number, content: string) => Promise<void>;
+}
+
+/**
+ * Custom comparator: only re-render when the message content itself
+ * changes. Function props (setEditingMessageId, setContextMenu,
+ * onResend, etc.) are ignored — they all close over `msg` and `i`
+ * from the row's props, so a stale closure from the previous
+ * render is still valid as long as `msg` and `i` are unchanged.
+ */
+function messageRowAreEqual(prev: MessageRowProps, next: MessageRowProps) {
+  const pm = prev.msg;
+  const nm = next.msg;
+  return (
+    prev.i === next.i &&
+    pm.id === nm.id &&
+    pm.content === nm.content &&
+    pm.thinking === nm.thinking &&
+    pm.role === nm.role &&
+    pm.attachments_json === nm.attachments_json &&
+    pm.created_at === nm.created_at &&
+    prev.editingMessageId === next.editingMessageId &&
+    prev.editingText === next.editingText &&
+    prev.collapsedThinking === next.collapsedThinking &&
+    prev.sessionId === next.sessionId
+  );
+}
+
+const MessageRow = React.memo(function MessageRow({
+  msg,
+  i,
+  sessionId,
+  editingMessageId,
+  editingText,
+  setEditingMessageId,
+  setEditingText,
+  collapsedThinking,
+  setCollapsedThinking,
+  setContextMenu,
+  onResend,
+}: MessageRowProps) {
+  const thinkingOpen = !collapsedThinking.has(i);
+  const atts = parseAttachments(msg.attachments_json);
+  return (
+    <div
+      key={msg.id}
+      data-ctx
+      className="px-4 py-2.5 group"
+      onContextMenu={(e) => {
+        e.preventDefault();
+        setContextMenu({
+          x: e.clientX,
+          y: e.clientY,
+          content: msg.content,
+          role: msg.role as "user" | "assistant",
+          msgIndex: i,
+          isThinking: false,
+        });
+      }}
+    >
+      {atts.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          {atts.map((a) => <AttachmentChip key={a.id} att={a} />)}
+        </div>
+      )}
+      {msg.role === "assistant" && msg.thinking && (
+        <div className="mb-3 bg-surface-2/50 border border-border rounded-xl overflow-hidden">
+          <button
+            onClick={() => setCollapsedThinking((s) => {
+              const n = new Set(s);
+              n.has(i) ? n.delete(i) : n.add(i);
+              return n;
+            })}
+            className="w-full flex items-center gap-2 px-3 py-2 bg-surface-2/40 hover:bg-surface-3/70 text-text-muted hover:text-text text-xs"
+          >
+            <span>✦</span>
+            <span className="flex-1 text-left font-medium">Thinking</span>
+            <ChevronDown size={12} className={`transition-transform ${thinkingOpen ? "" : "-rotate-90"}`} />
+          </button>
+          {thinkingOpen && (
+            <div className="px-3 pb-2.5 pt-1 text-xs text-text-muted leading-relaxed whitespace-pre-wrap">
+              {msg.thinking}
+            </div>
+          )}
+        </div>
+      )}
+      {editingMessageId === msg.id ? (
+        <div className="bg-surface-2 border border-border rounded-md p-2">
+          <textarea
+            value={editingText}
+            onChange={(e) => setEditingText(e.target.value)}
+            rows={Math.max(2, Math.min(10, editingText.split("\n").length + 1))}
+            className="w-full bg-transparent text-sm text-text focus:outline-none resize-none"
+            autoFocus
+          />
+          <div className="flex items-center gap-1 justify-end mt-1">
+            <Button size="xs" variant="ghost" onClick={() => setEditingMessageId(null)}>Cancel</Button>
+            <Button
+              size="xs"
+              variant="primary"
+              onClick={async () => {
+                const newContent = editingText.trim();
+                if (!newContent) return;
+                await onResend(i, newContent);
+              }}
+              icon={<Check size={12} />}
+            >
+              Save & resend
+            </Button>
+          </div>
+        </div>
+      ) : msg.role === "user" ? (
+        <div className="bg-userbubble rounded-2xl px-3.5 py-2 text-sm text-text whitespace-pre-wrap break-words inline-block max-w-[85%]">
+          {msg.content}
+          <div className="mt-1 flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100">
+            <IconButton icon={<Edit2 size={11} />} label="Edit & resend" size="sm" onClick={() => { setEditingMessageId(msg.id); setEditingText(msg.content); }} />
+          </div>
+        </div>
+      ) : (
+        <div className="prose prose-invert prose-sm leading-relaxed max-w-none break-words">
+          <MarkdownRenderer content={msg.content} />
+        </div>
+      )}
+      {msg.role === "assistant" && msg.created_at && (
+        <div className="mt-3 flex items-center justify-between">
+          <span className="text-[10px] text-text-subtle tabular-nums">
+            {formatTimestamp(msg.created_at)}
+          </span>
+          <span className="text-[10px] text-text-subtle tabular-nums">
+            {msg.prompt_tokens !== null && msg.output_tokens !== null
+              ? `${msg.prompt_tokens + msg.output_tokens} tokens`
+              : ""}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}, messageRowAreEqual);
+
+interface MessageListProps {
+  sessionId: string;
+  editingMessageId: string | null;
+  editingText: string;
+  setEditingMessageId: (id: string | null) => void;
+  setEditingText: (text: string) => void;
+  collapsedThinking: Set<number>;
+  setCollapsedThinking: (updater: (s: Set<number>) => Set<number>) => void;
+  setContextMenu: (m: { x: number; y: number; content: string; role: "user" | "assistant"; msgIndex: number | null; isThinking: boolean } | null) => void;
+  onBumpScroll: () => void;
+  onResend: (msgIndex: number, content: string) => Promise<void>;
+}
+
+/**
+ * Subscribes only to the messages slice. The array reference is
+ * stable across stream updates (the bump shallow-copies the
+ * SessionState but doesn't touch the messages array), so this
+ * component re-renders only when a message is added/removed/edited.
+ */
+const MessageList = React.memo(function MessageList({
+  sessionId,
+  editingMessageId,
+  editingText,
+  setEditingMessageId,
+  setEditingText,
+  collapsedThinking,
+  setCollapsedThinking,
+  setContextMenu,
+  onBumpScroll,
+  onResend,
+}: MessageListProps) {
+  const messages = useChatStreamStore(
+    (s) => s.sessions[sessionId]?.messages ?? EMPTY_MESSAGES_LIST
+  );
+
+  // Scroll to bottom when the message list grows. Bumps are
+  // cheap; the per-row memo handles the actual re-render cost.
+  const prevLenRef = useRef(messages.length);
+  useEffect(() => {
+    if (messages.length !== prevLenRef.current) {
+      prevLenRef.current = messages.length;
+      onBumpScroll();
+    }
+  }, [messages.length, onBumpScroll]);
+
+  // useMemo over the .map(): the children are JSX elements with
+  // stable callback refs (from useCallback in the parent), so the
+  // memoized array is reusable across renders as long as `messages`
+  // and the editing state haven't changed. The per-row memo
+  // comparator still runs on each render of the parent — but the
+  // comparator is O(1) (a few string equality checks) and skips
+  // the markdown re-parse on no-change.
+  const renderedMessages = useMemo(
+    () => messages.map((msg, i) => (
+      <MessageRow
+        key={msg.id}
+        msg={msg}
+        i={i}
+        sessionId={sessionId}
+        editingMessageId={editingMessageId}
+        editingText={editingText}
+        setEditingMessageId={setEditingMessageId}
+        setEditingText={setEditingText}
+        collapsedThinking={collapsedThinking}
+        setCollapsedThinking={setCollapsedThinking}
+        setContextMenu={setContextMenu}
+        onResend={onResend}
+      />
+    )),
+    [messages, sessionId, editingMessageId, editingText, collapsedThinking, setEditingMessageId, setEditingText, setCollapsedThinking, setContextMenu, onResend]
+  );
+
+  return <div className="max-w-3xl mx-auto w-full py-4">{renderedMessages}</div>;
+});
+
+interface StreamingSectionProps {
+  sessionId: string;
+  stickToBottomRef: React.MutableRefObject<boolean>;
+  onBumpScroll: () => void;
+}
+
+/**
+ * Subscribes only to the streaming slices. Re-renders on every
+ * chunk-bump (necessary — the tail is the actual stream). The
+ * renderer inside this component is the v0.6.5 incremental
+ * DOM-direct renderer, with the per-pace-tick onAfterRender
+ * calling onBumpScroll.
+ *
+ * Returns null when not streaming — unmounting destroys the
+ * renderer (cleanup in the streaming useEffect).
+ */
+function StreamingSection({ sessionId, stickToBottomRef, onBumpScroll }: StreamingSectionProps) {
+  const streaming = useChatStreamStore(
+    (s) => s.sessions[sessionId]?.streaming ?? false
+  );
+  const streamContent = useChatStreamStore(
+    (s) => s.sessions[sessionId]?.streamContent ?? ""
+  );
+  const streamThinking = useChatStreamStore(
+    (s) => s.sessions[sessionId]?.streamThinking ?? ""
+  );
+
+  const tailContainerRef = useRef<HTMLDivElement>(null);
+  const tailRendererRef = useRef<StreamRenderer | null>(null);
+  const lastStreamContent = useRef<string>("");
+  const lastStreamThinking = useRef<string>("");
+
+  useEffect(() => {
+    if (!streaming) {
+      tailRendererRef.current?.destroy();
+      tailRendererRef.current = null;
+      lastStreamContent.current = "";
+      lastStreamThinking.current = "";
+      return;
+    }
+    if (!tailContainerRef.current) return;
+    if (!tailRendererRef.current) {
+      const r = createStreamRenderer(tailContainerRef.current, {
+        // Run the auto-scroll inside the renderer's rAF, after the
+        // DOM has been updated. Single rAF for both the text write
+        // and the scroll read.
+        onAfterRender: () => {
+          if (!stickToBottomRef.current) return;
+          onBumpScroll();
+        },
+      });
+      r.start();
+      tailRendererRef.current = r;
+    }
+    const r = tailRendererRef.current;
+    if (streamContent !== lastStreamContent.current) {
+      const delta = streamContent.slice(lastStreamContent.current.length);
+      lastStreamContent.current = streamContent;
+      r.append(delta);
+    }
+    lastStreamThinking.current = streamThinking;
+  }, [streaming, streamContent, streamThinking, stickToBottomRef, onBumpScroll]);
+
+  // Cleanup on unmount (e.g. session change).
+  useEffect(() => {
+    return () => {
+      tailRendererRef.current?.destroy();
+      tailRendererRef.current = null;
+    };
+  }, []);
+
+  if (!streaming) return null;
+
+  return (
+    <div className="px-4 py-2.5">
+      {streamThinking && (
+        <div className="mb-3 bg-surface-2/50 border border-border rounded-xl p-3 text-xs text-text-muted">
+          <span className="text-text-muted font-medium block mb-1">✦ Thinking</span>
+          <div className="whitespace-pre-wrap">{streamThinking}</div>
+        </div>
+      )}
+      <div ref={tailContainerRef} className="prose prose-invert prose-sm leading-relaxed max-w-none break-words min-h-[1em]" />
+      {!streamContent && !streamThinking && (
+        <div className="inline-flex gap-1 items-end h-5">
+          <span className="w-1.5 h-1.5 bg-text-muted rounded-full animate-pulse-dot" />
+          <span className="w-1.5 h-1.5 bg-text-muted rounded-full animate-pulse-dot" style={{ animationDelay: "0.2s" }} />
+          <span className="w-1.5 h-1.5 bg-text-muted rounded-full animate-pulse-dot" style={{ animationDelay: "0.4s" }} />
+        </div>
+      )}
+    </div>
   );
 }
 
