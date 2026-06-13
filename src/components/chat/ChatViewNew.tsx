@@ -984,7 +984,7 @@ function StreamingSection({ sessionId, stickToBottomRef, onBumpScroll }: Streami
   if (!streaming) return null;
 
   return (
-    <div className="px-4 py-2.5">
+    <div className="max-w-3xl mx-auto w-full px-4 py-2.5">
       {streamThinking && (
         <div className="mb-3 bg-surface-2/50 border border-border rounded-xl p-3 text-xs text-text-muted">
           <span className="text-text-muted font-medium block mb-1">✦ Thinking</span>
