@@ -56,7 +56,7 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
   const attachments = useAttachments(sessionId);
 
   const currentPreset = presets.find((p) => p.id === presetId) || null;
-  const chat = useChat(sessionId, currentPreset, modelId);
+  const chat = useChat(sessionId, currentPreset, modelId, presetId);
 
   // Stream renderer instance for the live tail
   const tailContainerRef = useRef<HTMLDivElement>(null);
