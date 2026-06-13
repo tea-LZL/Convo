@@ -39,9 +39,15 @@ export const useSessionsStore = create<SessionsState>((set, get) => ({
   refresh: async () => {
     set({ loading: true });
     try {
+      // Always fetch both active AND archived rows. The sidebar does
+      // the active/archived split client-side (filter on
+      // s.is_archived). Filtering at the DB layer broke the Archived
+      // tab: the row was archived in the DB, but the in-memory list
+      // never contained it, so the Archived tab was always empty and
+      // archiving a session made it look like it disappeared.
       const sessions = await invoke<Session[]>("list_sessions", {
         groupId: null,
-        includeArchived: false,
+        includeArchived: true,
       });
       set({ sessions, loading: false });
     } catch (e) {
