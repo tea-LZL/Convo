@@ -376,10 +376,20 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
         <Dropdown
           align="left"
           trigger={
-            <button className="flex items-center gap-1.5 px-2.5 py-1.5 bg-surface-2 hover:bg-surface-3 border border-border rounded-md text-sm transition-colors">
-              <span className="text-text-muted text-xs">Preset</span>
-              <span className="text-text">{currentPreset?.name ?? "None"}</span>
-              <ChevronDown size={12} className="text-text-subtle" />
+            <button
+              className="flex flex-col items-start gap-0.5 px-2.5 py-1.5 bg-surface-2 hover:bg-surface-3 border border-border rounded-md text-sm transition-colors max-w-[260px]"
+              title={currentPreset?.system_prompt || "No system prompt for this preset"}
+            >
+              <span className="flex items-center gap-1.5 w-full">
+                <span className="text-text-muted text-xs">Preset</span>
+                <span className="text-text truncate">{currentPreset?.name ?? "None"}</span>
+                <ChevronDown size={12} className="text-text-subtle ml-auto" />
+              </span>
+              {currentPreset?.system_prompt && (
+                <span className="text-[10px] text-text-subtle truncate w-full text-left">
+                  {currentPreset.system_prompt.slice(0, 60)}{currentPreset.system_prompt.length > 60 ? "…" : ""}
+                </span>
+              )}
             </button>
           }
         >
