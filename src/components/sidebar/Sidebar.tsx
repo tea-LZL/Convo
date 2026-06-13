@@ -110,11 +110,12 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
 
   const handleArchive = async (s: Session) => {
     setCtxMenu(null);
+    // No local visibility toggle needed: archive() in the store calls
+    // refresh(), which now fetches both active and archived rows.
+    // The sidebar's client-side filter re-derives the active/archived
+    // lists from the in-memory store, so the row will appear in the
+    // archived list and disappear from the active list on its own.
     await archiveSession(s.id, !s.is_archived);
-    if (showArchived && !s.is_archived) {
-      // The session just got archived, and we're looking at the archived
-      // list; hide it from view. The non-archived list updates on its own.
-    }
   };
 
   const handleDelete = async (s: Session) => {

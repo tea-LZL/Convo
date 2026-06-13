@@ -10,20 +10,24 @@
  *   preserved so styling matches the static message renderer) and
  *   appended to a single `frozenEl` container. Existing children are
  *   never re-rendered; we only ever append the next block.
- * - The live tail is a single `<div>` whose `textContent` is updated
- *   on every render. No React, no Markdown parsing, no remounting.
- *   It uses `white-space: pre-wrap` so the in-flight text appears
- *   character-for-character as the model emits it. When a code fence
- *   is open in the tail, the tail renders as a `<pre><code>` block.
+ * - The live tail is a single `<div>` whose inner HTML is updated
+ *   with the same inline-emphasis + backtick transforms that the
+ *   frozen-block path uses. This makes the tail visually identical
+ *   to the eventual frozen block at every frame, so the user never
+ *   sees raw `*` and backtick characters in flight. Escape-first
+ *   then transform — safe for innerHTML.
+ * - When a code fence is open in the tail, the tail renders as a
+ *   `<pre><code>` block (monospace, bordered). Fence-mode styles
+ *   are written once on mode transitions, not on every frame.
  * - DOM updates are coalesced with `requestAnimationFrame` so a burst
  *   of chunks only triggers one paint.
- *
- * The previous version mounted a `react-markdown` component on every
- * render and unmounted/remounted it on every chunk, which is what
- * caused the visible flicker.
+ * - The optional `onAfterRender` callback fires synchronously at the
+ *   end of the rAF, after the DOM has been updated, so the chat view
+ *   can read the new scrollHeight and set scrollTop in the same
+ *   frame. Eliminates the two-rAF race that caused scroll jitter.
  *
  * Usage:
- *   const r = createStreamRenderer(targetEl);
+ *   const r = createStreamRenderer(targetEl, { onAfterRender });
  *   r.start();
  *   r.append("Hello");  // call many times
  *   r.finalize();  // when done
@@ -40,15 +44,30 @@ export interface StreamRenderer {
   setSource(s: string): void;
 }
 
+export interface StreamRendererOpts {
+  /**
+   * Called synchronously at the end of each rAF, after the DOM has
+   * been updated. Use this to read scrollHeight and adjust scrollTop
+   * in the same frame as the text update — avoids the 1-frame scroll
+   * lag that happens when the render and the scroll are in two
+   * separate rAFs.
+   */
+  onAfterRender?: () => void;
+}
+
 const FENCE_RE = /^(```|~~~)/;
 
-export function createStreamRenderer(target: HTMLElement): StreamRenderer {
+export function createStreamRenderer(
+  target: HTMLElement,
+  opts: StreamRendererOpts = {},
+): StreamRenderer {
   let source = "";
   let started = false;
   let frozenEl: HTMLDivElement | null = null;
   let tailEl: HTMLDivElement | null = null;
   let lastRenderedTail = "";
   let lastFrozenCount = 0;
+  let lastFenceMode: boolean | null = null;
   let rafPending = false;
 
   function isOpenFence(s: string): boolean {
@@ -63,6 +82,21 @@ export function createStreamRenderer(target: HTMLElement): StreamRenderer {
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#39;");
+  }
+
+  /**
+   * Escape first, then apply inline transforms: **x** -> <strong>,
+   * *x* -> <em>, `x` -> <code>. Newlines become <br>. The
+   * paragraph and list-item branches of blockToHtml() use the
+   * exact same transforms — keep them in sync so the tail and
+   * the frozen block render identically at every frame.
+   */
+  function inlineToHtml(s: string): string {
+    return escapeHtml(s)
+      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+      .replace(/\*(.+?)\*/g, "<em>$1</em>")
+      .replace(/`([^`\n]+)`/g, "<code style=\"background:var(--color-surface-2);padding:1px 4px;border-radius:3px;font-family:var(--font-mono);font-size:0.9em;\">$1</code>")
+      .replace(/\n/g, "<br>");
   }
 
   /**
@@ -137,8 +171,10 @@ export function createStreamRenderer(target: HTMLElement): StreamRenderer {
     rafPending = false;
     if (!frozenEl || !tailEl) return;
     if (!source) {
-      tailEl.textContent = "";
+      tailEl.innerHTML = "";
       tailEl.removeAttribute("data-fence");
+      lastFenceMode = null;
+      opts.onAfterRender?.();
       return;
     }
     const blocks = segment(source);
@@ -159,36 +195,55 @@ export function createStreamRenderer(target: HTMLElement): StreamRenderer {
       lastFrozenCount = frozenBlocks.length;
     }
 
-    // Render the live tail as raw text with a CSS class for code-fence
-    // mode. Inline markdown is intentionally NOT applied here — the
-    // tail is intentionally plain so the user sees characters
-    // appearing in real time, character for character, without any
-    // re-parsing flicker.
+    // Render the live tail with the same inline-emphasis + backtick
+    // transforms that blockToHtml() uses on the paragraph branch.
+    // Tail and frozen block now render identically at every frame,
+    // so the user never sees raw `*` or backtick characters in
+    // flight, and there's no "pop" when a block freezes.
     const tailSource = tailBlocks.map((b) => b.source).join("\n\n");
     if (tailSource !== lastRenderedTail) {
       lastRenderedTail = tailSource;
-      if (isOpenFence(tailSource)) {
-        tailEl.setAttribute("data-fence", "open");
+      const fence = isOpenFence(tailSource);
+      if (fence) {
+        if (lastFenceMode !== true) {
+          tailEl.setAttribute("data-fence", "open");
+          tailEl.style.whiteSpace = "pre-wrap";
+          tailEl.style.fontFamily = "var(--font-mono)";
+          tailEl.style.fontSize = "0.875em";
+          tailEl.style.background = "var(--color-surface-1)";
+          tailEl.style.border = "1px solid var(--color-border)";
+          tailEl.style.borderRadius = "10px";
+          tailEl.style.padding = "12px 16px";
+          lastFenceMode = true;
+        }
+        // In fence mode, write raw text — no inline emphasis, no
+        // <br>. The user is inside a code block; markdown does
+        // not apply. Use textContent (safe — no HTML in code).
         tailEl.textContent = tailSource;
-        tailEl.style.whiteSpace = "pre-wrap";
-        tailEl.style.fontFamily = "var(--font-mono)";
-        tailEl.style.fontSize = "0.875em";
-        tailEl.style.background = "var(--color-surface-1)";
-        tailEl.style.border = "1px solid var(--color-border)";
-        tailEl.style.borderRadius = "10px";
-        tailEl.style.padding = "12px 16px";
       } else {
-        tailEl.removeAttribute("data-fence");
-        tailEl.textContent = tailSource;
-        tailEl.style.whiteSpace = "pre-wrap";
-        tailEl.style.fontFamily = "";
-        tailEl.style.fontSize = "";
-        tailEl.style.background = "transparent";
-        tailEl.style.border = "none";
-        tailEl.style.borderRadius = "";
-        tailEl.style.padding = "";
+        if (lastFenceMode !== false) {
+          tailEl.removeAttribute("data-fence");
+          tailEl.style.whiteSpace = "pre-wrap";
+          tailEl.style.fontFamily = "";
+          tailEl.style.fontSize = "";
+          tailEl.style.background = "transparent";
+          tailEl.style.border = "none";
+          tailEl.style.borderRadius = "";
+          tailEl.style.padding = "";
+          lastFenceMode = false;
+        }
+        // Normal prose mode: write as innerHTML with escape +
+        // inline emphasis + backticks. The exact same transform
+        // the frozen-block path uses.
+        tailEl.innerHTML = inlineToHtml(tailSource);
       }
     }
+
+    // Notify the chat view that the DOM is up-to-date. The chat
+    // view uses this to read scrollHeight and set scrollTop in
+    // the same frame as the text update, eliminating the
+    // two-rAF race that caused scroll jitter.
+    opts.onAfterRender?.();
   }
 
   function scheduleRender() {

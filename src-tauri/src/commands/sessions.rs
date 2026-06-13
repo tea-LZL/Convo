@@ -19,13 +19,13 @@ pub fn list_sessions(
     let conn = pool.get().map_err(|e| e.to_string())?;
     let q = if let Some(ref g) = group_id {
         format!(
-            "SELECT id, title, model_id, provider_id, preset_id, group_id, is_pinned, is_archived, created_at, updated_at
+            "SELECT id, title, model_id, provider_id, group_id, is_pinned, is_archived, created_at, updated_at
              FROM sessions WHERE group_id = ?1 {} ORDER BY is_pinned DESC, updated_at DESC",
             if include_archived.unwrap_or(false) { "" } else { "AND is_archived = 0" }
         )
     } else {
         format!(
-            "SELECT id, title, model_id, provider_id, preset_id, group_id, is_pinned, is_archived, created_at, updated_at
+            "SELECT id, title, model_id, provider_id, group_id, is_pinned, is_archived, created_at, updated_at
              FROM sessions WHERE 1=1 {} ORDER BY is_pinned DESC, updated_at DESC",
             if include_archived.unwrap_or(false) { "" } else { "AND is_archived = 0" }
         )
@@ -37,12 +37,11 @@ pub fn list_sessions(
             title: row.get(1)?,
             model_id: row.get(2)?,
             provider_id: row.get(3)?,
-            preset_id: row.get(4)?,
-            group_id: row.get(5)?,
-            is_pinned: row.get::<_, i64>(6)? != 0,
-            is_archived: row.get::<_, i64>(7)? != 0,
-            created_at: row.get(8)?,
-            updated_at: row.get(9)?,
+            group_id: row.get(4)?,
+            is_pinned: row.get::<_, i64>(5)? != 0,
+            is_archived: row.get::<_, i64>(6)? != 0,
+            created_at: row.get(7)?,
+            updated_at: row.get(8)?,
         })
     };
     let sessions: Vec<Session> = if let Some(g) = group_id {
@@ -65,7 +64,6 @@ pub fn create_session(
     title: Option<String>,
     model_id: Option<String>,
     provider_id: Option<String>,
-    preset_id: Option<String>,
     group_id: Option<String>,
 ) -> Result<Session, String> {
     let id = Uuid::new_v4().to_string();
@@ -73,16 +71,15 @@ pub fn create_session(
     let ts = now();
     let conn = pool.get().map_err(|e| e.to_string())?;
     conn.execute(
-        "INSERT INTO sessions (id, title, model_id, provider_id, preset_id, group_id, is_pinned, is_archived, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 0, ?7, ?7)",
-        params![id, title, model_id, provider_id, preset_id, group_id, ts],
+        "INSERT INTO sessions (id, title, model_id, provider_id, group_id, is_pinned, is_archived, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 0, 0, ?6, ?6)",
+        params![id, title, model_id, provider_id, group_id, ts],
     ).map_err(|e| e.to_string())?;
     Ok(Session {
         id,
         title,
         model_id,
         provider_id,
-        preset_id,
         group_id,
         is_pinned: false,
         is_archived: false,
@@ -112,12 +109,11 @@ pub fn update_session_model(
     id: String,
     model_id: String,
     provider_id: Option<String>,
-    preset_id: Option<String>,
 ) -> Result<(), String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
     conn.execute(
-        "UPDATE sessions SET model_id = ?1, provider_id = ?2, preset_id = ?3, updated_at = ?4 WHERE id = ?5",
-        params![model_id, provider_id, preset_id, now(), id],
+        "UPDATE sessions SET model_id = ?1, provider_id = ?2, updated_at = ?3 WHERE id = ?4",
+        params![model_id, provider_id, now(), id],
     )
     .map_err(|e| e.to_string())?;
     Ok(())

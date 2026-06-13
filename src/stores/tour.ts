@@ -24,11 +24,6 @@ export const TOUR_STEPS: TourStep[] = [
     body: "By default, Convo looks for Ollama on localhost. Add OpenAI-compatible endpoints (OpenRouter, vLLM, llama.cpp) in Settings → Providers.",
   },
   {
-    id: "presets",
-    title: "Pick a preset",
-    body: "Presets are saved system prompts + temperature settings. Use the dropdown in the input bar to pick one. Built-ins: Default, Concise, Code, Socratic, Pirate.",
-  },
-  {
     id: "palette",
     title: "Command palette",
     body: "⌘K (or Ctrl+K) opens the command palette. Type to search, ↑↓ to navigate, ↵ to run. It also indexes your sessions.",

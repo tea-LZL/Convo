@@ -1,4 +1,4 @@
-use crate::db::models::{Message, Preset};
+use crate::db::models::Message;
 use rusqlite::params;
 use std::sync::Arc;
 use tauri::State;
@@ -103,86 +103,6 @@ pub fn append_message(
     Ok(id)
 }
 
-#[tauri::command]
-pub fn list_presets(pool: State<'_, Arc<DbPool>>) -> Result<Vec<Preset>, String> {
-    let conn = pool.get().map_err(|e| e.to_string())?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, name, system_prompt, temperature, top_p, top_k, num_ctx, repeat_penalty, stop, is_builtin, created_at, updated_at
-             FROM presets ORDER BY is_builtin DESC, name",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([], |row| {
-            Ok(Preset {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                system_prompt: row.get(2)?,
-                temperature: row.get(3)?,
-                top_p: row.get(4)?,
-                top_k: row.get(5)?,
-                num_ctx: row.get(6)?,
-                repeat_penalty: row.get(7)?,
-                stop: row.get(8)?,
-                is_builtin: row.get::<_, i64>(9)? != 0,
-                created_at: row.get(10)?,
-                updated_at: row.get(11)?,
-            })
-        })
-        .map_err(|e| e.to_string())?;
-    rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn upsert_preset(pool: State<'_, Arc<DbPool>>, preset: PresetInput) -> Result<String, String> {
-    let is_update = preset.id.is_some();
-    let id = preset.id.unwrap_or_else(|| Uuid::new_v4().to_string());
-    let conn = pool.get().map_err(|e| e.to_string())?;
-    if is_update {
-        conn.execute(
-            "UPDATE presets SET name = ?1, system_prompt = ?2, temperature = ?3, top_p = ?4, top_k = ?5, num_ctx = ?6, repeat_penalty = ?7, stop = ?8, updated_at = ?9 WHERE id = ?10",
-            params![
-                preset.name,
-                preset.system_prompt,
-                preset.temperature,
-                preset.top_p,
-                preset.top_k,
-                preset.num_ctx,
-                preset.repeat_penalty,
-                preset.stop,
-                now(),
-                id,
-            ],
-        ).map_err(|e| e.to_string())?;
-    } else {
-        conn.execute(
-            "INSERT INTO presets (id, name, system_prompt, temperature, top_p, top_k, num_ctx, repeat_penalty, stop, is_builtin, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?10)",
-            params![
-                id,
-                preset.name,
-                preset.system_prompt,
-                preset.temperature,
-                preset.top_p,
-                preset.top_k,
-                preset.num_ctx,
-                preset.repeat_penalty,
-                preset.stop,
-                now(),
-            ],
-        ).map_err(|e| e.to_string())?;
-    }
-    Ok(id)
-}
-
-#[tauri::command]
-pub fn delete_preset(pool: State<'_, Arc<DbPool>>, id: String) -> Result<(), String> {
-    let conn = pool.get().map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM presets WHERE id = ?1 AND is_builtin = 0", params![id])
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageInput {
@@ -194,20 +114,6 @@ pub struct MessageInput {
     pub prompt_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
     pub created_at: Option<String>,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PresetInput {
-    pub id: Option<String>,
-    pub name: String,
-    pub system_prompt: Option<String>,
-    pub temperature: Option<f64>,
-    pub top_p: Option<f64>,
-    pub top_k: Option<i64>,
-    pub num_ctx: Option<i64>,
-    pub repeat_penalty: Option<f64>,
-    pub stop: Option<String>,
 }
 
 /// Generate a short chat title (3-5 words) from the first user message.

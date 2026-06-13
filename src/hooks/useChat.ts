@@ -8,9 +8,8 @@
  * background even when the user navigates to another session — when
  * they come back, the latest state is already there.
  */
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useRef } from "react";
 import { getSessionState, loadSessionMessages, sendMessage, stopStream, clearSessionMessages, SessionState, useChatStreamStore } from "../stores/chatStream";
-import { Preset } from "../lib/api";
 
 export interface UseChat {
   messages: SessionState["messages"];
@@ -20,16 +19,14 @@ export interface UseChat {
   totalTokens: number;
   error: string | null;
   loadingMessages: boolean;
-  send: (text: string, options?: { systemOverride?: string; presetOverride?: Preset | null }) => Promise<void>;
+  send: (text: string, options?: { systemOverride?: string }) => Promise<void>;
   stop: () => Promise<void>;
   reload: () => Promise<void>;
 }
 
 export function useChat(
   sessionId: string | null,
-  currentPreset: Preset | null,
-  modelName: string,
-  presetId: string | null
+  modelName: string
 ): UseChat {
   // Subscribe to the store version so we re-render on any change.
   // We also reach into the per-session slot for the current snapshot.
@@ -68,10 +65,8 @@ export function useChat(
     loadingMessages: snap.loadingMessages,
     send: async (text, options) => {
       if (!sessionId) return;
-      const preset = options?.presetOverride !== undefined ? options.presetOverride : currentPreset;
-      await sendMessage(sessionId, text, modelName, preset, {
+      await sendMessage(sessionId, text, modelName, {
         systemOverride: options?.systemOverride,
-        presetOverride: options?.presetOverride,
       });
     },
     stop: async () => {

@@ -226,34 +226,6 @@ pub fn ensure_default_ollama_provider(pool: &DbPool) -> Result<(), String> {
     Ok(())
 }
 
-pub fn ensure_builtin_presets(pool: &DbPool) -> Result<(), String> {
-    let conn = pool.get().map_err(|e| e.to_string())?;
-    let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM presets WHERE is_builtin = 1", [], |r| r.get(0))
-        .unwrap_or(0);
-    if count > 0 {
-        return Ok(());
-    }
-    let now = chrono::Utc::now().to_rfc3339();
-    let presets: Vec<(&str, Option<&str>, Option<f64>, Option<f64>, Option<i64>, Option<i64>, Option<f64>)> = vec![
-        ("Default", None, Some(0.7), Some(0.9), None, None, None),
-        ("Concise", Some("Be concise. Skip pleasantries and preamble. Answer directly. Prefer short sentences and bullet points. If a longer response is required, lead with the conclusion."), Some(0.5), Some(0.9), None, None, None),
-        ("Code", Some("You are an expert programmer. Prefer minimal, correct, idiomatic solutions. Explain non-obvious decisions briefly. Show code in fenced code blocks with the right language tag."), Some(0.2), Some(0.95), Some(40), None, None),
-        ("Socratic", Some("Never answer directly. Respond only with questions — sharp, layered, Socratic. Expose contradictions. Make the person argue with themselves until the truth falls out. Use irony like a scalpel. Be genuinely curious, never condescending."), Some(0.9), Some(0.95), None, None, None),
-        ("Pirate", Some("You are a salty pirate captain. Speak in rough nautical vernacular. Arrr, matey. Keep it fun and useful at the same time."), Some(0.9), Some(0.9), None, None, None),
-    ];
-    for (name, prompt, temp, top_p, top_k, _num_ctx, _rp) in presets {
-        let id = uuid::Uuid::new_v4().to_string();
-        conn.execute(
-            "INSERT INTO presets (id, name, system_prompt, temperature, top_p, top_k, is_builtin, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?7)",
-            rusqlite::params![id, name, prompt, temp, top_p, top_k, now],
-        )
-        .map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-
 pub fn ensure_builtin_themes() -> Result<(), String> {
     use crate::themes::builtin_themes;
     use std::sync::Arc;
