@@ -198,7 +198,18 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
     }
     if (!tailContainerRef.current) return;
     if (!tailRendererRef.current) {
-      const r = createStreamRenderer(tailContainerRef.current);
+      const r = createStreamRenderer(tailContainerRef.current, {
+        // Run the auto-scroll inside the renderer's rAF, after the
+        // DOM has been updated. Single rAF for both the text write
+        // and the scroll read — eliminates the 1-frame lag that
+        // was visible as scroll jitter on long replies.
+        onAfterRender: () => {
+          if (!stickToBottom.current) return;
+          const el = chatScrollRef.current;
+          if (!el) return;
+          el.scrollTop = el.scrollHeight;
+        },
+      });
       r.start();
       tailRendererRef.current = r;
     }
@@ -236,7 +247,14 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
     return () => el.removeEventListener("scroll", onScroll);
   }, []);
 
+  // While streaming, the renderer scrolls inside its own rAF
+  // (onAfterRender). This effect handles the case where the
+  // message list changes without a stream being active — a
+  // finished assistant message is appended, the user navigates
+  // back to the chat, etc. One rAF is enough: nothing else is
+  // racing to read scrollHeight in this code path.
   useEffect(() => {
+    if (chat.streaming) return;
     if (!stickToBottom.current) return;
     const el = chatScrollRef.current;
     if (!el) return;
@@ -244,7 +262,7 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
       el.scrollTop = el.scrollHeight;
     });
     return () => cancelAnimationFrame(raf);
-  }, [chat.messages.length, chat.streamContent, chat.streamThinking]);
+  }, [chat.messages.length, chat.streaming]);
 
   // Persist user message + attachments after send
   const onSend = async (text: string) => {
