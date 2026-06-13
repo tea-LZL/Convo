@@ -16,6 +16,7 @@ import { Dropdown } from "../ui/Dropdown";
 import { Spinner, Tooltip, Tabs, Switch } from "../ui/Form";
 import { IconButton } from "../ui/IconButton";
 import { createStreamRenderer, StreamRenderer } from "../../lib/streamingRenderer";
+import { renderMarkdown } from "../../lib/markdown";
 import { useAttachments, PendingAttachment } from "../../hooks/useAttachments";
 import { filterCommands, parseCommand, runCommand, SlashCommandContext } from "../../lib/slashCommands";
 import { useNavigate } from "react-router-dom";
@@ -945,49 +946,40 @@ function StreamingSection({ sessionId, stickToBottomRef, onBumpScroll }: Streami
     (s) => s.sessions[sessionId]?.streamThinking ?? ""
   );
 
-  const tailContainerRef = useRef<HTMLDivElement>(null);
-  const tailRendererRef = useRef<StreamRenderer | null>(null);
-  const lastStreamContent = useRef<string>("");
-  const lastStreamThinking = useRef<string>("");
+  // v0.6.7: odysseus-style stream renderer. The renderer is plain
+  // DOM, owned by this component via a ref. We never touch its
+  // children from React; we just call update(fullText) on each
+  // streamContent change. The renderer handles its own frozen/tail
+  // split, fence-mode append, and the token-new CSS fade.
+  const contentRef = useRef<HTMLDivElement>(null);
+  const rendererRef = useRef<StreamRenderer | null>(null);
+  const lastContentRef = useRef<string>("");
 
   useEffect(() => {
     if (!streaming) {
-      tailRendererRef.current?.destroy();
-      tailRendererRef.current = null;
-      lastStreamContent.current = "";
-      lastStreamThinking.current = "";
+      // Stream ended. Finalize the renderer so any uncommitted tail
+      // is frozen canonically; the section will then unmount on the
+      // next non-streaming render.
+      if (rendererRef.current) {
+        try { rendererRef.current.finalize(); } catch { /* degraded */ }
+        rendererRef.current = null;
+      }
+      lastContentRef.current = "";
       return;
     }
-    if (!tailContainerRef.current) return;
-    if (!tailRendererRef.current) {
-      const r = createStreamRenderer(tailContainerRef.current, {
-        // Run the auto-scroll inside the renderer's rAF, after the
-        // DOM has been updated. Single rAF for both the text write
-        // and the scroll read.
-        onAfterRender: () => {
-          if (!stickToBottomRef.current) return;
-          onBumpScroll();
-        },
+    if (!contentRef.current) return;
+    if (!rendererRef.current) {
+      rendererRef.current = createStreamRenderer(contentRef.current, {
+        render: renderMarkdown,
       });
-      r.start();
-      tailRendererRef.current = r;
     }
-    const r = tailRendererRef.current;
-    if (streamContent !== lastStreamContent.current) {
-      const delta = streamContent.slice(lastStreamContent.current.length);
-      lastStreamContent.current = streamContent;
-      r.append(delta);
+    if (streamContent !== lastContentRef.current) {
+      lastContentRef.current = streamContent;
+      rendererRef.current.update(streamContent);
+      // Auto-scroll in the same animation frame as the DOM update.
+      if (stickToBottomRef.current) onBumpScroll();
     }
-    lastStreamThinking.current = streamThinking;
-  }, [streaming, streamContent, streamThinking, stickToBottomRef, onBumpScroll]);
-
-  // Cleanup on unmount (e.g. session change).
-  useEffect(() => {
-    return () => {
-      tailRendererRef.current?.destroy();
-      tailRendererRef.current = null;
-    };
-  }, []);
+  }, [streaming, streamContent, stickToBottomRef, onBumpScroll]);
 
   if (!streaming) return null;
 
@@ -999,7 +991,10 @@ function StreamingSection({ sessionId, stickToBottomRef, onBumpScroll }: Streami
           <div className="whitespace-pre-wrap">{streamThinking}</div>
         </div>
       )}
-      <div ref={tailContainerRef} className="prose prose-invert prose-sm leading-relaxed max-w-none break-words min-h-[1em]" />
+      <div
+        ref={contentRef}
+        className="prose prose-invert prose-sm leading-relaxed max-w-none break-words min-h-[1em]"
+      />
       {!streamContent && !streamThinking && (
         <div className="inline-flex gap-1 items-end h-5">
           <span className="w-1.5 h-1.5 bg-text-muted rounded-full animate-pulse-dot" />
