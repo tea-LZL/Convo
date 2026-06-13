@@ -47,6 +47,11 @@ const stateBySession = new Map<string, SessionState>();
 const unlisteners: UnlistenFn[] = [];
 let listenersReady = false;
 
+/** Sessions we've already auto-titled (one-shot, never re-fire). */
+const autoTitled = new Set<string>();
+/** Titles that count as "default" — eligible for auto-rename. */
+const DEFAULT_TITLES = new Set(["", "New Chat", "Untitled"]);
+
 async function ensureListeners() {
   if (listenersReady) return;
   listenersReady = true;
@@ -113,6 +118,12 @@ async function ensureListeners() {
       api.saveMessages(cid, s.messages).catch((e) => {
         console.error("saveMessages (chat-done):", e);
       });
+
+      // One-shot auto-title: if the user hasn't renamed the session and
+      // we haven't already kicked off the LLM call for it, ask the LLM
+      // for a short title derived from the first user message.
+      maybeAutoTitle(cid, s.messages);
+
       playDoneSound(false);
       if (typeof document !== "undefined" && document.hidden) {
         try {
@@ -314,5 +325,37 @@ export async function stopStream(cid: string) {
     await api.cancelChat(cid);
   } catch (e) {
     console.error("cancelChat:", e);
+  }
+}
+
+async function maybeAutoTitle(cid: string, messages: ChatMessage[]) {
+  if (autoTitled.has(cid)) return;
+  const firstUser = messages.find((m) => m.role === "user");
+  if (!firstUser || !firstUser.content.trim()) return;
+  // Mark up-front so concurrent chat-dones don't double-fire.
+  autoTitled.add(cid);
+  try {
+    // Look up the current title; if user already renamed, skip.
+    const sessions = await api.listSessions();
+    const session = sessions.find((s) => s.id === cid);
+    if (!session) return;
+    if (!DEFAULT_TITLES.has(session.title.trim())) return;
+    const title = await api.generateSessionTitle(firstUser.content);
+    if (!title || !title.trim()) return;
+    if (title.length > 80) return; // sanity cap
+    await api.renameSession(cid, title);
+    // Tell the sessions store to refresh so the sidebar updates.
+    try {
+      // Lazy import to avoid a hard dep cycle at module load
+      const { useSessionsStore } = await import("./sessions");
+      useSessionsStore.getState().refresh();
+    } catch (e) {
+      console.error("refresh sessions after rename:", e);
+    }
+  } catch (e) {
+    // Don't keep the session in autoTitled if generation failed — let
+    // the next chat-done try again.
+    autoTitled.delete(cid);
+    console.error("auto-title:", e);
   }
 }
