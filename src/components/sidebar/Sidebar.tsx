@@ -80,7 +80,12 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
   const handleNewChat = async () => {
     const s = await create();
     setActive(s.id);
-    navigate("/chat");
+    // Navigate to the canonical URL directly. Going to /chat first
+    // would trigger the URL-sync effect in ChatRoute to redirect
+    // here anyway, but the extra hop leaves a brief moment where
+    // no session is selected and the EmptyChat view is rendered.
+    // A direct /chat/${id} navigation is a single route change.
+    navigate(`/chat/${s.id}`);
   };
 
   const openContextMenu = (e: React.MouseEvent, s: Session) => {
