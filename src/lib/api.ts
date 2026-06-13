@@ -514,6 +514,14 @@ export const api = {
     invoke<string>("upsert_slash_command", { cmd }),
   deleteSlashCommand: (id: string) => invoke<void>("delete_slash_command", { id }),
 
+  // Title generation
+  generateSessionTitle: (firstMessage: string, modelId?: string, providerId?: string) =>
+    invoke<string>("generate_session_title", {
+      firstMessage,
+      modelId: modelId ?? null,
+      providerId: providerId ?? null,
+    }),
+
   // Hardware + recommendations
   getHardware: () => invoke<HardwareReport>("get_hardware"),
   recommendModels: (hw: HardwareReport) => invoke<FitReport>("recommend_models", { hw }),

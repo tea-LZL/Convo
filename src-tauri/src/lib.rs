@@ -133,6 +133,7 @@ pub fn run() {
             chat_cmd::list_presets,
             chat_cmd::upsert_preset,
             chat_cmd::delete_preset,
+            chat_cmd::generate_session_title,
             // Providers
             services_mod::list_providers,
             services_mod::add_provider,
