@@ -391,18 +391,38 @@ function PresetEditor({
       toast.error("Name is required");
       return;
     }
+    // Soft warning: a preset with neither a system prompt, a custom
+    // stop, nor any sampling overrides will look "applied" in the UI
+    // but won't actually change the response. We don't block — some
+    // users want a named placeholder — but we tell them.
+    const sp = systemPrompt.trim();
+    const st = stop.trim();
+    const hasAny =
+      sp.length > 0 ||
+      st.length > 0 ||
+      Math.abs(temperature - 0.7) > 0.001 ||
+      Math.abs(topP - 0.9) > 0.001 ||
+      topK !== 40 ||
+      numCtx !== 4096 ||
+      Math.abs(repeatPenalty - 1.1) > 0.001;
+    if (!hasAny) {
+      const proceed = window.confirm(
+        "This preset has no system prompt and no sampling overrides — it won't change the model's behavior. Save anyway?"
+      );
+      if (!proceed) return;
+    }
     setBusy(true);
     try {
       await api.upsertPreset({
         id: creating ? undefined : preset?.id,
         name: name.trim(),
-        system_prompt: systemPrompt.trim() || null,
+        system_prompt: sp || null,
         temperature,
         top_p: topP,
         top_k: topK,
         num_ctx: numCtx,
         repeat_penalty: repeatPenalty,
-        stop: stop.trim() || null,
+        stop: st || null,
       } as any);
       toast.success(creating ? "Preset created" : "Preset saved");
       await onSaved();

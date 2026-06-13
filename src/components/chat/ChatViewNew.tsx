@@ -64,6 +64,8 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
   const frozenContainerRef = useRef<HTMLDivElement>(null);
   const lastStreamContent = useRef<string>("");
   const lastStreamThinking = useRef<string>("");
+  const chatScrollRef = useRef<HTMLDivElement>(null);
+  const stickToBottom = useRef(true);
   const contextMenuRef = useRef<HTMLDivElement>(null);
 
   // Close the right-click context menu on left-click outside of it, on
@@ -153,11 +155,27 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
     return () => { cancelled = true; };
   }, [providerId]);
 
-  // When modelId changes, persist on the session
+  // Persist the chosen preset to the DB. This runs whenever presetId
+  // changes — including BEFORE modelId or sessionLoaded are set. The
+  // ref guard ensures we only write when the value actually differs
+  // from the last write, so we don't burn a write on every render.
+  // Without this, a quick dropdown change made before the session
+  // row finishes loading would be lost when the user navigated away.
+  const lastPersistedPresetRef = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    if (!sessionLoaded) return;
+    if (lastPersistedPresetRef.current === presetId) return;
+    lastPersistedPresetRef.current = presetId;
+    api.updateSessionModel(sessionId, modelId || "", providerId, presetId).catch(console.error);
+  }, [presetId, sessionLoaded, sessionId, modelId, providerId]);
+
+  // When modelId or providerId changes, persist the full (model,
+  // provider, preset) tuple. Gated on having a real modelId to avoid
+  // an empty-string write while the model is still loading.
   useEffect(() => {
     if (!sessionLoaded || !modelId) return;
     api.updateSessionModel(sessionId, modelId, providerId, presetId).catch(console.error);
-  }, [modelId, providerId, presetId, sessionId, sessionLoaded]);
+  }, [modelId, providerId, sessionId, sessionLoaded]);
 
   // Resolve context length when model changes
   useEffect(() => {
@@ -202,8 +220,37 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
     };
   }, []);
 
+  // Auto-scroll the chat to the latest token while streaming, but
+  // only if the user hasn't scrolled up to read history. We track
+  // "stick to bottom" via a ref: set false when the user scrolls
+  // away from the bottom, true again when they scroll back, and
+  // forced to true when a new user message is sent.
+  useEffect(() => {
+    const el = chatScrollRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      stickToBottom.current = distFromBottom < 40;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+
+  useEffect(() => {
+    if (!stickToBottom.current) return;
+    const el = chatScrollRef.current;
+    if (!el) return;
+    const raf = requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight;
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [chat.messages.length, chat.streamContent, chat.streamThinking]);
+
   // Persist user message + attachments after send
   const onSend = async (text: string) => {
+    // User just sent a message: re-arm the auto-scroll sentinel so
+    // the upcoming stream follows the bottom.
+    stickToBottom.current = true;
     // Persist the user message with attachments_json
     const readyIds = attachments.attachments.filter((a) => a.serverId).map((a) => a.serverId!);
     const attJson = attachments.serializeForMessage(readyIds);
@@ -329,10 +376,20 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
         <Dropdown
           align="left"
           trigger={
-            <button className="flex items-center gap-1.5 px-2.5 py-1.5 bg-surface-2 hover:bg-surface-3 border border-border rounded-md text-sm transition-colors">
-              <span className="text-text-muted text-xs">Preset</span>
-              <span className="text-text">{currentPreset?.name ?? "None"}</span>
-              <ChevronDown size={12} className="text-text-subtle" />
+            <button
+              className="flex flex-col items-start gap-0.5 px-2.5 py-1.5 bg-surface-2 hover:bg-surface-3 border border-border rounded-md text-sm transition-colors max-w-[260px]"
+              title={currentPreset?.system_prompt || "No system prompt for this preset"}
+            >
+              <span className="flex items-center gap-1.5 w-full">
+                <span className="text-text-muted text-xs">Preset</span>
+                <span className="text-text truncate">{currentPreset?.name ?? "None"}</span>
+                <ChevronDown size={12} className="text-text-subtle ml-auto" />
+              </span>
+              {currentPreset?.system_prompt && (
+                <span className="text-[10px] text-text-subtle truncate w-full text-left">
+                  {currentPreset.system_prompt.slice(0, 60)}{currentPreset.system_prompt.length > 60 ? "…" : ""}
+                </span>
+              )}
             </button>
           }
         >
@@ -407,7 +464,7 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto" onContextMenu={(e) => {
+      <div ref={chatScrollRef} className="flex-1 overflow-y-auto" onContextMenu={(e) => {
         if (!(e.target as HTMLElement).closest("[data-ctx]")) {
           setContextMenu(null);
         }
