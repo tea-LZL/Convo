@@ -9,7 +9,6 @@ export interface Session {
   title: string;
   model_id: string | null;
   provider_id: string | null;
-  preset_id: string | null;
   group_id: string | null;
   is_pinned: boolean;
   is_archived: boolean;
@@ -22,7 +21,7 @@ interface SessionsState {
   activeId: string | null;
   loading: boolean;
   refresh: () => Promise<void>;
-  create: (opts?: { title?: string; providerId?: string; modelId?: string; presetId?: string }) => Promise<Session>;
+  create: (opts?: { title?: string; providerId?: string; modelId?: string }) => Promise<Session>;
   rename: (id: string, title: string) => Promise<void>;
   remove: (id: string) => Promise<void>;
   pin: (id: string, pinned: boolean) => Promise<void>;
@@ -61,7 +60,6 @@ export const useSessionsStore = create<SessionsState>((set, get) => ({
       title: opts?.title ?? "New Chat",
       modelId: opts?.modelId ?? null,
       providerId: opts?.providerId ?? null,
-      presetId: opts?.presetId ?? null,
       groupId: null,
     });
     await get().refresh();

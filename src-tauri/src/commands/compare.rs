@@ -377,8 +377,8 @@ pub fn save_compare_as_session(
         None => winner_model.clone(),
     };
     conn.execute(
-        "INSERT INTO sessions (id, title, model_id, provider_id, preset_id, group_id, is_pinned, is_archived, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, NULL, NULL, 0, 0, ?5, ?5)",
+        "INSERT INTO sessions (id, title, model_id, provider_id, group_id, is_pinned, is_archived, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, NULL, 0, 0, ?5, ?5)",
         rusqlite::params![session_id, title, model_id, winner_provider, now],
     ).map_err(|e| e.to_string())?;
     let user_msg_id = Uuid::new_v4().to_string();

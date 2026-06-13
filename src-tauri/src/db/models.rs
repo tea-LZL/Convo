@@ -40,7 +40,6 @@ pub struct Session {
     pub title: String,
     pub model_id: Option<String>,
     pub provider_id: Option<String>,
-    pub preset_id: Option<String>,
     pub group_id: Option<String>,
     pub is_pinned: bool,
     pub is_archived: bool,
@@ -59,22 +58,6 @@ pub struct Message {
     pub prompt_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
     pub created_at: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Preset {
-    pub id: String,
-    pub name: String,
-    pub system_prompt: Option<String>,
-    pub temperature: Option<f64>,
-    pub top_p: Option<f64>,
-    pub top_k: Option<i64>,
-    pub num_ctx: Option<i64>,
-    pub repeat_penalty: Option<f64>,
-    pub stop: Option<String>,
-    pub is_builtin: bool,
-    pub created_at: String,
-    pub updated_at: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

@@ -29,7 +29,6 @@ export interface SlashCommandResult {
 export interface SlashCommandContext {
   sessionId: string | null;
   setModelId?: (id: string) => void;
-  setPresetId?: (id: string | null) => void;
   setProviderId?: (id: string) => void;
   currentModel?: string;
   /** For /regenerate: resend the most recent user message. */
@@ -99,17 +98,6 @@ export const SLASH_COMMANDS: Array<{
       }
       if (ctx.setModelId) ctx.setModelId(name);
       else toast.warn("Model switch unavailable");
-      return { clear: true };
-    },
-  },
-  {
-    name: "preset",
-    description: "Switch the preset for this session",
-    args: "<name|none>",
-    run: async (args, ctx) => {
-      const v = args.trim();
-      if (ctx.setPresetId) ctx.setPresetId(v.toLowerCase() === "none" ? null : v);
-      else toast.warn("Preset switch unavailable");
       return { clear: true };
     },
   },

@@ -88,8 +88,8 @@ fn upsert_legacy_session(
 ) -> Result<(), String> {
     conn.execute(
         "INSERT OR IGNORE INTO sessions
-            (id, title, model_id, provider_id, preset_id, group_id, is_pinned, is_archived, created_at, updated_at)
-         VALUES (?1, ?2, NULL, NULL, NULL, NULL, 0, 0, ?3, ?4)",
+            (id, title, model_id, provider_id, group_id, is_pinned, is_archived, created_at, updated_at)
+         VALUES (?1, ?2, NULL, NULL, NULL, 0, 0, ?3, ?4)",
         params![c.id, c.title, c.created_at, c.updated_at],
     ).map_err(|e| e.to_string())?;
 
@@ -139,7 +139,7 @@ fn sessions_query(
     archived: bool,
 ) -> Result<Vec<Session>, String> {
     let mut q = String::from(
-        "SELECT id, title, model_id, provider_id, preset_id, group_id,
+        "SELECT id, title, model_id, provider_id, group_id,
                 is_pinned, is_archived, created_at, updated_at
          FROM sessions WHERE 1=1",
     );
@@ -160,12 +160,11 @@ fn sessions_query(
             title: row.get(1)?,
             model_id: row.get(2)?,
             provider_id: row.get(3)?,
-            preset_id: row.get(4)?,
-            group_id: row.get(5)?,
-            is_pinned: row.get::<_, i64>(6)? != 0,
-            is_archived: row.get::<_, i64>(7)? != 0,
-            created_at: row.get(8)?,
-            updated_at: row.get(9)?,
+            group_id: row.get(4)?,
+            is_pinned: row.get::<_, i64>(5)? != 0,
+            is_archived: row.get::<_, i64>(6)? != 0,
+            created_at: row.get(7)?,
+            updated_at: row.get(8)?,
         })
     };
 

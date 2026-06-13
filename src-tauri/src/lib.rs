@@ -43,9 +43,6 @@ pub fn run() {
     if let Err(e) = services_mod::ensure_default_ollama_provider(&pool) {
         eprintln!("WARN: default provider init: {}", e);
     }
-    if let Err(e) = services_mod::ensure_builtin_presets(&pool) {
-        eprintln!("WARN: builtin presets: {}", e);
-    }
 
     // Migrate legacy JSON on first run
     if db::legacy::legacy_exists() {
@@ -129,10 +126,6 @@ pub fn run() {
             chat_cmd::append_message,
             chat_stream_cmd::chat_stream_v2,
             chat_stream_cmd::cancel_chat_v2,
-            // Presets
-            chat_cmd::list_presets,
-            chat_cmd::upsert_preset,
-            chat_cmd::delete_preset,
             chat_cmd::generate_session_title,
             // Providers
             services_mod::list_providers,

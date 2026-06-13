@@ -3,13 +3,13 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useThemeStore } from "../stores/theme";
 import { useSettingsStore } from "../stores/settings";
 import { useShortcutsStore, comboDisplay } from "../stores/shortcuts";
-import { api, Provider, Preset, SearchConfig } from "../lib/api";
+import { api, Provider, SearchConfig } from "../lib/api";
 import { Button } from "../components/ui/Button";
 import { Modal } from "../components/ui/Modal";
-import { Switch, Tabs, TextInput, TextArea, Select, Badge, Slider } from "../components/ui/Form";
+import { Switch, Tabs, TextInput, TextArea, Select, Badge } from "../components/ui/Form";
 import { Dropdown } from "../components/ui/Dropdown";
 import { toast } from "../stores/toasts";
-import { Cpu, Palette, KeyRound, Search, Keyboard, Database, Info, Plus, Trash2, CheckCircle2, AlertCircle, X, Edit3, Copy, Save } from "lucide-react";
+import { Cpu, Palette, KeyRound, Search, Keyboard, Info, Plus, Trash2, CheckCircle2, AlertCircle, X, Save } from "lucide-react";
 
 export function SettingsRoute() {
   const location = useLocation();
@@ -28,7 +28,6 @@ export function SettingsRoute() {
           <SettingsLink to="/settings/general" icon={<Info size={14} />} label="General" active={section === "general"} />
           <SettingsLink to="/settings/providers" icon={<KeyRound size={14} />} label="Providers" active={section === "providers"} />
           <SettingsLink to="/settings/models" icon={<Cpu size={14} />} label="Models" active={section === "models"} />
-          <SettingsLink to="/settings/presets" icon={<Database size={14} />} label="Presets" active={section === "presets"} />
           <SettingsLink to="/settings/search" icon={<Search size={14} />} label="Web search" active={section === "search"} />
           <SettingsLink to="/settings/theme" icon={<Palette size={14} />} label="Theme" active={section === "theme"} />
           <SettingsLink to="/settings/shortcuts" icon={<Keyboard size={14} />} label="Shortcuts" active={section === "shortcuts"} />
@@ -39,7 +38,6 @@ export function SettingsRoute() {
           {section === "general" && <GeneralSection />}
           {section === "providers" && <ProvidersSection />}
           {section === "models" && <ModelsSection />}
-          {section === "presets" && <PresetsSection />}
           {section === "search" && <SearchSection />}
           {section === "theme" && <ThemeSection />}
           {section === "shortcuts" && <ShortcutsSection />}
@@ -278,235 +276,6 @@ function ModelsSection() {
         </p>
       </Card>
     </div>
-  );
-}
-
-function PresetsSection() {
-  const [presets, setPresets] = useState<Preset[]>([]);
-  const [editing, setEditing] = useState<Preset | null>(null);
-  const [creating, setCreating] = useState(false);
-  const refresh = async () => setPresets(await api.listPresets());
-  useEffect(() => { refresh(); }, []);
-  const remove = async (id: string) => {
-    if (!confirm("Delete this preset?")) return;
-    await api.deletePreset(id);
-    await refresh();
-  };
-  const duplicate = (p: Preset) => {
-    setCreating(true);
-    setEditing({
-      ...p,
-      id: undefined as any,
-      name: `${p.name} (copy)`,
-      is_builtin: false,
-    });
-  };
-  return (
-    <div>
-      <SectionTitle
-        title="Presets"
-        description="System prompt + sampling settings. Built-ins: Default, Concise, Code, Socratic, Pirate."
-        action={<Button size="sm" variant="primary" icon={<Plus size={12} />} onClick={() => { setCreating(true); setEditing(null); }}>New preset</Button>}
-      />
-      <Card>
-        {presets.length === 0 ? (
-          <div className="text-center text-text-muted text-sm py-6">No presets yet. Click "New preset" to create one.</div>
-        ) : (
-          presets.map((p) => (
-            <div key={p.id} className="py-3 border-b border-border last:border-b-0">
-              <div className="flex items-center justify-between">
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium text-text">{p.name}</span>
-                    {p.is_builtin && <Badge variant="default">built-in</Badge>}
-                  </div>
-                  {p.system_prompt && <p className="text-xs text-text-muted mt-1 max-w-prose">{p.system_prompt.slice(0, 120)}{p.system_prompt.length > 120 ? "…" : ""}</p>}
-                  <div className="text-[10px] text-text-subtle mt-1 flex gap-3 tabular-nums flex-wrap">
-                    {p.temperature !== null && <span>temp: {p.temperature}</span>}
-                    {p.top_p !== null && <span>top_p: {p.top_p}</span>}
-                    {p.top_k !== null && <span>top_k: {p.top_k}</span>}
-                    {p.num_ctx !== null && <span>ctx: {p.num_ctx}</span>}
-                    {p.repeat_penalty !== null && <span>repeat: {p.repeat_penalty}</span>}
-                  </div>
-                </div>
-                <div className="flex items-center gap-1">
-                  <Button size="xs" variant="ghost" icon={<Edit3 size={12} />} onClick={() => { setCreating(false); setEditing(p); }}>Edit</Button>
-                  {p.is_builtin && (
-                    <Button size="xs" variant="ghost" icon={<Copy size={12} />} onClick={() => duplicate(p)}>Duplicate</Button>
-                  )}
-                  {!p.is_builtin && (
-                    <Button size="xs" variant="ghost" onClick={() => remove(p.id)} icon={<Trash2 size={12} />} />
-                  )}
-                </div>
-              </div>
-            </div>
-          ))
-        )}
-      </Card>
-      <PresetEditor
-        open={creating || !!editing}
-        creating={creating}
-        preset={editing}
-        onClose={() => { setCreating(false); setEditing(null); }}
-        onSaved={async () => { setCreating(false); setEditing(null); await refresh(); }}
-      />
-    </div>
-  );
-}
-
-function PresetEditor({
-  open, creating, preset, onClose, onSaved,
-}: {
-  open: boolean;
-  creating: boolean;
-  preset: Preset | null;
-  onClose: () => void;
-  onSaved: () => Promise<void> | void;
-}) {
-  const [name, setName] = useState(preset?.name ?? "");
-  const [systemPrompt, setSystemPrompt] = useState(preset?.system_prompt ?? "");
-  const [temperature, setTemperature] = useState<number>(preset?.temperature ?? 0.7);
-  const [topP, setTopP] = useState<number>(preset?.top_p ?? 0.9);
-  const [topK, setTopK] = useState<number>(preset?.top_k ?? 40);
-  const [numCtx, setNumCtx] = useState<number>(preset?.num_ctx ?? 4096);
-  const [repeatPenalty, setRepeatPenalty] = useState<number>(preset?.repeat_penalty ?? 1.1);
-  const [stop, setStop] = useState<string>(preset?.stop ?? "");
-  const [busy, setBusy] = useState(false);
-
-  // Re-seed when the modal opens with a different preset
-  useEffect(() => {
-    if (!open) return;
-    setName(preset?.name ?? "");
-    setSystemPrompt(preset?.system_prompt ?? "");
-    setTemperature(preset?.temperature ?? 0.7);
-    setTopP(preset?.top_p ?? 0.9);
-    setTopK(preset?.top_k ?? 40);
-    setNumCtx(preset?.num_ctx ?? 4096);
-    setRepeatPenalty(preset?.repeat_penalty ?? 1.1);
-    setStop(preset?.stop ?? "");
-  }, [open, preset?.id]);
-
-  const save = async () => {
-    if (!name.trim()) {
-      toast.error("Name is required");
-      return;
-    }
-    // Soft warning: a preset with neither a system prompt, a custom
-    // stop, nor any sampling overrides will look "applied" in the UI
-    // but won't actually change the response. We don't block — some
-    // users want a named placeholder — but we tell them.
-    const sp = systemPrompt.trim();
-    const st = stop.trim();
-    const hasAny =
-      sp.length > 0 ||
-      st.length > 0 ||
-      Math.abs(temperature - 0.7) > 0.001 ||
-      Math.abs(topP - 0.9) > 0.001 ||
-      topK !== 40 ||
-      numCtx !== 4096 ||
-      Math.abs(repeatPenalty - 1.1) > 0.001;
-    if (!hasAny) {
-      const proceed = window.confirm(
-        "This preset has no system prompt and no sampling overrides — it won't change the model's behavior. Save anyway?"
-      );
-      if (!proceed) return;
-    }
-    setBusy(true);
-    try {
-      await api.upsertPreset({
-        id: creating ? undefined : preset?.id,
-        name: name.trim(),
-        system_prompt: sp || null,
-        temperature,
-        top_p: topP,
-        top_k: topK,
-        num_ctx: numCtx,
-        repeat_penalty: repeatPenalty,
-        stop: st || null,
-      } as any);
-      toast.success(creating ? "Preset created" : "Preset saved");
-      await onSaved();
-    } catch (e) {
-      toast.error(String(e));
-    }
-    setBusy(false);
-  };
-
-  return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title={creating ? "New preset" : (preset?.is_builtin ? "Edit built-in preset" : "Edit preset")}
-      description={preset?.is_builtin && !creating ? "Edits this row in place. Use 'Duplicate' if you want a separate copy." : undefined}
-      size="lg"
-      footer={
-        <>
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button variant="primary" onClick={save} loading={busy} icon={<Save size={12} />}>
-            {creating ? "Create" : "Save"}
-          </Button>
-        </>
-      }
-    >
-      <div className="space-y-3">
-        <div>
-          <label className="text-xs text-text-muted block mb-1">Name</label>
-          <TextInput value={name} onChange={setName} placeholder="e.g. Concise, Code reviewer, Pirate…" />
-        </div>
-        <div>
-          <label className="text-xs text-text-muted block mb-1">System prompt</label>
-          <TextArea
-            value={systemPrompt}
-            onChange={setSystemPrompt}
-            placeholder="You are a helpful assistant…"
-            rows={5}
-          />
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="text-xs text-text-muted block mb-1">
-              Temperature
-            </label>
-            <Slider value={temperature} onChange={setTemperature} min={0} max={2} step={0.05} formatValue={(v) => v.toFixed(2)} />
-          </div>
-          <div>
-            <label className="text-xs text-text-muted block mb-1">
-              Top P
-            </label>
-            <Slider value={topP} onChange={setTopP} min={0} max={1} step={0.05} formatValue={(v) => v.toFixed(2)} />
-          </div>
-          <div>
-            <label className="text-xs text-text-muted block mb-1">
-              Top K
-            </label>
-            <Slider value={topK} onChange={setTopK} min={0} max={200} step={1} />
-          </div>
-          <div>
-            <label className="text-xs text-text-muted block mb-1">
-              Num ctx
-            </label>
-            <Slider value={numCtx} onChange={setNumCtx} min={512} max={131072} step={512} formatValue={(v) => v.toLocaleString()} />
-          </div>
-          <div>
-            <label className="text-xs text-text-muted block mb-1">
-              Repeat penalty
-            </label>
-            <Slider value={repeatPenalty} onChange={setRepeatPenalty} min={0.5} max={2} step={0.05} formatValue={(v) => v.toFixed(2)} />
-          </div>
-        </div>
-        <div>
-          <label className="text-xs text-text-muted block mb-1">
-            Stop sequences <span className="text-text-subtle">(one per line, optional)</span>
-          </label>
-          <TextArea
-            value={stop}
-            onChange={setStop}
-            rows={2}
-            placeholder="\nUser:"
-          />
-        </div>
-      </div>
-    </Modal>
   );
 }
 

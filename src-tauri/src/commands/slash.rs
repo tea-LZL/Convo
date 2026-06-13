@@ -16,7 +16,6 @@ pub struct SlashCommand {
     pub name: String,
     pub description: Option<String>,
     pub body: String,
-    pub preset_id: Option<String>,
     pub created_at: String,
 }
 
@@ -24,7 +23,7 @@ pub struct SlashCommand {
 pub fn list_slash_commands(pool: State<'_, Arc<DbPool>>) -> Result<Vec<SlashCommand>, String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
     let mut stmt = conn
-        .prepare("SELECT id, name, description, body, preset_id, created_at FROM slash_commands ORDER BY name")
+        .prepare("SELECT id, name, description, body, created_at FROM slash_commands ORDER BY name")
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| {
@@ -33,8 +32,7 @@ pub fn list_slash_commands(pool: State<'_, Arc<DbPool>>) -> Result<Vec<SlashComm
                 name: row.get(1)?,
                 description: row.get(2)?,
                 body: row.get(3)?,
-                preset_id: row.get(4)?,
-                created_at: row.get(5)?,
+                created_at: row.get(4)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -51,14 +49,14 @@ pub fn upsert_slash_command(
     let conn = pool.get().map_err(|e| e.to_string())?;
     if is_update {
         conn.execute(
-            "UPDATE slash_commands SET name = ?1, description = ?2, body = ?3, preset_id = ?4 WHERE id = ?5",
-            params![cmd.name, cmd.description, cmd.body, cmd.preset_id, id],
+            "UPDATE slash_commands SET name = ?1, description = ?2, body = ?3 WHERE id = ?4",
+            params![cmd.name, cmd.description, cmd.body, id],
         )
         .map_err(|e| e.to_string())?;
     } else {
         conn.execute(
-            "INSERT INTO slash_commands (id, name, description, body, preset_id, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![id, cmd.name, cmd.description, cmd.body, cmd.preset_id, now()],
+            "INSERT INTO slash_commands (id, name, description, body, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, cmd.name, cmd.description, cmd.body, now()],
         )
         .map_err(|e| e.to_string())?;
     }
@@ -80,5 +78,4 @@ pub struct SlashCommandInput {
     pub name: String,
     pub description: Option<String>,
     pub body: String,
-    pub preset_id: Option<String>,
 }

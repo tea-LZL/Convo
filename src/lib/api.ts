@@ -64,21 +64,6 @@ export interface ChatMessage {
   created_at: string;
 }
 
-export interface Preset {
-  id: string;
-  name: string;
-  system_prompt: string | null;
-  temperature: number | null;
-  top_p: number | null;
-  top_k: number | null;
-  num_ctx: number | null;
-  repeat_penalty: number | null;
-  stop: string | null;
-  is_builtin: boolean;
-  created_at: string;
-  updated_at: string;
-}
-
 export interface Model {
   id: string;
   provider_id: string;
@@ -109,7 +94,6 @@ export interface Session {
   title: string;
   model_id: string | null;
   provider_id: string | null;
-  preset_id: string | null;
   group_id: string | null;
   is_pinned: boolean;
   is_archived: boolean;
@@ -338,19 +322,17 @@ export const api = {
     title?: string;
     modelId?: string | null;
     providerId?: string | null;
-    presetId?: string | null;
     groupId?: string | null;
   }) =>
     invoke<Session>("create_session", {
       title: opts.title ?? "New Chat",
       modelId: opts.modelId ?? null,
       providerId: opts.providerId ?? null,
-      presetId: opts.presetId ?? null,
       groupId: opts.groupId ?? null,
     }),
   renameSession: (id: string, title: string) => invoke<void>("rename_session", { id, title }),
-  updateSessionModel: (id: string, modelId: string, providerId?: string | null, presetId?: string | null) =>
-    invoke<void>("update_session_model", { id, modelId, providerId: providerId ?? null, presetId: presetId ?? null }),
+  updateSessionModel: (id: string, modelId: string, providerId?: string | null) =>
+    invoke<void>("update_session_model", { id, modelId, providerId: providerId ?? null }),
   deleteSession: (id: string) => invoke<void>("delete_session", { id }),
   setSessionPinned: (id: string, pinned: boolean) =>
     invoke<void>("set_session_pinned", { id, pinned }),
@@ -383,12 +365,6 @@ export const api = {
     stop?: string[];
   }) => invoke<void>("chat_stream_v2", { args }),
   cancelChat: (sessionId: string) => invoke<void>("cancel_chat_v2", { sessionId }),
-
-  // Presets
-  listPresets: () => invoke<Preset[]>("list_presets"),
-  upsertPreset: (preset: Partial<Preset> & { name: string }) =>
-    invoke<string>("upsert_preset", { preset }),
-  deletePreset: (id: string) => invoke<void>("delete_preset", { id }),
 
   // Providers
   listProviders: () => invoke<Provider[]>("list_providers"),
@@ -509,8 +485,8 @@ export const api = {
   getCompareRun: (id: string) => invoke<CompareRunSummary>("get_compare_run", { id }),
 
   // Slash commands
-  listSlashCommands: () => invoke<Array<{ id: string; name: string; description: string | null; body: string; preset_id: string | null; created_at: string }>>("list_slash_commands"),
-  upsertSlashCommand: (cmd: { id?: string; name: string; description?: string; body: string; preset_id?: string }) =>
+  listSlashCommands: () => invoke<Array<{ id: string; name: string; description: string | null; body: string; created_at: string }>>("list_slash_commands"),
+  upsertSlashCommand: (cmd: { id?: string; name: string; description?: string; body: string }) =>
     invoke<string>("upsert_slash_command", { cmd }),
   deleteSlashCommand: (id: string) => invoke<void>("delete_slash_command", { id }),
 

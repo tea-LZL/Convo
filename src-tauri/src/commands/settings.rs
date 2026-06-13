@@ -124,7 +124,7 @@ pub async fn get_diagnostics(pool: State<'_, Arc<DbPool>>) -> Result<Diagnostics
 
         let table_names = vec![
             "providers", "models", "sessions", "session_groups", "messages",
-            "message_branches", "presets", "attachments", "documents", "notes",
+            "message_branches", "attachments", "documents", "notes",
             "tasks", "memory_items", "search_config", "settings", "themes",
             "compare_runs", "slash_commands", "session_overrides",
         ];

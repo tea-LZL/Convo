@@ -1,7 +1,7 @@
 /**
  * New ChatView — uses the multi-provider chat system, new types, new design.
  * Phase 3: streaming segmenter, slash commands, attachments, per-session
- * model/preset persistence, message editing.
+ * model persistence, message editing.
  */
 import { useEffect, useRef, useState } from "react";
 import { Send, Square, ChevronUp, Plus, Paperclip, X, ChevronDown, Search, ArrowUp, Sparkles, RefreshCw, Edit2, Check, MoreHorizontal, Trash2 } from "lucide-react";
@@ -9,7 +9,7 @@ import Markdown from "react-markdown";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import remarkGfm from "remark-gfm";
-import { api, ChatMessage, Preset, Provider, Model } from "../../lib/api";
+import { api, ChatMessage, Provider, Model } from "../../lib/api";
 import { useChat } from "../../hooks/useChat";
 import { Button } from "../ui/Button";
 import { Dropdown } from "../ui/Dropdown";
@@ -36,11 +36,9 @@ function formatTimestamp(iso: string | null | undefined): string {
 
 export function ChatViewNew({ sessionId }: { sessionId: string }) {
   const [providers, setProviders] = useState<Provider[]>([]);
-  const [presets, setPresets] = useState<Preset[]>([]);
   const [models, setModels] = useState<Model[]>([]);
   const [providerId, setProviderId] = useState<string>("");
   const [modelId, setModelId] = useState<string>("");
-  const [presetId, setPresetId] = useState<string | null>(null);
   const [contextLength, setContextLength] = useState(8192);
   const [collapsedThinking, setCollapsedThinking] = useState<Set<number>>(new Set());
   const [showSlashMenu, setShowSlashMenu] = useState(false);
@@ -55,8 +53,7 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
   const navigate = useNavigate();
   const attachments = useAttachments(sessionId);
 
-  const currentPreset = presets.find((p) => p.id === presetId) || null;
-  const chat = useChat(sessionId, currentPreset, modelId, presetId);
+  const chat = useChat(sessionId, modelId);
 
   // Stream renderer instance for the live tail
   const tailContainerRef = useRef<HTMLDivElement>(null);
@@ -98,17 +95,16 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
     };
   }, [contextMenu]);
 
-  // Load providers, presets, models
+  // Load providers, models
   useEffect(() => {
     api.listProviders().then((ps) => {
       setProviders(ps);
       const def = ps.find((p) => p.is_default) || ps[0];
       if (def) setProviderId(def.id);
     }).catch(console.error);
-    api.listPresets().then(setPresets).catch(console.error);
   }, []);
 
-  // Load session (model + preset)
+  // Load session (model)
   useEffect(() => {
     if (sessionLoaded) return;
     api.listSessions().then((slist) => {
@@ -125,7 +121,6 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
           }
         }
         if (s.provider_id) setProviderId(s.provider_id);
-        if (s.preset_id) setPresetId(s.preset_id);
       }
       setSessionLoaded(true);
     }).catch(console.error);
@@ -155,26 +150,12 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
     return () => { cancelled = true; };
   }, [providerId]);
 
-  // Persist the chosen preset to the DB. This runs whenever presetId
-  // changes — including BEFORE modelId or sessionLoaded are set. The
-  // ref guard ensures we only write when the value actually differs
-  // from the last write, so we don't burn a write on every render.
-  // Without this, a quick dropdown change made before the session
-  // row finishes loading would be lost when the user navigated away.
-  const lastPersistedPresetRef = useRef<string | null | undefined>(undefined);
-  useEffect(() => {
-    if (!sessionLoaded) return;
-    if (lastPersistedPresetRef.current === presetId) return;
-    lastPersistedPresetRef.current = presetId;
-    api.updateSessionModel(sessionId, modelId || "", providerId, presetId).catch(console.error);
-  }, [presetId, sessionLoaded, sessionId, modelId, providerId]);
-
-  // When modelId or providerId changes, persist the full (model,
-  // provider, preset) tuple. Gated on having a real modelId to avoid
-  // an empty-string write while the model is still loading.
+  // When modelId or providerId changes, persist to the DB. Gated on
+  // sessionLoaded AND a real modelId to avoid an empty-string write
+  // while the model is still loading.
   useEffect(() => {
     if (!sessionLoaded || !modelId) return;
-    api.updateSessionModel(sessionId, modelId, providerId, presetId).catch(console.error);
+    api.updateSessionModel(sessionId, modelId, providerId).catch(console.error);
   }, [modelId, providerId, sessionId, sessionLoaded]);
 
   // Resolve context length when model changes
@@ -314,7 +295,6 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
   const slashCtx: SlashCommandContext = {
     sessionId,
     setModelId: (id) => setModelId(id),
-    setPresetId: (id) => setPresetId(id),
     setProviderId: (id) => setProviderId(id),
     currentModel: modelId,
     resendLast: async () => {
@@ -387,47 +367,6 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
               >
                 <RefreshCw size={11} /> Refresh models
               </button>
-            </div>
-          )}
-        </Dropdown>
-
-        <Dropdown
-          align="left"
-          trigger={
-            <button
-              className="flex flex-col items-start gap-0.5 px-2.5 py-1.5 bg-surface-2 hover:bg-surface-3 border border-border rounded-md text-sm transition-colors max-w-[260px]"
-              title={currentPreset?.system_prompt || "No system prompt for this preset"}
-            >
-              <span className="flex items-center gap-1.5 w-full">
-                <span className="text-text-muted text-xs">Preset</span>
-                <span className="text-text truncate">{currentPreset?.name ?? "None"}</span>
-                <ChevronDown size={12} className="text-text-subtle ml-auto" />
-              </span>
-              {currentPreset?.system_prompt && (
-                <span className="text-[10px] text-text-subtle truncate w-full text-left">
-                  {currentPreset.system_prompt.slice(0, 60)}{currentPreset.system_prompt.length > 60 ? "…" : ""}
-                </span>
-              )}
-            </button>
-          }
-        >
-          {() => (
-            <div className="py-1 max-h-72 overflow-y-auto">
-              <button
-                onClick={() => setPresetId(null)}
-                className={`w-full text-left px-3 py-1.5 text-xs hover:bg-surface-2 ${!presetId ? "bg-accent/10 text-accent" : "text-text"}`}
-              >
-                None
-              </button>
-              {presets.map((p) => (
-                <button
-                  key={p.id}
-                  onClick={() => setPresetId(p.id)}
-                  className={`w-full text-left px-3 py-1.5 text-xs hover:bg-surface-2 ${p.id === presetId ? "bg-accent/10 text-accent" : "text-text"}`}
-                >
-                  {p.name}
-                </button>
-              ))}
             </div>
           )}
         </Dropdown>

@@ -19,7 +19,7 @@
  */
 import { create } from "zustand";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
-import { api, ChatMessage, Preset } from "../lib/api";
+import { api, ChatMessage } from "../lib/api";
 import { useMemoryStore } from "./memory";
 import { playDoneSound, playSendSound } from "../utils/sounds";
 import { sendNotification } from "@tauri-apps/plugin-notification";
@@ -258,14 +258,12 @@ export async function clearSessionMessages(cid: string) {
 
 export interface SendOpts {
   systemOverride?: string;
-  presetOverride?: Preset | null;
 }
 
 export async function sendMessage(
   cid: string,
   text: string,
   model: string,
-  preset: Preset | null,
   opts: SendOpts = {}
 ): Promise<void> {
   await ensureListeners();
@@ -290,10 +288,8 @@ export async function sendMessage(
   bump(cid);
   playSendSound(false);
 
-  const presetToUse = opts.presetOverride !== undefined ? opts.presetOverride : preset;
   const memoryBlock = useMemoryStore.getState().buildContextBlock();
-  const presetSystem = opts.systemOverride ?? presetToUse?.system_prompt;
-  const fullSystem = [presetSystem, memoryBlock].filter(Boolean).join("\n\n") || undefined;
+  const fullSystem = [opts.systemOverride, memoryBlock].filter(Boolean).join("\n\n") || undefined;
   const cleanMessages = s.messages.map((m) => ({
     role: m.role,
     content: m.content,
@@ -306,11 +302,6 @@ export async function sendMessage(
       model,
       messages: cleanMessages,
       system: fullSystem,
-      temperature: presetToUse?.temperature ?? undefined,
-      topP: presetToUse?.top_p ?? undefined,
-      topK: presetToUse?.top_k ?? undefined,
-      numCtx: presetToUse?.num_ctx ?? undefined,
-      repeatPenalty: presetToUse?.repeat_penalty ?? undefined,
     });
   } catch (e) {
     s.streaming = false;
