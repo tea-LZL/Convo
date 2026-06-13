@@ -64,6 +64,8 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
   const frozenContainerRef = useRef<HTMLDivElement>(null);
   const lastStreamContent = useRef<string>("");
   const lastStreamThinking = useRef<string>("");
+  const chatScrollRef = useRef<HTMLDivElement>(null);
+  const stickToBottom = useRef(true);
   const contextMenuRef = useRef<HTMLDivElement>(null);
 
   // Close the right-click context menu on left-click outside of it, on
@@ -202,8 +204,37 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
     };
   }, []);
 
+  // Auto-scroll the chat to the latest token while streaming, but
+  // only if the user hasn't scrolled up to read history. We track
+  // "stick to bottom" via a ref: set false when the user scrolls
+  // away from the bottom, true again when they scroll back, and
+  // forced to true when a new user message is sent.
+  useEffect(() => {
+    const el = chatScrollRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      stickToBottom.current = distFromBottom < 40;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+
+  useEffect(() => {
+    if (!stickToBottom.current) return;
+    const el = chatScrollRef.current;
+    if (!el) return;
+    const raf = requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight;
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [chat.messages.length, chat.streamContent, chat.streamThinking]);
+
   // Persist user message + attachments after send
   const onSend = async (text: string) => {
+    // User just sent a message: re-arm the auto-scroll sentinel so
+    // the upcoming stream follows the bottom.
+    stickToBottom.current = true;
     // Persist the user message with attachments_json
     const readyIds = attachments.attachments.filter((a) => a.serverId).map((a) => a.serverId!);
     const attJson = attachments.serializeForMessage(readyIds);
@@ -407,7 +438,7 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto" onContextMenu={(e) => {
+      <div ref={chatScrollRef} className="flex-1 overflow-y-auto" onContextMenu={(e) => {
         if (!(e.target as HTMLElement).closest("[data-ctx]")) {
           setContextMenu(null);
         }
