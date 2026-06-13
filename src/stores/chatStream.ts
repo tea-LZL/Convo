@@ -52,6 +52,54 @@ const autoTitled = new Set<string>();
 /** Titles that count as "default" — eligible for auto-rename. */
 const DEFAULT_TITLES = new Set(["", "New Chat", "Untitled"]);
 
+/**
+ * Frame-batched stream updates.
+ *
+ * The Tauri `chat-chunk` listener receives one event per token chunk
+ * the model emits. With LLM bursts of 4-8 chunks in a 16ms frame,
+ * a naive "mutate state + bump" per event drives 4-8 React re-renders
+ * per frame — the browser coalesces paints but the React tree still
+ * re-runs.
+ *
+ * The pattern (borrowed from opencode's global-sdk.tsx frame flusher):
+ * the chunk listener writes the latest server-provided full text into
+ * a per-session pending map and schedules a single rAF drain. The
+ * drain mutates `streamContent` and bumps once per frame, regardless
+ * of how many chunks arrived. The terminal events (`chat-done`,
+ * `chat-error`, `chat-cancelled`) drain the pending entry for the
+ * affected session synchronously before reading `streamContent`, so
+ * the final message saved to the DB is not stale by one frame.
+ */
+const pendingFullContent = new Map<string, string>();
+let flushRafScheduled = false;
+
+function scheduleFlush() {
+  if (flushRafScheduled) return;
+  flushRafScheduled = true;
+  requestAnimationFrame(() => {
+    flushRafScheduled = false;
+    for (const [cid, text] of pendingFullContent) {
+      pendingFullContent.delete(cid);
+      const s = getOrCreate(cid);
+      if (s.streamContent !== text) {
+        s.streamContent = text;
+        bump(cid);
+      }
+    }
+  });
+}
+
+function drainPendingFor(cid: string) {
+  const pending = pendingFullContent.get(cid);
+  if (pending === undefined) return;
+  pendingFullContent.delete(cid);
+  const s = getOrCreate(cid);
+  s.streamContent = pending;
+  // No bump here — the caller is about to bump for its own state
+  // change (s.messages append, s.streaming=false, s.error=...). The
+  // pending flush is folded into that re-render.
+}
+
 async function ensureListeners() {
   if (listenersReady) return;
   listenersReady = true;
@@ -70,15 +118,21 @@ async function ensureListeners() {
     )
   );
 
-  // chat-chunk
+  // chat-chunk — frame-batched. The Rust side already sends
+  // full_content on every chunk (it holds the in-memory text);
+  // we just take the latest one per session per frame.
   unlisteners.push(
     await listen<{ conversation_id: string; content: string; full_content: string }>(
       "chat-chunk",
       (e) => {
         const cid = e.payload.conversation_id;
-        const s = getOrCreate(cid);
-        s.streamContent = e.payload.full_content;
-        bump(cid);
+        if (!pendingFullContent.has(cid)) {
+          // First chunk for this session: ensure streaming is on.
+          const s = getOrCreate(cid);
+          if (!s.streaming) s.streaming = true;
+        }
+        pendingFullContent.set(cid, e.payload.full_content);
+        scheduleFlush();
       }
     )
   );
@@ -92,6 +146,10 @@ async function ensureListeners() {
       completed_at: string;
     }>("chat-done", (e) => {
       const cid = e.payload.conversation_id;
+      // Drain any pending chunk for this session. The terminal
+      // event may arrive between two rAF drains; we need the
+      // latest server text in the saved message.
+      drainPendingFor(cid);
       const s = getOrCreate(cid);
       const thinking = (s.streamThinking || "").trim() || null;
       s.streaming = false;
@@ -140,6 +198,7 @@ async function ensureListeners() {
       "chat-error",
       (e) => {
         const cid = e.payload.conversation_id;
+        drainPendingFor(cid);
         const s = getOrCreate(cid);
         s.streaming = false;
         s.error = e.payload.error;
@@ -157,6 +216,7 @@ async function ensureListeners() {
   unlisteners.push(
     await listen<string>("chat-cancelled", (e) => {
       const cid = e.payload;
+      drainPendingFor(cid);
       const s = getOrCreate(cid);
       s.streaming = false;
       const thinking = (s.streamThinking || "").trim() || null;
