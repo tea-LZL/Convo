@@ -64,6 +64,35 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
   const frozenContainerRef = useRef<HTMLDivElement>(null);
   const lastStreamContent = useRef<string>("");
   const lastStreamThinking = useRef<string>("");
+  const contextMenuRef = useRef<HTMLDivElement>(null);
+
+  // Close the right-click context menu on any left- or right-click
+  // outside of it, on Esc, and on scroll. The menu is opened via
+  // onContextMenu (right-click) so we listen for both mousedown (for
+  // // a left-click dismissal) and contextmenu (so right-clicking outside
+  // it closes it before the new one opens).
+  useEffect(() => {
+    if (!contextMenu) return;
+    const onPointer = (e: MouseEvent) => {
+      if (contextMenuRef.current && !contextMenuRef.current.contains(e.target as Node)) {
+        setContextMenu(null);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setContextMenu(null);
+    };
+    const onScroll = () => setContextMenu(null);
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("contextmenu", onPointer);
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("scroll", onScroll, true);
+    return () => {
+      document.removeEventListener("mousedown", onPointer);
+      document.removeEventListener("contextmenu", onPointer);
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("scroll", onScroll, true);
+    };
+  }, [contextMenu]);
 
   // Load providers, presets, models
   useEffect(() => {
@@ -572,6 +601,7 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
       {/* Context menu */}
       {contextMenu && (
         <div
+          ref={contextMenuRef}
           className="fixed z-[100] min-w-[180px] glass border border-border rounded-lg shadow-modal py-1 animate-scale-in"
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onClick={() => setContextMenu(null)}
