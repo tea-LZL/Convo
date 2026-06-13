@@ -1,41 +1,36 @@
 /**
  * Streaming markdown renderer.
  *
- * Architecture (v0.6.4 — opencode ideology applied to a Tauri/React
- * stack):
+ * Architecture (v0.6.5):
  *
  * The source is split by the segmenter into "frozen" blocks (rendered
  * once and never touched) and a "live tail" (re-rendered each pace
- * tick). The key addition in this revision is **paced reveal**: the
- * store/stream holds the full text immediately, but the *visible*
- * text advances 2-24 characters at a time at word boundaries via a
- * 24ms setTimeout. This is opencode's createPacedValue pattern
- * (packages/ui/src/components/message-part.tsx:180-233) ported to
- * a plain-DOM renderer.
+ * tick). The visible text advances 2-24 characters at a time at
+ * word boundaries via a 24ms setTimeout (opencode's createPacedValue
+ * pattern, packages/ui/src/components/message-part.tsx:180-233).
  *
- * Why it matters: the previous renderer re-parsed the inline-emphasis
- * pipeline on every chunk and re-wrote the tail's innerHTML on every
- * frame. When a new chunk crossed an emphasis-pair boundary
- * (`*hello*` -> `<em>hello</em>`), the entire tail element was
- * rebuilt. The user saw a brief blink at the asterisk.
+ * v0.6.5 fixes the lag introduced in v0.6.4 by replacing the per-tick
+ * full-rebuild path with an append-only path. The tail's children
+ * are a mix of text nodes and formatted elements; the LAST child is
+ * always a trailing text node. New chars from the pace tick are
+ * appended to that text node (string concat on .data — cheapest
+ * possible DOM write), then the trailing text node is scanned for
+ * ONE complete emphasis pair, which is split and wrapped in
+ * <strong>/<em>/<code>. The recursion is bounded by the number of
+ * pairs in the appended chars.
  *
- * With paced reveal:
- *  - The visible text only advances 2-24 chars at word boundaries,
- *    so the *hello* pair is fully formed by the time the visible
- *    prefix includes it.
- *  - Inline emphasis is applied to the visible prefix only (not the
- *    full target), and only when a complete pair is in the visible
- *    range. A partial `*hello` is plain text. A complete `*hello*`
- *    becomes `<em>hello</em>`. The transition is atomic — no
- *    asterisk blink.
- *  - Auto-scroll fires from the pace tick, in the same rAF set as
- *    the visible text update, so the scroll read happens after the
- *    new height is in the DOM.
+ * Per-tick work is O(delta.length) + O(pairs in delta), not
+ * O(visible.length). For a 1000-char reply at 40 ticks/sec, this
+ * drops the per-second work from ~40,000 chars of textContent +
+ * ~1,200 DOM mutations to ~1,000 chars + ~10 mutations.
+ *
+ * `applyInlineEmToTail` (the legacy full-rebuild path) is still
+ * present and used at fence-mode transitions and in `finalize()`
+ * (one-shot end-of-stream render) — both rare events.
  *
  * Frozen blocks: rendered once via blockToHtml() and appended to a
  * single frozenEl container. Existing children are never re-rendered;
- * we only ever append the next block. Code-fence styles write once
- * per fence transition, not per frame.
+ * we only ever append the next block.
  *
  * Usage:
  *   const r = createStreamRenderer(targetEl, { onAfterRender });
@@ -44,7 +39,7 @@
  *   r.finalize();  // when done — fast-forwards visible text
  *   r.destroy();
  */
-import { segment } from "./streamingSegmenter";
+import { segment, SegmenterBlock } from "./streamingSegmenter";
 
 export interface StreamRenderer {
   start(): void;
@@ -118,6 +113,16 @@ export function createStreamRenderer(
   let shown = 0;
   let paceTimer: number | null = null;
   let lastRenderedVisible = "";
+
+  // Incremental-formatting state. The tail's children are a mix of
+  // text nodes and formatted elements (strong/em/code). The LAST
+  // child is always a text node that holds the unformatted tail —
+  // any chars that have been revealed but not yet wrapped in a
+  // formatted element. New chars are appended to that text node;
+  // when a complete emphasis pair is in the text node, it is split
+  // and replaced with a formatted element. This keeps the work per
+  // pace tick proportional to delta-length, not visible-length.
+  let trailingTextNode: Text | null = null;
 
   function escapeHtml(s: string): string {
     return s
@@ -298,6 +303,96 @@ export function createStreamRenderer(
     }
   }
 
+  /**
+   * Append-only path for the pace tick. v0.6.4 had a per-tick full
+   * rebuild of the tail (el.textContent = visible, then walk and
+   * wrap all emphasis pairs). For a 1000-char reply at 40 ticks/sec
+   * that was ~40,000 chars of textContent work plus ~1,200 DOM
+   * mutations per second — the source of the lag users reported.
+   *
+   * This function instead:
+   *   1. Appends `newChars` to a single trailing text node
+   *      (string concat, O(1) for the data, O(1) for the DOM).
+   *   2. Looks for ONE complete emphasis pair in the trailing
+   *      text node. If found, splits the text node and wraps the
+   *      matched range in <strong>/<em>/<code>. The post-match
+   *      tail stays as a new trailing text node.
+   *   3. Recurses once if the new trailing text node contains
+   *      another complete pair (e.g. "*x* and *y*" — after
+   *      wrapping the first, the second is now fully visible).
+   *
+   * The recursion is bounded by the number of complete pairs in
+   * the appended chars, which is small (typical: 0-2 per tick).
+   * Total work per tick: O(delta.length) + O(pairs in delta).
+   */
+  const INLINE_PAIR_RE = /\*\*(.+?)\*\*|\*(.+?)\*|`([^`\n]+)`/;
+
+  function appendVisible(el: HTMLElement, newChars: string) {
+    if (newChars.length === 0) return;
+    if (!trailingTextNode || trailingTextNode.parentNode !== el) {
+      // No valid trailing text node — create one.
+      trailingTextNode = document.createTextNode(newChars);
+      el.appendChild(trailingTextNode);
+    } else {
+      // Append to the existing trailing text node. String concat
+      // on a Text node's data is the cheapest possible update —
+      // no innerHTML parse, no subtree rebuild.
+      trailingTextNode.data += newChars;
+    }
+    formatOnePairInTrailing(el);
+  }
+
+  function formatOnePairInTrailing(el: HTMLElement) {
+    if (!trailingTextNode) return;
+    const data = trailingTextNode.data;
+    const m = INLINE_PAIR_RE.exec(data);
+    if (!m) return;
+
+    const start = m.index;
+    const end = start + m[0].length;
+    const before = data.slice(0, start);
+    const after = data.slice(end);
+    const inner = m[1] ?? m[2] ?? m[3] ?? "";
+    const tag = m[1] !== undefined ? "strong" : m[2] !== undefined ? "em" : "code";
+
+    const parent = trailingTextNode.parentNode;
+    if (!parent) return;
+    const beforeNode = before ? document.createTextNode(before) : null;
+    const formatted = document.createElement(tag);
+    if (tag === "code") {
+      formatted.setAttribute(
+        "style",
+        "background:var(--color-surface-2);padding:1px 4px;border-radius:3px;font-family:var(--font-mono);font-size:0.9em;"
+      );
+    }
+    formatted.textContent = inner; // textContent — no innerHTML parse
+    const afterNode = after ? document.createTextNode(after) : null;
+
+    const ref = trailingTextNode;
+    if (beforeNode) parent.insertBefore(beforeNode, ref);
+    parent.insertBefore(formatted, ref);
+    if (afterNode) parent.insertBefore(afterNode, ref);
+    parent.removeChild(ref);
+
+    trailingTextNode = afterNode;
+    // Recurse: another complete pair might now be in the trailing
+    // text node (e.g. "*x* and *y*"). Bounded by pair count.
+    if (trailingTextNode && trailingTextNode.data.length > 0) {
+      formatOnePairInTrailing(el);
+    }
+  }
+
+  /**
+   * Reset the tail's DOM and formatting state. Used on `!source`,
+   * on `setSource()`, on `start()`, and on fence-mode transition
+   * out (to re-apply formatting to a tail that was rendered as
+   * raw text under fence mode).
+   */
+  function resetTail(el: HTMLElement) {
+    el.replaceChildren();
+    trailingTextNode = null;
+  }
+
   function isLiveFence(): boolean {
     if (!tailEl) return false;
     if (lastFenceMode === true) return true;
@@ -340,16 +435,61 @@ export function createStreamRenderer(
     if (!tailEl) return;
     const visible = tailText.slice(0, shown);
     if (visible === lastRenderedVisible) return;
-    lastRenderedVisible = visible;
+
     const fence = isOpenFence(tailText);
-    if (fence !== lastFenceMode) setFenceMode(fence);
-    if (fence) {
-      // In fence mode, write raw text. No inline emphasis, no
-      // <br>. Markdown doesn't apply inside a code block.
-      tailEl.textContent = visible;
-    } else {
-      applyInlineEmToTail(tailEl, visible);
+    if (fence !== lastFenceMode) {
+      setFenceMode(fence);
+      // Fence-mode transition. Rare event (only on code-block
+      // boundaries) — one-shot O(visible) work is acceptable here.
+      // Reset the tail's DOM and re-apply the appropriate mode.
+      resetTail(tailEl);
+      if (fence) {
+        // Entering fence mode: plain text, no inline emphasis.
+        tailEl.textContent = visible;
+        trailingTextNode = tailEl.firstChild as Text | null;
+      } else {
+        // Leaving fence mode: re-apply inline emphasis to the
+        // full visible prefix. We use the legacy full-rebuild
+        // path here because the previous state was raw text
+        // (no formatting), and incrementally re-formatting would
+        // require scanning the whole visible for pairs. The
+        // blockToHtml-style approach is one O(visible) pass;
+        // acceptable at the rare transition point.
+        applyInlineEmToTail(tailEl, visible);
+        // The applyInlineEmToTail path leaves the tail as a mix
+        // of text nodes and formatted elements. The trailing
+        // text node is the last child if it's a text node, else
+        // null (meaning the next append will create a new text
+        // node appended after the last formatted element).
+        const last = tailEl.lastChild;
+        trailingTextNode = last && last.nodeType === Node.TEXT_NODE ? (last as Text) : null;
+      }
+      lastRenderedVisible = visible;
+      opts.onAfterRender?.();
+      return;
     }
+
+    if (fence) {
+      // In fence mode. Update the trailing text node in place.
+      // This is the cheapest possible DOM write — no subtree
+      // rebuild, no parsing. The visible is the entire tail.
+      if (trailingTextNode && trailingTextNode.parentNode === tailEl) {
+        trailingTextNode.data = visible;
+      } else {
+        tailEl.textContent = visible;
+        trailingTextNode = tailEl.firstChild as Text | null;
+      }
+      lastRenderedVisible = visible;
+      opts.onAfterRender?.();
+      return;
+    }
+
+    // Prose mode: incremental formatting. The new chars are
+    // visible - lastRendered. Per-tick work is O(delta.length)
+    // plus O(pairs in delta), not O(visible.length).
+    const newChars = visible.slice(lastRenderedVisible.length);
+    appendVisible(tailEl, newChars);
+    lastRenderedVisible = visible;
     opts.onAfterRender?.();
   }
 
@@ -367,13 +507,16 @@ export function createStreamRenderer(
     }, PACE_MS);
   }
 
-  function recomputeTarget() {
+  function recomputeTarget(blocks: SegmenterBlock[] | null = null) {
     if (!source) {
       tailText = "";
       return;
     }
-    const blocks = segment(source);
-    const tailBlocks = blocks.slice(blocks.filter((b) => b.frozen).length);
+    if (!blocks) {
+      blocks = segment(source);
+    }
+    const frozenCount = blocks.filter((b) => b.frozen).length;
+    const tailBlocks = blocks.slice(frozenCount);
     tailText = tailBlocks.map((b) => b.source).join("\n\n");
   }
 
@@ -384,11 +527,14 @@ export function createStreamRenderer(
       tailText = "";
       shown = 0;
       lastRenderedVisible = "";
-      tailEl.textContent = "";
+      resetTail(tailEl);
       if (lastFenceMode !== null) setFenceMode(false);
       opts.onAfterRender?.();
       return;
     }
+    // Segment once. Used both for the frozen-block check and
+    // for recomputing the tail text (previously called segment
+    // twice per rAF — the duplicate was small but unnecessary).
     const blocks = segment(source);
     const frozenBlocks = blocks.filter((b) => b.frozen);
 
@@ -408,10 +554,11 @@ export function createStreamRenderer(
     // shrank (rare; would only happen on a setSource reset that
     // was already handled), reset shown.
     const prevLen = tailText.length;
-    recomputeTarget();
+    recomputeTarget(blocks);
     if (tailText.length < prevLen) {
       shown = 0;
       lastRenderedVisible = "";
+      resetTail(tailEl);
     }
 
     // If a frozen block was just appended, the layout changed.
@@ -446,6 +593,7 @@ export function createStreamRenderer(
       lastFenceMode = null;
       tailText = "";
       shown = 0;
+      trailingTextNode = null;
     },
     append(delta: string) {
       source += delta;
@@ -453,8 +601,11 @@ export function createStreamRenderer(
     },
     finalize() {
       // Fast-forward: skip the pacing and show everything
-      // immediately. Still runs in the next rAF to batch with
-      // any pending append().
+      // immediately. The full tail is rendered in one shot via
+      // applyInlineEmToTail (the legacy full-rebuild path) so the
+      // user sees the final formatted state without waiting for
+      // the pace loop to advance 2-24 chars per tick. This is a
+      // one-time cost at the end of the stream.
       scheduleRender();
       if (paceTimer !== null) {
         clearTimeout(paceTimer);
@@ -473,9 +624,28 @@ export function createStreamRenderer(
         if (frozenEl) frozenEl.appendChild(frag);
         lastFrozenCount = frozenBlocks.length;
       }
-      recomputeTarget();
+      recomputeTarget(blocks);
       shown = tailText.length;
-      renderVisible();
+      // Full render of the final visible. The fence mode in
+      // renderVisible handles both prose and fence cases; for
+      // prose, it will use the full-rebuild path on the first
+      // tick after the fence-mode-transition check (which won't
+      // trigger here since lastFenceMode already matches).
+      if (tailEl) {
+        resetTail(tailEl);
+        const fence = isOpenFence(tailText);
+        if (lastFenceMode !== fence) setFenceMode(fence);
+        if (fence) {
+          tailEl.textContent = tailText;
+          trailingTextNode = tailEl.firstChild as Text | null;
+        } else {
+          applyInlineEmToTail(tailEl, tailText);
+          const last = tailEl.lastChild;
+          trailingTextNode = last && last.nodeType === Node.TEXT_NODE ? (last as Text) : null;
+        }
+        lastRenderedVisible = tailText;
+        opts.onAfterRender?.();
+      }
     },
     destroy() {
       if (paceTimer !== null) {
@@ -485,6 +655,7 @@ export function createStreamRenderer(
       try {
         tailEl = null;
         frozenEl = null;
+        trailingTextNode = null;
         target.innerHTML = "";
       } catch { /* ignore */ }
     },
@@ -495,7 +666,10 @@ export function createStreamRenderer(
       source = s;
       lastFrozenCount = 0;
       lastRenderedVisible = "";
-      if (frozenEl) frozenEl.innerHTML = "";
+      if (frozenEl) {
+        frozenEl.innerHTML = "";
+        if (tailEl) resetTail(tailEl);
+      }
       recomputeTarget();
       shown = 0;
       if (lastFenceMode !== null) setFenceMode(isOpenFence(tailText));
