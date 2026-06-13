@@ -66,14 +66,18 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
   const lastStreamThinking = useRef<string>("");
   const contextMenuRef = useRef<HTMLDivElement>(null);
 
-  // Close the right-click context menu on any left- or right-click
-  // outside of it, on Esc, and on scroll. The menu is opened via
-  // onContextMenu (right-click) so we listen for both mousedown (for
-  // // a left-click dismissal) and contextmenu (so right-clicking outside
-  // it closes it before the new one opens).
+  // Close the right-click context menu on left-click outside of it, on
+  // Esc, and on scroll. We deliberately do NOT listen for contextmenu
+  // here: a right-click that opens the menu fires its own onContextMenu
+  // handler, and a document-level contextmenu listener would race with
+  // it (the new menu's ref is unset when the listener first fires, so
+  // the listener sees the click as "outside" and clears the menu before
+  // the new one can render). Right-clicking on empty chat area leaves
+  // the menu open until the user left-clicks, presses Esc, or scrolls.
   useEffect(() => {
     if (!contextMenu) return;
-    const onPointer = (e: MouseEvent) => {
+    const onLeftClick = (e: MouseEvent) => {
+      if (e.button !== 0) return; // left-click only
       if (contextMenuRef.current && !contextMenuRef.current.contains(e.target as Node)) {
         setContextMenu(null);
       }
@@ -82,13 +86,11 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
       if (e.key === "Escape") setContextMenu(null);
     };
     const onScroll = () => setContextMenu(null);
-    document.addEventListener("mousedown", onPointer);
-    document.addEventListener("contextmenu", onPointer);
+    document.addEventListener("mousedown", onLeftClick);
     document.addEventListener("keydown", onKey);
     document.addEventListener("scroll", onScroll, true);
     return () => {
-      document.removeEventListener("mousedown", onPointer);
-      document.removeEventListener("contextmenu", onPointer);
+      document.removeEventListener("mousedown", onLeftClick);
       document.removeEventListener("keydown", onKey);
       document.removeEventListener("scroll", onScroll, true);
     };
