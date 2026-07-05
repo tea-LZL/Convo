@@ -15,6 +15,7 @@ import { EmptyState } from "../components/ui/EmptyState";
 import { Modal } from "../components/ui/Modal";
 import { TextArea, TextInput } from "../components/ui/Form";
 import { diffLines, diffStats } from "../lib/diff";
+import { escapeThinkTags } from "../components/chat/MessageRow";
 import { toast } from "../stores/toasts";
 
 interface Tab {
@@ -281,6 +282,15 @@ export function DocumentsRoute() {
     return () => document.removeEventListener("keydown", onKey);
   }, [activeId, save]);
 
+  // Debounced autosave --- save to DB 2s after last edit
+  useEffect(() => {
+    if (!active || !active.dirty || active.diskPath) return;
+    const timer = setTimeout(() => {
+      save(active.id);
+    }, 2000);
+    return () => clearTimeout(timer);
+  }, [active?.content, active?.dirty, active?.diskPath, active?.id, save]);
+
   if (tabs.length === 0) {
     return (
       <div className="flex-1 flex h-full">
@@ -383,6 +393,10 @@ export function DocumentsRoute() {
             {active.dirty && <span className="text-[10px] text-warn">● unsaved</span>}
             <span className="text-[10px] text-text-subtle tabular-nums">
               {active.content.length} chars · {active.content.split(/\s+/).filter(Boolean).length} words
+            </span>
+            <span className="hidden sm:flex items-center gap-1.5 text-[10px] text-text-subtle">
+              <kbd className="bg-surface-2 border border-border rounded px-1 py-0.5 text-[9px]">Ctrl+S</kbd> save
+              <kbd className="bg-surface-2 border border-border rounded px-1 py-0.5 text-[9px] ml-1">Ctrl+P</kbd> preview
             </span>
             <Button
               size="xs"
@@ -513,7 +527,7 @@ export function DocumentsRoute() {
   );
 }
 
-function DiffPreview({ original, proposed }: { original: string; proposed: string }) {
+export function DiffPreview({ original, proposed }: { original: string; proposed: string }) {
   const ops = diffLines(original, proposed);
   const stats = diffStats(ops);
   return (
@@ -531,7 +545,7 @@ function DiffPreview({ original, proposed }: { original: string; proposed: strin
             return (
               <div key={i}>
                 {lines.map((line, j) => {
-                  if (line === "" && j === lines.length - 1) return null;
+                  if (line === "" && j === lines.length - 1 && op.kind === "equal") return null;
                   const prefix = op.kind === "add" ? "+" : op.kind === "remove" ? "−" : " ";
                   const cls =
                     op.kind === "add"
@@ -587,7 +601,7 @@ function MarkdownPreview({ content }: { content: string }) {
         },
       }}
     >
-      {content}
+      {escapeThinkTags(content)}
     </Markdown>
   );
 }

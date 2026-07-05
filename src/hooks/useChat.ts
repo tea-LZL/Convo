@@ -20,7 +20,7 @@ export interface UseChat {
   totalTokens: number;
   error: string | null;
   loadingMessages: boolean;
-  send: (text: string, options?: { systemOverride?: string }) => Promise<void>;
+  send: (text: string, options?: { systemOverride?: string; attachmentsJson?: string | null }) => Promise<void>;
   stop: () => Promise<void>;
   reload: () => Promise<void>;
 }
@@ -80,10 +80,11 @@ export function useChat(
   );
 
   const send = useCallback(
-    async (text: string, options?: { systemOverride?: string }) => {
+    async (text: string, options?: { systemOverride?: string; attachmentsJson?: string | null }) => {
       if (!sessionId) return;
       await sendMessage(sessionId, text, modelName, {
         systemOverride: options?.systemOverride,
+        attachmentsJson: options?.attachmentsJson,
       });
     },
     [sessionId, modelName]

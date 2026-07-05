@@ -166,17 +166,39 @@ pub async fn ai_edit_document(
         }
     }
     // Strip any leading/trailing code fences the model may have added.
-    let trimmed = out.trim();
-    if let Some(rest) = trimmed.strip_prefix("```") {
-        // skip first line (language tag)
-        if let Some(idx) = rest.find('\n') {
-            let body = &rest[idx + 1..];
-            if let Some(b) = body.strip_suffix("```") {
-                return Ok(b.trim_end_matches('\n').to_string());
-            }
+    // Models sometimes wrap their response in a fenced block even when
+    // instructed not to.  Handle both ``` and ~~~ fences, with optional
+    // language tags, and trailing whitespace.
+    fn unwrap_fence(raw: &str) -> &str {
+        let text = raw.trim();
+        // Find the first newline: everything before it is the opening fence
+        // line (may include a language tag).
+        let Some(nl) = text.find('\n') else { return text; };
+        let open_line = &text[..nl];
+        if !(open_line.starts_with("```") || open_line.starts_with("~~~")) {
+            return text;
+        }
+        // Strip the trailing fence.  Walk back from end to allow optional
+        // trailing whitespace/newlines.
+        let trimmed = text[nl + 1..].trim();
+        let closing_fence = if open_line.starts_with("```") { "```" } else { "~~~" };
+        let stripped = trimmed
+            .strip_suffix(closing_fence)
+            .or_else(|| trimmed.strip_suffix(&format!("{}\n", closing_fence)))
+            .or_else(|| {
+                // Model may have left trailing newline + fence
+                if trimmed.ends_with(closing_fence) {
+                    Some(&trimmed[..trimmed.len() - closing_fence.len()])
+                } else {
+                    None
+                }
+            });
+        match stripped {
+            Some(body) if !body.trim().is_empty() => body.trim(),
+            _ => text, // fence wasn't cleanly stripped — return original (trimmed)
         }
     }
-    Ok(out)
+    Ok(unwrap_fence(&out).to_string())
 }
 
 #[derive(serde::Deserialize)]

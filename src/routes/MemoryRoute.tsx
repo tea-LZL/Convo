@@ -42,6 +42,8 @@ export function MemoryRoute() {
   const [extractFacts, setExtractFacts] = useState<ExtractedFact[] | null>(null);
   const [selectedFacts, setSelectedFacts] = useState<Set<number>>(new Set());
   const [showAdd, setShowAdd] = useState(false);
+  const [extractSessionId, setExtractSessionId] = useState<string | null>(null);
+  const [extractSessions, setExtractSessions] = useState<Array<{ id: string; title: string; snippet: string }>>([]);
   const navigate = useNavigate();
 
   const refresh = async () => {
@@ -124,21 +126,39 @@ export function MemoryRoute() {
   };
 
   const runExtract = async () => {
+    // Step 1: show session picker
     setExtractBusy(true);
     try {
-      // Find the most recent non-empty session
       const sessions = await api.listSessions();
-      const candidates = sessions.filter((s) => s.title !== "New Chat");
+      const candidates = sessions
+        .filter((s) => s.title !== "New Chat" || sessions.length <= 5)
+        .slice(0, 20);
       if (candidates.length === 0) {
         toast.error("No chat sessions to extract from. Start a conversation first.");
         setExtractBusy(false);
         return;
       }
-      // Use the most recently updated session
-      const target = candidates[0];
-      const facts = await api.extractFactsFromSession(target.id);
+      setExtractSessions(
+        candidates.map((s) => ({
+          id: s.id,
+          title: s.title,
+          snippet: s.snippet || s.title,
+        }))
+      );
+      setExtractBusy(false);
+      return;
+    } catch (e) {
+      toast.error(String(e));
+    }
+    setExtractBusy(false);
+  };
+
+  const runExtractOnSession = async (sessionId: string) => {
+    setExtractSessionId(sessionId);
+    setExtractBusy(true);
+    try {
+      const facts = await api.extractFactsFromSession(sessionId);
       setExtractFacts(facts);
-      // Select all by default
       setSelectedFacts(new Set(facts.map((_, i) => i)));
     } catch (e) {
       toast.error(String(e));
@@ -202,15 +222,47 @@ export function MemoryRoute() {
           ]}
         />
       </div>
-      <div className="flex-1 overflow-y-auto p-4 max-w-2xl mx-auto w-full">
+      <div className="flex-1 overflow-y-auto p-3 sm:p-4 max-w-2xl mx-auto w-full">
         {visible.length === 0 ? (
-          <EmptyState
-            icon={<Brain size={32} />}
-            title={query ? "No matches" : "No memories yet"}
-            description={query
-              ? "Try a different query or filter."
-              : "Add user preferences, project facts, and skills. They're included as context in every chat."}
-          />
+          query ? (
+            <EmptyState
+              icon={<Brain size={32} />}
+              title="No matches"
+              description="Try a different query or filter."
+            />
+          ) : (
+            <div className="py-8">
+              <div className="text-center mb-6">
+                <Brain size={32} className="mx-auto text-text-subtle mb-3" />
+                <h2 className="text-sm font-semibold text-text">No memories yet</h2>
+                <p className="text-xs text-text-muted mt-1">Add user preferences, project facts, and skills.
+                They're included as context in every chat.</p>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <button
+                  onClick={() => add("user_pref")}
+                  className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/30 rounded-lg p-3 text-left transition-all hover:-translate-y-0.5"
+                >
+                  <div className="text-xs font-medium text-text mb-1">Set a preference</div>
+                  <div className="text-[10px] text-text-muted">"I prefer concise replies"</div>
+                </button>
+                <button
+                  onClick={() => add("project_fact")}
+                  className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/30 rounded-lg p-3 text-left transition-all hover:-translate-y-0.5"
+                >
+                  <div className="text-xs font-medium text-text mb-1">Log a project fact</div>
+                  <div className="text-[10px] text-text-muted">"This repo uses Tauri v2"</div>
+                </button>
+                <button
+                  onClick={() => add("skill")}
+                  className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/30 rounded-lg p-3 text-left transition-all hover:-translate-y-0.5"
+                >
+                  <div className="text-xs font-medium text-text mb-1">Create a skill</div>
+                  <div className="text-[10px] text-text-muted">"Run tests with `npm t` before push"</div>
+                </button>
+              </div>
+            </div>
+          )
         ) : (
           <ul className="space-y-2">
             {visible.map((entry, i) => {
@@ -249,7 +301,11 @@ export function MemoryRoute() {
                   {entry.snippet ? (
                     <div
                       className="text-xs text-text-muted leading-relaxed mt-1.5"
-                      dangerouslySetInnerHTML={{ __html: entry.snippet }}
+                      dangerouslySetInnerHTML={{
+                        __html: entry.snippet
+                          .replace(/<mark>/g, '<mark class="bg-warn/30 text-text rounded px-0.5">')
+                          .replace(/<\/mark>/g, '</mark>'),
+                      }}
                     />
                   ) : (
                     <div className="text-xs text-text-muted leading-relaxed mt-1.5 whitespace-pre-wrap">{item.content}</div>
@@ -335,41 +391,46 @@ export function MemoryRoute() {
       {/* Extract from session modal */}
       <Modal
         open={showExtract}
-        onClose={() => { setShowExtract(false); setExtractFacts(null); setSelectedFacts(new Set()); }}
-        title="Extract facts from chat"
-        description="Convo will ask the LLM to find durable facts in your most recent session."
+        onClose={() => {
+          setShowExtract(false);
+          setExtractFacts(null);
+          setSelectedFacts(new Set());
+          setExtractSessionId(null);
+          setExtractSessions([]);
+        }}
+        title={extractSessionId ? "Extract facts from chat" : "Choose a session to extract from"}
+        description={extractSessionId
+          ? `Extracting facts from: ${extractSessions.find((s) => s.id === extractSessionId)?.title || extractSessionId}`
+          : "Convo will ask the LLM to find durable facts in the selected session."}
         size="lg"
         footer={
-          <>
-            <Button variant="ghost" onClick={() => { setShowExtract(false); setExtractFacts(null); }}>Cancel</Button>
-            {extractFacts === null ? (
-              <Button variant="primary" onClick={runExtract} loading={extractBusy} icon={<Sparkles size={12} />}>
-                Extract
+          extractFacts !== null ? (
+            <>
+              <Button variant="ghost" onClick={() => {
+                setShowExtract(false);
+                setExtractFacts(null);
+                setSelectedFacts(new Set());
+                setExtractSessionId(null);
+              }}>Cancel</Button>
+              <Button variant="secondary" onClick={() => setSelectedFacts(new Set(extractFacts.map((_, i) => i)))}>Select all</Button>
+              <Button variant="primary" onClick={saveSelectedFacts} disabled={selectedFacts.size === 0} icon={<Save size={12} />}>
+                Save {selectedFacts.size}
               </Button>
-            ) : (
-              <>
-                <Button variant="secondary" onClick={() => setSelectedFacts(new Set(extractFacts.map((_, i) => i)))}>Select all</Button>
-                <Button variant="primary" onClick={saveSelectedFacts} disabled={selectedFacts.size === 0} icon={<Save size={12} />}>
-                  Save {selectedFacts.size}
-                </Button>
-              </>
-            )}
-          </>
+            </>
+          ) : (
+            <Button variant="ghost" onClick={() => {
+              setShowExtract(false);
+              setExtractSessions([]);
+            }}>Cancel</Button>
+          )
         }
       >
-        {extractFacts === null ? (
-          <div className="text-sm text-text-muted py-4">
-            {extractBusy ? (
-              <div className="flex items-center gap-2"><Spinner size={14} /> Reading the conversation…</div>
-            ) : (
-              "Click Extract to start. The LLM will look for preferences, project facts, and reusable skills."
-            )}
-          </div>
-        ) : extractFacts.length === 0 ? (
-          <div className="text-sm text-text-muted py-4 text-center">No durable facts found in the most recent session.</div>
-        ) : (
-          <ul className="space-y-2">
-            {extractFacts.map((f, i) => (
+        {extractFacts !== null ? (
+          extractFacts.length === 0 ? (
+            <div className="text-sm text-text-muted py-4 text-center">No durable facts found in this session.</div>
+          ) : (
+            <ul className="space-y-2">
+              {extractFacts.map((f, i) => (
               <li key={i} className="bg-surface-1 border border-border rounded-md p-3">
                 <label className="flex items-start gap-2 cursor-pointer">
                   <input
@@ -405,6 +466,28 @@ export function MemoryRoute() {
               </li>
             ))}
           </ul>
+          )
+        ) : extractSessions.length > 0 ? (
+          <div className="space-y-1 max-h-[50vh] overflow-y-auto">
+            {extractBusy ? (
+              <div className="flex items-center gap-2 py-4"><Spinner size={14} /> Loading sessions...</div>
+            ) : (
+              extractSessions.map((s) => (
+                <button
+                  key={s.id}
+                  onClick={() => runExtractOnSession(s.id)}
+                  className="w-full text-left p-3 bg-surface-2 hover:bg-surface-3 border border-border rounded-md transition-colors"
+                >
+                  <div className="text-sm font-medium text-text truncate">{s.title}</div>
+                  <div className="text-xs text-text-muted mt-0.5">{s.snippet}</div>
+                </button>
+              ))
+            )}
+          </div>
+        ) : (
+          <div className="text-sm text-text-muted py-4 text-center">
+            No sessions available. Start a chat first.
+          </div>
         )}
       </Modal>
     </div>

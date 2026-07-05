@@ -22,7 +22,7 @@ export function SettingsRoute() {
 
   return (
     <div className="flex-1 flex h-full">
-      <aside className="w-56 bg-surface-1 border-r border-border p-2 shrink-0">
+      <aside className="w-48 sm:w-56 bg-surface-1 border-r border-border p-2 shrink-0">
         <h2 className="text-sm font-semibold text-text px-2 py-2">Settings</h2>
         <nav className="flex flex-col gap-0.5">
           <SettingsLink to="/settings/general" icon={<Info size={14} />} label="General" active={section === "general"} />
@@ -34,7 +34,7 @@ export function SettingsRoute() {
         </nav>
       </aside>
       <div className="flex-1 overflow-y-auto">
-        <div className="max-w-2xl mx-auto p-8">
+        <div className="max-w-2xl mx-auto p-4 sm:p-8">
           {section === "general" && <GeneralSection />}
           {section === "providers" && <ProvidersSection />}
           {section === "models" && <ModelsSection />}

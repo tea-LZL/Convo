@@ -67,15 +67,22 @@ export default {
       },
       animation: {
         "fade-in": "fadeIn 0.18s ease-out",
+        "fade-out": "fadeOut 0.15s ease-out both",
         "slide-up": "slideUp 0.24s cubic-bezier(0.4, 0, 0.2, 1)",
         "scale-in": "scaleIn 0.16s cubic-bezier(0.4, 0, 0.2, 1)",
+        "scale-out": "scaleOut 0.15s cubic-bezier(0.4, 0, 0.2, 1) both",
         "pulse-dot": "pulseDot 1.4s infinite ease-in-out both",
         "ripple": "ripple 0.6s cubic-bezier(0.4, 0, 0.2, 1)",
+        "message-in": "messageIn 0.24s ease-out both",
       },
       keyframes: {
         fadeIn: {
           "0%": { opacity: "0" },
           "100%": { opacity: "1" },
+        },
+        fadeOut: {
+          "0%": { opacity: "1" },
+          "100%": { opacity: "0" },
         },
         slideUp: {
           "0%": { opacity: "0", transform: "translateY(8px)" },
@@ -84,6 +91,14 @@ export default {
         scaleIn: {
           "0%": { opacity: "0", transform: "scale(0.96)" },
           "100%": { opacity: "1", transform: "scale(1)" },
+        },
+        scaleOut: {
+          "0%": { opacity: "1", transform: "scale(1)" },
+          "100%": { opacity: "0", transform: "scale(0.96)" },
+        },
+        messageIn: {
+          "0%": { opacity: "0", transform: "translateY(6px)" },
+          "100%": { opacity: "1", transform: "translateY(0)" },
         },
         pulseDot: {
           "0%, 80%, 100%": { transform: "scale(0)" },

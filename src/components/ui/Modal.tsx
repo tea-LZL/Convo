@@ -1,5 +1,6 @@
 import { ReactNode, useEffect } from "react";
 import { X } from "lucide-react";
+import { AnimatedUnmount } from "./AnimatedUnmount";
 
 interface ModalProps {
   open: boolean;

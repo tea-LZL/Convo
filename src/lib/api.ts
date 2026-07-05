@@ -413,7 +413,7 @@ export const api = {
         title: item.title ?? null,
         content: item.content,
         tags: item.tags ?? null,
-        is_enabled: item.is_enabled === false ? 0 : 1,
+        isEnabled: item.is_enabled === false ? 0 : 1,
       },
     }),
   deleteMemory: (id: string) => invoke<void>("delete_memory", { id }),

@@ -10,14 +10,19 @@ interface MemoryState {
   loaded: boolean;
   loading: boolean;
   refresh: () => Promise<void>;
-  /** Returns enabled memory items as a system prompt block. */
-  buildContextBlock: () => string;
+  /** Returns enabled memory items as a system prompt block.
+   *  When sessionId is provided, filters to only items included
+   *  in that session's overrides (if overrides exist). */
+  buildContextBlock: (sessionId?: string) => Promise<string>;
+  /** Pre-fetched per-session override lists (cached in memory). */
+  _overrides: Record<string, string[] | null>;
 }
 
 export const useMemoryStore = create<MemoryState>((set, get) => ({
   items: [],
   loaded: false,
   loading: false,
+  _overrides: {},
   refresh: async () => {
     set({ loading: true });
     try {
@@ -28,9 +33,32 @@ export const useMemoryStore = create<MemoryState>((set, get) => ({
       set({ loading: false });
     }
   },
-  buildContextBlock: () => {
-    const items = get().items;
+  buildContextBlock: async (sessionId) => {
+    let items = get().items;
     if (items.length === 0) return "";
+
+    // Apply per-session overrides if sessionId is provided
+    if (sessionId) {
+      const overrides = get()._overrides;
+      if (!(sessionId in overrides)) {
+        // Fetch and cache
+        try {
+          const idList = await api.getSessionMemoryOverrides(sessionId);
+          overrides[sessionId] = idList;
+          set({ _overrides: { ...overrides } });
+        } catch {
+          overrides[sessionId] = null;
+        }
+      }
+      const overrideList = get()._overrides[sessionId];
+      // Empty list = no overrides (= all items included).
+      // Non-empty list = only these items are included.
+      if (overrideList !== null && overrideList !== undefined && overrideList.length > 0) {
+        const overrideSet = new Set(overrideList);
+        items = items.filter((i) => overrideSet.has(i.id));
+      }
+    }
+
     const grouped: Record<string, MemoryItem[]> = {
       user_pref: [],
       project_fact: [],

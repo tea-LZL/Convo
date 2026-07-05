@@ -5,6 +5,8 @@ import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Plus, Sparkles, Cpu, Search, BookOpen, Settings, KeyRound, FileText, ListTodo, StickyNote, Brain } from "lucide-react";
 import { ChatViewNew } from "../components/chat/ChatViewNew";
+import { ErrorBoundary } from "../components/ui/ErrorBoundary";
+import { ChatSkeleton } from "../components/ui/Skeleton";
 import { useSessionsStore } from "../stores/sessions";
 import { api } from "../lib/api";
 
@@ -69,22 +71,18 @@ export function ChatRoute() {
   }, []);
 
   if (loading) {
-    return (
-      <div className="flex-1 flex items-center justify-center text-text-subtle">
-        <div className="flex gap-1.5">
-          <span className="w-2 h-2 bg-text-subtle rounded-full animate-pulse-dot" />
-          <span className="w-2 h-2 bg-text-subtle rounded-full animate-pulse-dot" style={{ animationDelay: "0.2s" }} />
-          <span className="w-2 h-2 bg-text-subtle rounded-full animate-pulse-dot" style={{ animationDelay: "0.4s" }} />
-        </div>
-      </div>
-    );
+    return <ChatSkeleton />;
   }
 
   if (!activeId) {
     return <EmptyChat hasProviders={hasProviders} />;
   }
 
-  return <ChatViewNew key={activeId} sessionId={activeId} />;
+  return (
+    <ErrorBoundary label="Chat">
+      <ChatViewNew key={activeId} sessionId={activeId} />
+    </ErrorBoundary>
+  );
 }
 
 function EmptyChat({ hasProviders }: { hasProviders: boolean | null }) {
@@ -97,7 +95,7 @@ function EmptyChat({ hasProviders }: { hasProviders: boolean | null }) {
 
   if (hasProviders === false) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center p-8 max-w-2xl mx-auto">
+      <div className="flex-1 flex flex-col items-center justify-center p-4 sm:p-8 max-w-2xl mx-auto">
         <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-accent to-accent-muted flex items-center justify-center mb-6 shadow-modal">
           <span className="text-3xl">✦</span>
         </div>
@@ -108,7 +106,7 @@ function EmptyChat({ hasProviders }: { hasProviders: boolean | null }) {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full max-w-xl mb-8">
           <button
             onClick={() => navigate("/settings/providers")}
-            className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/50 rounded-xl p-4 text-left transition-all group"
+            className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/50 rounded-xl p-4 text-left transition-all hover:-translate-y-0.5 hover:shadow-panel"
           >
             <KeyRound size={18} className="text-accent mb-2" />
             <div className="text-sm font-medium text-text">Add Ollama</div>
@@ -116,7 +114,7 @@ function EmptyChat({ hasProviders }: { hasProviders: boolean | null }) {
           </button>
           <button
             onClick={() => navigate("/settings/providers")}
-            className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/50 rounded-xl p-4 text-left transition-all group"
+            className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/50 rounded-xl p-4 text-left transition-all hover:-translate-y-0.5 hover:shadow-panel"
           >
             <Settings size={18} className="text-accent mb-2" />
             <div className="text-sm font-medium text-text">Add OpenAI-compatible</div>
@@ -124,7 +122,7 @@ function EmptyChat({ hasProviders }: { hasProviders: boolean | null }) {
           </button>
           <button
             onClick={() => navigate("/hardware")}
-            className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/50 rounded-xl p-4 text-left transition-all group"
+            className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/50 rounded-xl p-4 text-left transition-all hover:-translate-y-0.5 hover:shadow-panel"
           >
             <Cpu size={18} className="text-accent mb-2" />
             <div className="text-sm font-medium text-text">Hardware scan</div>
@@ -132,7 +130,7 @@ function EmptyChat({ hasProviders }: { hasProviders: boolean | null }) {
           </button>
           <button
             onClick={() => navigate("/about")}
-            className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/50 rounded-xl p-4 text-left transition-all group"
+            className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/50 rounded-xl p-4 text-left transition-all hover:-translate-y-0.5 hover:shadow-panel"
           >
             <BookOpen size={18} className="text-accent mb-2" />
             <div className="text-sm font-medium text-text">About Convo</div>
@@ -151,7 +149,7 @@ function EmptyChat({ hasProviders }: { hasProviders: boolean | null }) {
   ];
 
   return (
-    <div className="flex-1 flex flex-col items-center justify-center p-8">
+    <div className="flex-1 flex flex-col items-center justify-center p-4 sm:p-8">
       <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-accent to-accent-muted flex items-center justify-center mb-6 shadow-modal">
         <span className="text-3xl">✦</span>
       </div>
@@ -184,7 +182,7 @@ function EmptyChat({ hasProviders }: { hasProviders: boolean | null }) {
                 }
               }, 200);
             }}
-            className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/50 rounded-lg p-3 text-left text-xs text-text-muted hover:text-text transition-colors"
+            className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/50 rounded-lg p-3 text-left text-xs text-text-muted hover:text-text transition-all hover:-translate-y-0.5"
           >
             {s}
           </button>

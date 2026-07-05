@@ -2,16 +2,15 @@
 
 A self-hosted AI workspace for Linux — multi-provider chat, model comparison, documents, notes, tasks, memory, hardware-aware recommendations, and diagnostics. Inspired by the depth of [Odysseus](https://github.com/pewdiepie-archdaemon/odysseus) and the simplicity of native desktop tools. Built with Tauri v2 (Rust) + React + TypeScript + Tailwind. Local-first, privacy-first, no telemetry.
 
-> **v0.6 — Phase 6 polish.** v0.4 introduced the foundation (SQLite, multi-provider, design system). v0.5 added chat power-user QoL, compare, and documents. v0.6 adds hardware scan, model-fit recommendations, diagnostics, backup/restore, a global hotkey, and a guided first-run experience.
+> **v0.7 — polish & responsive pass.** v0.4 introduced the foundation (SQLite, multi-provider, design system). v0.5 added chat power-user QoL, compare, and documents. v0.6 added hardware scan, model-fit recommendations, diagnostics, backup/restore, a global hotkey, and a guided first-run experience. v0.7 adds error boundaries, responsive layout, animation polish, a decomposed chat component architecture, native dialog replacement, and an attachment picker fix.
 
 ## Features
 
 ### Chat & providers
 - **Multi-provider chat** — Ollama + any OpenAI-compatible endpoint (OpenRouter, vLLM, llama.cpp). Local server auto-discovery scans ports 8000-8020. API keys in OS keyring.
-- **Per-session model + preset persistence** — reopen a chat and it's the same setup.
-- **5 built-in presets** — Default, Concise, Code, Socratic, Pirate. Edit, duplicate, delete custom.
+- **Per-session model persistence** — reopen a chat and it's the same setup.
 - **Streaming segmenter** — frozen blocks rendered once, live tail re-rendered per token. No code-block flicker.
-- **Slash commands** with autocomplete — `/help /new /clear /regenerate /model /preset /search /note /task`
+- **Slash commands** with autocomplete — `/help /new /clear /regenerate /model /search /note /task`
 - **Web search** — SearXNG / DuckDuckGo / Brave; results prepended as cited context.
 - **File attachments** — drag-drop, paste, paperclip. Vision-capable models receive images inline. Stored in `data_dir/blobs/`.
 - **Message actions** — copy, copy as Markdown, regenerate, edit & resend, delete, toggle thinking, save to note.
@@ -53,6 +52,9 @@ A self-hosted AI workspace for Linux — multi-provider chat, model comparison, 
 - **Keyboard shortcuts** — rebindable per-shortcut with Mac/PC display.
 - **Onboarding tour** — 6 steps with target anchoring; replayable from About.
 - **Themes** — 6 built-in (Default Dark, Default Light, Solar, Forest, Mono, High Contrast) + user-defined. Light/dark/system. CSS-variable driven, no flash on reload.
+- **Responsive layout** — auto-collapsing sidebar below 700px, responsive content padding, stacked compare columns on narrow screens.
+- **Error boundaries** — route-level and streaming-level boundaries prevent single-component crashes from taking down the app.
+- **Animation polish** — message entrance, sidebar transitions, skeleton loading states, thinking-section collapse/expand, all respecting `prefers-reduced-motion`.
 
 ## Tech Stack
 
@@ -75,24 +77,27 @@ src/
   routes/      # Top-level views: Chat, Compare, Documents, Notes, Tasks,
                # Memory, Hardware, Diagnostics, Settings, About
   components/
-    ui/        # Design system: Button, Modal, Panel, Switch, Select,
+    ui/        # Design system: Button, Modal, Panel, ConfirmDialog,
+               # ErrorBoundary, AnimatedUnmount, Skeleton, Switch, Select,
                # Slider, Tabs, Tooltip, Badge, Dropdown, Toast, Spinner
-    chat/      # ChatViewNew
+    chat/      # ChatViewNew (orchestrator), ChatHeader, MessageList,
+               # MessageRow, StreamingSection, ChatInput, ChatContextMenu,
+               # MarkdownRenderer, AttachmentChip
     sidebar/   # Sidebar
     tour/      # TourOverlay
-  hooks/       # useChat, useAttachments, useGlobalKeyHandler
+  hooks/       # useChat, useAttachments, useGlobalKeyHandler, useMediaQuery
   lib/         # api.ts, slashCommands, streamingSegmenter, streamingRenderer,
                # diff, sounds
   stores/      # Zustand stores: theme, toasts, settings, sessions, palette,
-               # shortcuts, tour, memory
-  styles/      # globals.css
+               # shortcuts, tour, memory, chatStream
+  styles/      # globals.css (CSS variables + keyframes)
 
 src-tauri/src/
   lib.rs                       # Tauri builder, plugins, global shortcut
   db/                          # SQLite pool + migrations + models + legacy import
     legacy.rs                  # conversations.json -> SQLite import
   providers/                   # Provider trait + Ollama + OpenAI-compat + discovery
-  commands/                    # 60+ Tauri commands: chat, sessions, presets,
+  commands/                    # 60+ Tauri commands: chat, sessions,
                                # providers, themes, notes, tasks, memory,
                                # documents, attachments, search, compare, slash,
                                # settings, hardware, backup, models
@@ -116,7 +121,7 @@ cargo tauri build    # release build (.deb)
 
 Data lives at `~/.local/share/convo/`:
 
-- `convo.db` — SQLite database (sessions, messages, providers, models, presets,
+- `convo.db` — SQLite database (sessions, messages, providers, models,
   memory, themes, etc.) + FTS5 virtual tables
 - `blobs/` — attachment file storage
 - `themes/` — exported user themes
@@ -141,11 +146,12 @@ All in-app shortcuts are rebindable in Settings → Shortcuts.
 
 ## Roadmap
 
-All six planned phases are complete. Future directions:
+All seven planned phases are complete (v0.7). Future directions:
 - Hardware-aware auto-suggest when picking models in the chat header
 - Tray icon with quick actions
 - Auto-update via Tauri updater
 - Document AI editing in the renderer (vs the chat composer)
+- Code-splitting for the 1.1MB JS bundle (dynamic imports per route)
 - Sync via Convo Sync (out of scope: desktop stays local-only)
 
 ## License

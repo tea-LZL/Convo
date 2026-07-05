@@ -117,10 +117,12 @@ pub async fn chat_stream_v2(
 
     let app_clone = app.clone();
     let session_id = args.session_id.clone();
+    let streams_clone = ActiveStreams(streams.0.clone());
     tokio::spawn(async move {
         let mut full_content = String::new();
         let mut full_thinking = String::new();
         let mut was_cancelled = false;
+        let mut terminal_event_emitted = false;
         let mut rx = rx;
         let mut rx_cancel = rx_cancel;
         loop {
@@ -145,6 +147,7 @@ pub async fn chat_stream_v2(
                                         "completed_at": completed_at,
                                     }),
                                 );
+                                terminal_event_emitted = true;
                                 break;
                             }
                             if let Some(msg) = chunk.message {
@@ -179,6 +182,7 @@ pub async fn chat_stream_v2(
                                     "error": e.to_string(),
                                 }),
                             );
+                            terminal_event_emitted = true;
                             break;
                         }
                         None => break,
@@ -186,8 +190,32 @@ pub async fn chat_stream_v2(
                 }
             }
         }
+
+        // Clean up the ActiveStreams entry so the cancel-token doesn't
+        // get dropped by replacement on the next send (which would fire
+        // a spurious chat-cancelled for this session).
+        {
+            if let Ok(mut map) = streams_clone.0.lock() {
+                map.remove(&session_id);
+            }
+        }
+
         if was_cancelled {
             let _ = app_clone.emit("chat-cancelled", &session_id);
+        } else if !terminal_event_emitted {
+            // The stream ended without a done chunk (provider closed
+            // the connection or dropped the final done event). Emit a
+            // synthetic chat-done so the frontend can finalize — set
+            // s.streaming = false and save the partial content.
+            let _ = app_clone.emit(
+                "chat-done",
+                serde_json::json!({
+                    "conversation_id": &session_id,
+                    "prompt_tokens": null,
+                    "output_tokens": null,
+                    "completed_at": chrono::Utc::now().to_rfc3339(),
+                }),
+            );
         }
     });
     Ok(())

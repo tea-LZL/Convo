@@ -9,7 +9,11 @@ import { Button } from "../components/ui/Button";
 import { Dropdown } from "../components/ui/Dropdown";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Modal } from "../components/ui/Modal";
+import { ErrorBoundary } from "../components/ui/ErrorBoundary";
+import { MarkdownRenderer } from "../components/chat/MarkdownRenderer";
+import { escapeThinkTags } from "../components/chat/MessageRow";
 import { GitCompareArrows, Play, Square, Trophy, Eye, EyeOff, History, Save, ExternalLink, Sparkles } from "lucide-react";
+import { diffLines, diffStats } from "../lib/diff";
 import { listen } from "@tauri-apps/api/event";
 import { useSessionsStore } from "../stores/sessions";
 import { toast } from "../stores/toasts";
@@ -37,6 +41,7 @@ export function CompareRoute() {
   const [revealed, setRevealed] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [history, setHistory] = useState<CompareRunSummary[]>([]);
+  const [showDiff, setShowDiff] = useState(false);
   const navigate = useNavigate();
   const refreshSessions = useSessionsStore((s) => s.refresh);
 
@@ -45,7 +50,7 @@ export function CompareRoute() {
       setProviders(ps.map((p) => ({ id: p.id, name: p.name, kind: p.kind })));
       ps.forEach((p) => {
         if (p.kind === "ollama") {
-          api.listModels().then((ms) => {
+          api.listModelsForProvider(p.id).then((ms) => {
             setModelsByProvider((prev) => ({ ...prev, [p.id]: ms.map((m) => m.name) }));
           }).catch(() => {});
         } else if (p.base_url) {
@@ -343,8 +348,10 @@ export function CompareRoute() {
           <div className={`grid gap-3 ${columns.length === 2 ? "grid-cols-2" : columns.length === 3 ? "grid-cols-3" : "grid-cols-2 lg:grid-cols-4"}`}>
             {columns.map((col, i) => {
               const elapsed = Date.now() - col.startedAt;
+              const label = blind && !revealed ? String.fromCharCode(65 + i) : selected[i]?.model || "—";
               return (
-                <div key={i} className="flex flex-col bg-surface-1 border border-border rounded-xl overflow-hidden">
+                <ErrorBoundary key={i} label={`Compare ${label}`}>
+                <div className="flex flex-col bg-surface-1 border border-border rounded-xl overflow-hidden">
                   <div className="flex items-center justify-between px-3 py-2 border-b border-border bg-surface-2/40">
                     <div className="flex items-center gap-1.5 min-w-0">
                       <span className="text-[10px] uppercase tracking-wider text-text-subtle">Model</span>
@@ -353,27 +360,30 @@ export function CompareRoute() {
                       </span>
                     </div>
                     <div className="flex items-center gap-1">
-                      {col.done && (
-                        <span className="text-[10px] text-text-subtle tabular-nums">
-                          {(col.outputTokens ?? 0) + (col.promptTokens ?? 0)}t
-                        </span>
+                      {!col.done ? (
+                        <>
+                          <span className="text-[10px] text-accent tabular-nums">{(elapsed / 1000).toFixed(1)}s</span>
+                          <button
+                            onClick={() => cancelOne(i)}
+                            className="text-[10px] text-error/80 hover:text-error px-1"
+                            title="Stop this column"
+                          >
+                            <Square size={9} fill="currentColor" />
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <span className="text-[10px] text-text-subtle tabular-nums">
+                            {(col.outputTokens ?? 0) + (col.promptTokens ?? 0)}t · {((Date.now() - col.startedAt) / 1000).toFixed(1)}s
+                          </span>
+                          {allDone && !winner && (
+                            <button onClick={() => pickWinner(i)} className="text-xs text-text-muted hover:text-accent flex items-center gap-1" title="Pick as winner">
+                              <Trophy size={12} />
+                            </button>
+                          )}
+                          {winner === i && <Trophy size={12} className="text-warn" />}
+                        </>
                       )}
-                      {!col.done && (
-                        <button
-                          onClick={() => cancelOne(i)}
-                          className="text-[10px] text-error/80 hover:text-error px-1"
-                          title="Stop this column"
-                        >
-                          <Square size={9} fill="currentColor" />
-                        </button>
-                      )}
-                      {!col.done && <span className="text-[10px] text-accent tabular-nums">{(elapsed / 1000).toFixed(1)}s</span>}
-                      {col.done && allDone && !winner && (
-                        <button onClick={() => pickWinner(i)} className="text-xs text-text-muted hover:text-accent flex items-center gap-1" title="Pick as winner">
-                          <Trophy size={12} />
-                        </button>
-                      )}
-                      {winner === i && <Trophy size={12} className="text-warn" />}
                     </div>
                   </div>
                   <div className="flex-1 p-3 text-sm text-text overflow-y-auto max-h-[60vh] prose prose-invert prose-sm max-w-none">
@@ -388,12 +398,13 @@ export function CompareRoute() {
                     ) : col.cancelled && !col.content ? (
                       <div className="text-text-subtle text-xs italic">Stopped</div>
                     ) : col.content ? (
-                      <div className="whitespace-pre-wrap break-words">{col.content}</div>
+                      <MarkdownRenderer content={escapeThinkTags(col.content)} />
                     ) : (
                       <div className="text-text-subtle text-xs italic">Waiting…</div>
                     )}
                   </div>
                 </div>
+                </ErrorBoundary>
               );
             })}
           </div>
@@ -411,17 +422,28 @@ export function CompareRoute() {
               </Button>
             )}
             <Button variant="primary" onClick={() => setRevealed(true)}>Reveal & pick winner</Button>
+            <Button variant="ghost" icon={<GitCompareArrows size={12} />} onClick={() => setShowDiff(true)} disabled={columns.length < 2}>Diff</Button>
           </div>
         )}
         {revealed && winner !== null && (
-          <div className="flex justify-center mt-4">
+          <div className="flex justify-center mt-4 gap-2">
             <Button variant="primary" icon={<ExternalLink size={12} />} onClick={() => continueInChat(winner)}>
               Continue in chat
             </Button>
+            <Button variant="ghost" icon={<GitCompareArrows size={12} />} onClick={() => setShowDiff(true)} disabled={columns.length < 2}>Diff</Button>
           </div>
         )}
       </div>
       <HistoryModal open={showHistory} onClose={() => setShowHistory(false)} history={history} onSelect={loadRun} />
+      {showDiff && columns.length >= 2 && (
+        <DiffModal
+          leftContent={columns[0].content || ""}
+          rightContent={columns[1].content || ""}
+          leftLabel={blind && !revealed ? "Model A" : selected[0]?.model || "Column 1"}
+          rightLabel={blind && !revealed ? "Model B" : selected[1]?.model || "Column 2"}
+          onClose={() => setShowDiff(false)}
+        />
+      )}
     </div>
   );
 }
@@ -455,6 +477,60 @@ function HistoryModal({ open, onClose, history, onSelect }: { open: boolean; onC
           })}
         </ul>
       )}
+    </Modal>
+  );
+}
+
+function DiffModal({
+  leftContent,
+  rightContent,
+  leftLabel,
+  rightLabel,
+  onClose,
+}: {
+  leftContent: string;
+  rightContent: string;
+  leftLabel: string;
+  rightLabel: string;
+  onClose: () => void;
+}) {
+  const ops = diffLines(leftContent, rightContent);
+  const stats = diffStats(ops);
+  return (
+    <Modal open={true} onClose={onClose} title={`Diff: ${leftLabel} vs ${rightLabel}`} size="xl">
+      <div className="flex items-center gap-2 text-xs mb-2">
+        <span className="text-success">+{stats.added} added</span>
+        <span className="text-error">\u2212{stats.removed} removed</span>
+      </div>
+      <div className="bg-surface-1 border border-border rounded-md overflow-hidden text-xs font-mono leading-relaxed max-h-[50vh] overflow-y-auto">
+        {ops.length === 0 ? (
+          <div className="p-3 text-text-muted">No differences</div>
+        ) : (
+          ops.map((op, i) => {
+            const lines = op.value.split("\n");
+            return (
+              <div key={i}>
+                {lines.map((line, j) => {
+                  if (line === "" && j === lines.length - 1 && op.kind === "equal") return null;
+                  const prefix = op.kind === "add" ? "+" : op.kind === "remove" ? "\u2212" : " ";
+                  const cls =
+                    op.kind === "add"
+                      ? "bg-success/10 text-success"
+                      : op.kind === "remove"
+                        ? "bg-error/10 text-error"
+                        : "text-text-muted";
+                  return (
+                    <div key={j} className={`flex items-start gap-2 px-3 py-0.5 ${cls}`}>
+                      <span className="w-3 text-text-subtle text-right select-none">{prefix}</span>
+                      <span className="whitespace-pre-wrap break-words flex-1">{line || " "}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })
+        )}
+      </div>
     </Modal>
   );
 }

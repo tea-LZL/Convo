@@ -25,6 +25,9 @@ import { playDoneSound, playSendSound } from "../utils/sounds";
 import { sendNotification } from "@tauri-apps/plugin-notification";
 import { toast } from "./toasts";
 
+/** Default system prompt used when no memory context or override is set. */
+const DEFAULT_SYSTEM = "You are a helpful, concise assistant. Give direct, accurate answers. Avoid rambling, repetition, and filler. If you don't know something, say so honestly.";
+
 export interface SessionState {
   messages: ChatMessage[];
   streaming: boolean;
@@ -32,6 +35,11 @@ export interface SessionState {
   streamThinking: string;
   error: string | null;
   loadingMessages: boolean;
+  /** Monotonic counter incremented on each send. Used to reject
+   * stale chat-cancelled events from a previous stream. */
+  _streamGeneration?: number;
+  /** Generation for which the user explicitly pressed Stop. */
+  _cancelRequestedGeneration?: number;
 }
 
 const EMPTY: SessionState = {
@@ -141,8 +149,8 @@ async function ensureListeners() {
   unlisteners.push(
     await listen<{
       conversation_id: string;
-      prompt_tokens: number;
-      output_tokens: number;
+      prompt_tokens: number | null;
+      output_tokens: number | null;
       completed_at: string;
     }>("chat-done", (e) => {
       const cid = e.payload.conversation_id;
@@ -218,6 +226,15 @@ async function ensureListeners() {
       const cid = e.payload;
       drainPendingFor(cid);
       const s = getOrCreate(cid);
+      const streamGeneration = s._streamGeneration ?? 0;
+      const cancelRequestedGeneration = s._cancelRequestedGeneration ?? -1;
+      // Ignore stale chat-cancelled events caused by an old Rust
+      // cancel token being dropped/replaced. Real user cancellation
+      // always goes through stopStream(), which marks the current
+      // generation before invoking cancel_chat_v2.
+      if (s.streaming && cancelRequestedGeneration !== streamGeneration) {
+        return;
+      }
       s.streaming = false;
       const thinking = (s.streamThinking || "").trim() || null;
       if (s.streamContent) {
@@ -318,6 +335,8 @@ export async function clearSessionMessages(cid: string) {
 
 export interface SendOpts {
   systemOverride?: string;
+  attachmentsJson?: string | null;
+  temperature?: number;
 }
 
 export async function sendMessage(
@@ -330,13 +349,17 @@ export async function sendMessage(
   const s = getOrCreate(cid);
   if (s.streaming) return;
   s.error = null;
+  // Single source of truth for the user message: create it here,
+  // not in the calling component. This prevents the double-append
+  // bug where onSend creates a message, saves to DB, then sendMessage
+  // creates a second one with a different UUID.
   const userMsg: ChatMessage = {
     id: crypto.randomUUID(),
     session_id: cid,
     role: "user",
     content: text,
     thinking: null,
-    attachments_json: null,
+    attachments_json: opts.attachmentsJson ?? null,
     prompt_tokens: null,
     output_tokens: null,
     created_at: new Date().toISOString(),
@@ -345,12 +368,27 @@ export async function sendMessage(
   s.streaming = true;
   s.streamContent = "";
   s.streamThinking = "";
+  // Increment generation counter so stale chat-cancelled events
+  // from a previous stream are rejected in the handler.
+  s._streamGeneration = (s._streamGeneration ?? 0) + 1;
+  s._cancelRequestedGeneration = undefined;
   bump(cid);
   playSendSound(false);
 
-  const memoryBlock = useMemoryStore.getState().buildContextBlock();
+  // Persist the user message to DB immediately so it survives even
+  // if the stream connection fails before chat-done fires.
+  api.saveMessages(cid, s.messages).catch(() => {});
+
+  const memoryBlock = await useMemoryStore.getState().buildContextBlock(cid);
   const fullSystem = [opts.systemOverride, memoryBlock].filter(Boolean).join("\n\n") || undefined;
-  const cleanMessages = s.messages.map((m) => ({
+  // Truncate conversation history before sending to the LLM.
+  // Keep the last 41 messages (~20 pairs + 1) to avoid context
+  // overflow and model-repetition degredation on long conversations.
+  const MAX_HISTORY = 41;
+  const truncated = s.messages.length > MAX_HISTORY
+    ? s.messages.slice(-MAX_HISTORY)
+    : s.messages;
+  const cleanMessages = truncated.map((m) => ({
     role: m.role,
     content: m.content,
     ...(m.thinking ? { thinking: m.thinking } : {}),
@@ -361,7 +399,8 @@ export async function sendMessage(
       sessionId: cid,
       model,
       messages: cleanMessages,
-      system: fullSystem,
+      system: fullSystem || DEFAULT_SYSTEM,
+      temperature: opts.temperature ?? 0.7,
     });
   } catch (e) {
     s.streaming = false;
@@ -372,6 +411,8 @@ export async function sendMessage(
 }
 
 export async function stopStream(cid: string) {
+  const s = getOrCreate(cid);
+  s._cancelRequestedGeneration = s._streamGeneration ?? 0;
   try {
     await api.cancelChat(cid);
   } catch (e) {

@@ -9,6 +9,10 @@ import { IconButton } from "../ui/IconButton";
 import { Tooltip } from "../ui/Form";
 import { usePaletteStore } from "../../stores/palette";
 import { toast } from "../../stores/toasts";
+import { ConfirmDialog } from "../ui/ConfirmDialog";
+import { Modal } from "../ui/Modal";
+import { TextInput } from "../ui/Form";
+import { Button } from "../ui/Button";
 
 interface NavItem {
   id: string;
@@ -47,6 +51,9 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
 
   const [ctxMenu, setCtxMenu] = useState<SessionContextMenu | null>(null);
   const [showArchived, setShowArchived] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<Session | null>(null);
+  const [renameTarget, setRenameTarget] = useState<Session | null>(null);
+  const [renameValue, setRenameValue] = useState("");
   const ctxMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -95,17 +102,25 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
 
   const handleRename = async (s: Session) => {
     setCtxMenu(null);
-    const next = window.prompt("Rename session", s.title);
-    if (next === null) return; // cancelled
-    const trimmed = next.trim();
-    if (!trimmed || trimmed === s.title) return;
+    setRenameTarget(s);
+    setRenameValue(s.title);
+  };
+
+  const submitRename = async () => {
+    if (!renameTarget) return;
+    const trimmed = renameValue.trim();
+    if (!trimmed || trimmed === renameTarget.title) {
+      setRenameTarget(null);
+      return;
+    }
     try {
       const { api } = await import("../../lib/api");
-      await api.renameSession(s.id, trimmed);
+      await api.renameSession(renameTarget.id, trimmed);
       await refresh();
     } catch (e) {
       toast.error(String(e));
     }
+    setRenameTarget(null);
   };
 
   const handlePin = async (s: Session) => {
@@ -125,12 +140,17 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
 
   const handleDelete = async (s: Session) => {
     setCtxMenu(null);
-    if (!window.confirm(`Delete session "${s.title}"? This cannot be undone.`)) return;
+    setDeleteTarget(s);
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
     try {
-      await removeSession(s.id);
+      await removeSession(deleteTarget.id);
     } catch (e) {
       toast.error(String(e));
     }
+    setDeleteTarget(null);
   };
 
   const handleCopyId = async (s: Session) => {
@@ -145,7 +165,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
 
   if (collapsed) {
     return (
-      <aside className="w-12 h-full bg-surface-1 border-r border-border flex flex-col items-center py-2 gap-1 shrink-0">
+      <aside className="w-12 h-full bg-surface-1 border-r border-border flex flex-col items-center py-2 gap-1 shrink-0 transition-all duration-200 ease-out">
         {NAV.map((n) => {
           const active = location.pathname.startsWith(n.path);
           return (
@@ -185,14 +205,14 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
   const visibleSessions = (showArchived ? archivedSessions : activeSessions).slice(0, 30);
 
   return (
-    <aside className="w-60 h-full bg-surface-1 border-r border-border flex flex-col shrink-0">
+    <aside className="w-60 h-full bg-surface-1 border-r border-border flex flex-col shrink-0 transition-all duration-200 ease-out">
       <div className="p-3 flex items-center gap-2 border-b border-border">
         <div className="w-7 h-7 rounded-md bg-gradient-to-br from-accent to-accent-muted flex items-center justify-center text-white font-semibold text-sm">
           C
         </div>
         <div className="flex-1 min-w-0">
           <div className="text-sm font-semibold text-text">Convo</div>
-          <div className="text-[10px] text-text-subtle -mt-0.5">v0.4 · local-first</div>
+          <div className="text-[10px] text-text-subtle -mt-0.5">v0.7 · local-first</div>
         </div>
         <IconButton icon={<ChevronLeft size={14} />} label="Collapse" onClick={onToggle} size="sm" />
       </div>
@@ -327,6 +347,35 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
           onCopyId={() => handleCopyId(ctxMenu.session)}
         />
       )}
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={confirmDelete}
+        title="Delete session"
+        message={`Delete session "${deleteTarget?.title ?? ""}"? This cannot be undone.`}
+        confirmLabel="Delete"
+        confirmVariant="danger"
+      />
+      <Modal
+        open={renameTarget !== null}
+        onClose={() => setRenameTarget(null)}
+        title="Rename session"
+        size="sm"
+      >
+        <TextInput
+          value={renameValue}
+          onChange={setRenameValue}
+          autoFocus
+          onKeyDown={(e) => {
+            if (e.key === "Enter") { e.preventDefault(); submitRename(); }
+          }}
+          placeholder="Session title"
+        />
+        <div className="flex items-center justify-end gap-2 mt-6">
+          <Button variant="ghost" onClick={() => setRenameTarget(null)}>Cancel</Button>
+          <Button variant="primary" onClick={submitRename}>Rename</Button>
+        </div>
+      </Modal>
     </aside>
   );
 }
@@ -343,7 +392,7 @@ function SessionRow({
 }) {
   return (
     <div
-      className={`group w-full rounded-md text-xs flex items-center gap-1 transition-colors ${
+      className={`group w-full rounded-md text-xs flex items-center gap-1 transition-all animate-message-in ${
         active ? "bg-surface-3 text-text" : "text-text-muted hover:bg-surface-2 hover:text-text"
       }`}
     >

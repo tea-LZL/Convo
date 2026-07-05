@@ -200,14 +200,17 @@ interface TooltipProps {
 
 export function Tooltip({ content, children, side = "top" }: TooltipProps) {
   const [show, setShow] = useState(false);
+  const sideClasses =
+    side === "top" ? "bottom-full mb-1.5 left-1/2 -translate-x-1/2" :
+    side === "bottom" ? "top-full mt-1.5 left-1/2 -translate-x-1/2" :
+    side === "left" ? "right-full mr-1.5 top-1/2 -translate-y-1/2" :
+    "left-full ml-1.5 top-1/2 -translate-y-1/2";
   return (
     <span className="relative inline-flex" onMouseEnter={() => setShow(true)} onMouseLeave={() => setShow(false)}>
       {children}
       {show && (
         <span
-          className={`absolute left-1/2 -translate-x-1/2 z-50 px-2 py-1 text-[11px] text-text bg-surface-3 border border-border rounded-md shadow-modal whitespace-nowrap pointer-events-none ${
-            side === "top" ? "bottom-full mb-1.5" : "top-full mt-1.5"
-          }`}
+          className={`absolute z-50 px-2 py-1 text-[11px] text-text bg-surface-3 border border-border rounded-md shadow-modal whitespace-nowrap pointer-events-none ${sideClasses}`}
         >
           {content}
         </span>

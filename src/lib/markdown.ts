@@ -52,9 +52,12 @@ function blockToHtml(block: string): string {
     const openLine = lines[0];
     const langMatch = openLine.match(/^[`~]{3,}(\w*)/);
     const lang = langMatch?.[1] || "";
-    // body = everything after the opening fence up to either the
-    // closing fence or end-of-block.
-    const body = lines.slice(1, -1).join("\n");
+    // If the last line is a closing fence, exclude it from the body.
+    // For an unclosed fence (live tail), include everything after the
+    // opening fence to the end.
+    const lastLine = lines[lines.length - 1];
+    const hasClose = lastLine !== openLine && (/^```/.test(lastLine) || /^~~~/.test(lastLine));
+    const body = hasClose ? lines.slice(1, -1).join("\n") : lines.slice(1).join("\n");
     const langLabel = lang || "code";
     return `<div class="code-block-wrap"><button class="code-copy">Copy</button><span class="code-lang">${escapeHtml(langLabel)}</span><pre style="margin:0;border-radius:10px;border:1px solid var(--color-border);background:var(--color-surface-1);padding:16px;overflow:auto;font-family:var(--font-mono);font-size:0.875em;line-height:1.5;color:#e6e8ee;"><code>${escapeHtml(body)}</code></pre></div>`;
   }
@@ -72,8 +75,9 @@ function blockToHtml(block: string): string {
     const body = trimmed
       .split("\n")
       .map((l) => l.replace(/^>\s?/, ""))
+      .map((l) => inlineToHtml(l))
       .join("<br>");
-    return `<blockquote style="margin:0.5em 0;padding:0.4em 0.8em;border-left:2px solid var(--color-border-strong);color:var(--color-text-muted);">${inlineToHtml(body)}</blockquote>`;
+    return `<blockquote style="margin:0.5em 0;padding:0.4em 0.8em;border-left:2px solid var(--color-border-strong);color:var(--color-text-muted);">${body}</blockquote>`;
   }
 
   if (/^[-*+]\s/.test(trimmed) || /^\d+\.\s/.test(trimmed)) {

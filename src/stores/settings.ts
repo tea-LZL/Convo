@@ -11,7 +11,6 @@ export interface AppSettings {
   showTokenCount: boolean;
   showThinking: boolean;
   density: "compact" | "comfortable";
-  defaultPresetId: string | null;
 }
 
 interface SettingsState extends AppSettings {
@@ -26,7 +25,6 @@ const defaults: AppSettings = {
   showTokenCount: true,
   showThinking: true,
   density: "comfortable",
-  defaultPresetId: null,
 };
 
 export const useSettingsStore = create<SettingsState>()(

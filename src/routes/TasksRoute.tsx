@@ -52,7 +52,7 @@ export function TasksRoute() {
           Show completed
         </label>
       </div>
-      <div className="flex-1 overflow-y-auto p-4 max-w-2xl mx-auto w-full">
+      <div className="flex-1 overflow-y-auto p-3 sm:p-4 max-w-2xl mx-auto w-full">
         <div className="flex gap-2 mb-4">
           <input
             value={newTitle}

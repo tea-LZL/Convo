@@ -3,9 +3,11 @@
   "identifier": "default",
   "description": "Default capabilities for Convo",
   "windows": ["main"],
-    "permissions": [
-      "core:default",
-      "shell:allow-open",
-      "notification:default"
-    ]
+  "permissions": [
+    "core:default",
+    "shell:allow-open",
+    "notification:default",
+    "fs:allow-read-file",
+    "dialog:allow-open"
+  ]
 }
