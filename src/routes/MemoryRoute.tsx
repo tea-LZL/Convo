@@ -131,13 +131,15 @@ export function MemoryRoute() {
   };
 
   const runExtract = async () => {
-    // Step 1: show session picker
+    // Step 1: show session picker. Show the most recently updated
+    // 20 sessions, period. The earlier "filter out New Chat when
+    // there are >5 sessions" heuristic dropped every placeholder
+    // session and made the picker feel empty for users who never
+    // renamed chats.
     setExtractBusy(true);
     try {
       const sessions = await api.listSessions();
-      const candidates = sessions
-        .filter((s) => s.title !== "New Chat" || sessions.length <= 5)
-        .slice(0, 20);
+      const candidates = sessions.slice(0, 20);
       if (candidates.length === 0) {
         toast.error("No chat sessions to extract from. Start a conversation first.");
         setExtractBusy(false);
@@ -146,8 +148,8 @@ export function MemoryRoute() {
       setExtractSessions(
         candidates.map((s) => ({
           id: s.id,
-          title: s.title,
-          snippet: s.snippet || s.title,
+          title: s.title || "Untitled",
+          snippet: s.snippet || s.title || "(no preview)",
         }))
       );
       setExtractBusy(false);

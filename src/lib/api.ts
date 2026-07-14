@@ -279,32 +279,41 @@ export interface DiagnosticsReport {
 export interface HardwareReport {
   os: string;
   arch: string;
-  cpu_brand: string;
-  cpu_cores: number;
-  total_memory_bytes: number;
-  available_memory_bytes: number;
+  /**
+   * Rust serializes with `#[serde(rename_all = "camelCase")]` so
+   * the JSON keys are camelCase; mirror that on the TS side.
+   * Falling back to snake_case would silently make every field
+   * render as "undefined" (the symptom that hid the bug here
+   * originally).
+   */
+  cpuBrand: string;
+  cpuCores: number;
+  totalMemoryBytes: number;
+  availableMemoryBytes: number;
   gpus: Array<{
     name: string;
     vendor: string;
-    vram_bytes: number | null;
+    vramBytes: number | null;
   }>;
 }
 
 export interface ModelFit {
   name: string;
   family: string;
-  size_label: string;
+  /** Rust serde has `#[serde(rename_all = "camelCase")]` so sizeLabel/recommendedQuant
+   *  come over in camelCase. */
+  sizeLabel: string;
   fits: boolean;
   reason: string;
-  recommended_quant: string | null;
+  recommendedQuant: string | null;
 }
 
 export interface FitReport {
-  ram_bytes: number;
-  vram_bytes: number;
+  ramBytes: number;
+  vramBytes: number;
   fits: ModelFit[];
   partial: ModelFit[];
-  too_big: ModelFit[];
+  tooBig: ModelFit[];
 }
 
 export const api = {

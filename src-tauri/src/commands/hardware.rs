@@ -93,25 +93,44 @@ pub fn get_hardware() -> HardwareReport {
             }
         }
     }
-    // AMD GPU detection via rocm-smi
+    // AMD GPU detection via rocm-smi. The CSV schema has shifted
+    // across rocm-smi versions — current versions emit
+    //   `device,VRAM Total Memory (B),VRAM Total Used Memory (B)`
+    // (3 columns), older builds emit a 4-column variant with a
+    // "VRAM Free Memory" column. We accept any layout with at
+    // least 2 columns where the 2nd is a u64 byte count.
     if let Ok(out) = std::process::Command::new("rocm-smi")
         .args(["--showmeminfo", "vram", "--csv"])
         .output()
     {
         if out.status.success() {
             let text = String::from_utf8_lossy(&out.stdout);
-            for line in text.lines().skip(1) {
-                let parts: Vec<&str> = line.split(',').collect();
-                if parts.len() >= 4 {
-                    let vram_bytes: Option<u64> = parts.get(3)
-                        .and_then(|s| s.trim().parse::<u64>().ok())
-                        .map(|b| b * 1024 * 1024);
-                    gpus.push(GpuInfo {
-                        name: parts.get(0).unwrap_or(&"AMD GPU").to_string(),
-                        vendor: "AMD".to_string(),
-                        vram_bytes,
-                    });
+            for (idx, line) in text.lines().enumerate() {
+                if idx == 0 {
+                    // Skip the CSV header.
+                    continue;
                 }
+                let parts: Vec<&str> = line.split(',').collect();
+                if parts.len() < 2 {
+                    continue;
+                }
+                // parts[0] = "card0"; parts[1] = VRAM total in bytes.
+                // parts[2] (if present) = VRAM used in bytes.
+                // parts[3] (older builds) = VRAM free in bytes.
+                let vram_bytes: Option<u64> = parts.get(1)
+                    .and_then(|s| s.trim().parse::<u64>().ok());
+                if vram_bytes.is_none() {
+                    continue;
+                }
+                gpus.push(GpuInfo {
+                    name: parts
+                        .get(0)
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| "AMD GPU".to_string()),
+                    vendor: "AMD".to_string(),
+                    vram_bytes,
+                });
             }
         }
     }

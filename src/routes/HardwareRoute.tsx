@@ -62,10 +62,10 @@ export function HardwareRoute() {
           <Section title="System" icon={<Monitor size={14} className="text-accent" />}>
             <div className="grid grid-cols-2 gap-3">
               <Stat label="OS" value={`${hw.os} ${hw.arch}`} />
-              <Stat label="CPU" value={hw.cpu_brand || "Unknown"} />
-              <Stat label="CPU cores" value={String(hw.cpu_cores)} />
-              <Stat label="Total RAM" value={formatBytes(hw.total_memory_bytes)} />
-              <Stat label="Available RAM" value={formatBytes(hw.available_memory_bytes)} />
+              <Stat label="CPU" value={hw.cpuBrand || "Unknown"} />
+              <Stat label="CPU cores" value={String(hw.cpuCores)} />
+              <Stat label="Total RAM" value={formatBytes(hw.totalMemoryBytes)} />
+              <Stat label="Available RAM" value={formatBytes(hw.availableMemoryBytes)} />
             </div>
           </Section>
 
@@ -80,7 +80,7 @@ export function HardwareRoute() {
                       <div className="text-text font-medium">{g.name}</div>
                       <div className="text-[10px] text-text-subtle uppercase tracking-wider">{g.vendor}</div>
                     </div>
-                    <div className="text-xs text-text-muted">{g.vram_bytes !== null ? formatBytes(g.vram_bytes) : "VRAM unknown"}</div>
+                    <div className="text-xs text-text-muted">{g.vramBytes !== null ? formatBytes(g.vramBytes) : "VRAM unknown"}</div>
                   </li>
                 ))}
               </ul>
@@ -93,8 +93,8 @@ export function HardwareRoute() {
           {fit.partial.length > 0 && (
             <FitSection title="Tight fit" icon={<AlertTriangle size={14} className="text-warn" />} rows={fit.partial} navigate={navigate} />
           )}
-          {fit.too_big.length > 0 && (
-            <FitSection title="Too large for this hardware" icon={<X size={14} className="text-error" />} rows={fit.too_big} navigate={navigate} />
+          {fit.tooBig.length > 0 && (
+            <FitSection title="Too large for this hardware" icon={<X size={14} className="text-error" />} rows={fit.tooBig} navigate={navigate} />
           )}
 
           <div className="text-xs text-text-subtle">
@@ -121,7 +121,7 @@ function FitSection({ title, icon, rows, navigate }: { title: string; icon: Reac
             <div className="flex items-center justify-between">
               <div>
                 <div className="text-sm text-text font-medium">{m.name}</div>
-                <div className="text-[10px] text-text-subtle uppercase tracking-wider">{m.family} · {m.size_label} · {m.recommended_quant ?? "n/a"}</div>
+                <div className="text-[10px] text-text-subtle uppercase tracking-wider">{m.family} · {m.sizeLabel} · {m.recommendedQuant ?? "n/a"}</div>
               </div>
               {m.fits ? (
                 <span className="text-[10px] text-success px-1.5 py-0.5 rounded border border-success/30 bg-success/10">fits</span>

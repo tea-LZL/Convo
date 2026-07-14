@@ -501,16 +501,22 @@ export async function stopStream(cid: string) {
 }
 
 /**
- * Recall: find memories whose content shares words with the user's
- * message. Uses keyword overlap (similar to Odysseus's BM25) rather
- * than FTS5 AND matching — FTS5 requires ALL query tokens to appear,
- * which fails for queries like "what's my name" when the memory is
- * "User's nickname is tea".
+ * Recall: find memories whose content or title shares words with the
+ * user's message. Uses keyword overlap (similar to Odysseus's BM25)
+ * rather than FTS5 AND matching — FTS5 requires ALL query tokens to
+ * appear, which fails for queries like "what's my name" when the
+ * memory is "User's nickname is tea".
  *
  * Returns "" when there are no matches or when listing memory fails.
  * Always-on items (already in `alwaysOnContent`) are skipped to avoid
  * sending duplicates to the model. Exported so unit tests can exercise
  * it without the listener wiring.
+ *
+ * Why this exists: small local models (gemma3 4B, etc.) often ignore
+ * a "USER CONTEXT" line buried deep in the always-on block. Booting
+ * a dedicated, short, prominent recall block into the system prompt
+ * dramatically improves their recall rate. The recall block ALWAYS
+ * ends with an explicit instruction to use the provided facts.
  */
 export async function recallMemories(
   query: string,
@@ -520,8 +526,15 @@ export async function recallMemories(
     // Use listMemory() (no is_enabled filter) so disabled items
     // (e.g. created before the isEnabled camelCase fix) can still
     // be recalled. The always-on block only includes enabled items.
-    const allItems = await api.listMemory();
-    if (allItems.length === 0) return "";
+    let allItems = await api.listMemory();
+    if (!allItems || allItems.length === 0) {
+      // Last-ditch fallback: try the enabled-only list. If the
+      // user disabled then re-enabled an item, the index in
+      // listMemory can transiently show nothing while FTS catches
+      // up; getEnabledMemory is the more reliable source.
+      allItems = await api.getEnabledMemory();
+    }
+    if (!allItems || allItems.length === 0) return "";
     const queryWords = query
       .toLowerCase()
       .split(/[^a-z0-9]+/)
@@ -530,21 +543,37 @@ export async function recallMemories(
     const scored = allItems
       .map((item) => {
         const contentLower = item.content.toLowerCase();
-        const hits = queryWords.filter((w) => contentLower.includes(w)).length;
-        return { item, score: hits };
+        const titleLower = (item.title ?? "").toLowerCase();
+        // Per-word scoring: a word in the title is worth 2x — the
+        // user often names a memory specifically with a clue word
+        // (e.g. title="Nickname"). Substring match gives partial
+        // credit (long query word matches a substring of memory).
+        let score = 0;
+        for (const w of queryWords) {
+          if (contentLower.includes(w)) score += 1;
+          if (titleLower.includes(w)) score += 2;
+        }
+        return { item, score };
       })
       .filter((s) => s.score > 0)
       .sort((a, b) => b.score - a.score)
       .slice(0, 3);
-    // Skip items already in the always-on block.
+    // Skip items already in the always-on block (their content is
+    // verbatim in the system prompt — duplicating wastes context).
     const fresh = scored.filter(
       (s) => !alwaysOnContent.includes(s.item.content)
     );
     if (fresh.length === 0) return "";
-    const lines = fresh.map((s) => `- [${s.item.kind}] ${s.item.content}`);
+    // ALWAYS end with the directive to consult the facts before
+    // answering; small models skip soft instructions.
+    const lines = fresh.map(
+      (s) =>
+        `- [${s.item.kind}] ${s.item.title ? `**${s.item.title}** — ` : ""}${s.item.content}`
+    );
     return (
-      "Relevant memory. Do not mention unless the user asks about these topics.\n" +
-      lines.join("\n")
+      "The user is asking a question. Relevant facts you MUST use to answer:\n" +
+      lines.join("\n") +
+      "\nAnswer the question using the facts above. If the user asks about themselves, their name, preferences, projects, or environment, use these facts directly."
     );
   } catch {
     // Best-effort — silently skip on failure.

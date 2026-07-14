@@ -28,7 +28,7 @@ describe("recallMemories", () => {
     // length >= 2 and matches.
     const block = await recallMemories("what is my nickname", "");
     expect(block).not.toBe("");
-    expect(block).toContain("Relevant memory.");
+    expect(block).toContain("Relevant facts you MUST use");
     expect(block).toContain(factItem.content);
 
     // Query with no overlap at all yields empty.
