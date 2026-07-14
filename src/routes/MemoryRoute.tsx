@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Plus, Trash2, Brain, Power, PowerOff, Search, Tag, X, Save, Sparkles, Filter, Edit3, Check } from "lucide-react";
+import { Plus, Trash2, Brain, Power, PowerOff, Search, Tag, X, Save, Sparkles, Filter, Edit3, Check, Bell } from "lucide-react";
 import { api, ExtractedFact, MemoryItem, MemorySearchHit } from "../lib/api";
 import { Button } from "../components/ui/Button";
 import { Dropdown } from "../components/ui/Dropdown";
@@ -8,6 +8,8 @@ import { Modal } from "../components/ui/Modal";
 import { Tabs, TextArea, TextInput } from "../components/ui/Form";
 import { Spinner } from "../components/ui/Form";
 import { toast } from "../stores/toasts";
+import { useMemoryStore } from "../stores/memory";
+import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { useNavigate } from "react-router-dom";
 
 type KindFilter = "all" | "user_pref" | "project_fact" | "skill";
@@ -44,6 +46,10 @@ export function MemoryRoute() {
   const [showAdd, setShowAdd] = useState(false);
   const [extractSessionId, setExtractSessionId] = useState<string | null>(null);
   const [extractSessions, setExtractSessions] = useState<Array<{ id: string; title: string; snippet: string }>>([]);
+  const pendingExtracts = useMemoryStore((s) => s.pendingExtracts);
+  const removePendingExtract = useMemoryStore((s) => s.removePendingExtract);
+  const [reviewLocalId, setReviewLocalId] = useState<string | null>(null);
+  const [reviewSelected, setReviewSelected] = useState<Set<number>>(new Set());
   const navigate = useNavigate();
 
   const refresh = async () => {
@@ -74,7 +80,6 @@ export function MemoryRoute() {
   };
 
   const remove = async (id: string) => {
-    if (!confirm("Delete this memory item?")) return;
     await api.deleteMemory(id);
     await refresh();
   };
@@ -186,6 +191,8 @@ export function MemoryRoute() {
   };
 
   const visible = searchHits ?? items.map((i) => ({ item: i, snippet: "" }));
+  const reviewPending = reviewLocalId ? pendingExtracts.find((p) => p.localId === reviewLocalId) ?? null : null;
+  const [deleteMemoryId, setDeleteMemoryId] = useState<string | null>(null);
 
   return (
     <div className="flex-1 flex flex-col h-full">
@@ -222,6 +229,33 @@ export function MemoryRoute() {
           ]}
         />
       </div>
+      {pendingExtracts.length > 0 && (
+        <div className="border-b border-border bg-accent/5 px-4 py-2 flex items-center gap-2 flex-wrap">
+          <Bell size={12} className="text-accent shrink-0 animate-pulse-dot" />
+          <span className="text-xs text-text">
+            {pendingExtracts.length} pending memory review
+            {pendingExtracts.length === 1 ? "" : "s"}
+            {" · "}
+            {pendingExtracts.reduce((n, p) => n + p.facts.length, 0)} suggested facts total
+          </span>
+          <div className="flex-1" />
+          {pendingExtracts.map((p) => (
+            <Button
+              key={p.localId}
+              size="xs"
+              variant="secondary"
+              icon={<Sparkles size={11} />}
+              onClick={() => {
+                setReviewLocalId(p.localId);
+                setReviewSelected(new Set(p.facts.map((_, i) => i)));
+              }}
+              title={`From session ${p.sessionId.slice(0, 8)}…`}
+            >
+              Review ({p.facts.length})
+            </Button>
+          ))}
+        </div>
+      )}
       <div className="flex-1 overflow-y-auto p-3 sm:p-4 max-w-2xl mx-auto w-full">
         {visible.length === 0 ? (
           query ? (
@@ -291,7 +325,7 @@ export function MemoryRoute() {
                       <Edit3 size={12} />
                     </button>
                     <button
-                      onClick={() => remove(item.id)}
+                      onClick={() => setDeleteMemoryId(item.id)}
                       className="text-text-subtle hover:text-error p-1"
                       title="Delete"
                     >
@@ -490,6 +524,139 @@ export function MemoryRoute() {
           </div>
         )}
       </Modal>
+
+      {/* Pending review modal — surfaces auto-extracted facts from
+          chat-done. User picks which to save as memory items. */}
+      <Modal
+        open={!!reviewLocalId}
+        onClose={() => {
+          setReviewLocalId(null);
+          setReviewSelected(new Set());
+        }}
+        title="Review extracted facts"
+        description={
+          reviewPending
+            ? `Auto-extracted from chat ${reviewPending.sessionId.slice(0, 8)} — pick the facts that should become memory.`
+            : ""
+        }
+        size="lg"
+        footer={
+          reviewPending ? (
+            <>
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  removePendingExtract(reviewPending.localId);
+                  setReviewLocalId(null);
+                  setReviewSelected(new Set());
+                }}
+              >
+                Discard all
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => setReviewSelected(new Set(reviewPending.facts.map((_, i) => i)))}
+              >
+                Select all
+              </Button>
+              <Button
+                variant="primary"
+                onClick={async () => {
+                  const chosen = reviewPending.facts.filter((_, i) => reviewSelected.has(i));
+                  for (const f of chosen) {
+                    await api.upsertMemory({
+                      kind: f.kind as "user_pref" | "project_fact" | "skill",
+                      title: f.title,
+                      content: f.content,
+                      tags: f.tags,
+                      is_enabled: true,
+                    });
+                  }
+                  toast.success(`Saved ${chosen.length} memory item${chosen.length === 1 ? "" : "s"}`);
+                  removePendingExtract(reviewPending.localId);
+                  setReviewLocalId(null);
+                  setReviewSelected(new Set());
+                  await refresh();
+                }}
+                disabled={reviewSelected.size === 0}
+                icon={<Save size={12} />}
+              >
+                Save {reviewSelected.size}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  const sid = reviewPending.sessionId;
+                  setReviewLocalId(null);
+                  setReviewSelected(new Set());
+                  navigate(`/chat/${sid}`);
+                }}
+              >
+                Open chat
+              </Button>
+            </>
+          ) : null
+        }
+      >
+        {reviewPending && (
+          <ul className="space-y-2">
+            {reviewPending.facts.map((f, i) => (
+              <li key={i} className="bg-surface-1 border border-border rounded-md p-3">
+                <label className="flex items-start gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={reviewSelected.has(i)}
+                    onChange={(e) => {
+                      const next = new Set(reviewSelected);
+                      if (e.target.checked) next.add(i);
+                      else next.delete(i);
+                      setReviewSelected(next);
+                    }}
+                    className="accent-[var(--color-accent)] mt-1"
+                  />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span
+                        className={`inline-block text-[10px] uppercase tracking-wider font-medium px-1.5 py-0.5 rounded border ${
+                          KIND_COLOR[f.kind] || KIND_COLOR.skill
+                        }`}
+                      >
+                        {KIND_LABEL[f.kind as KindFilter] || f.kind}
+                      </span>
+                      {f.title && <span className="text-xs font-medium text-text">{f.title}</span>}
+                    </div>
+                    <div className="text-xs text-text-muted leading-relaxed">{f.content}</div>
+                    {f.tags && (
+                      <div className="flex flex-wrap gap-1 mt-1.5">
+                        {f.tags.split(",").map((t) => t.trim()).filter(Boolean).map((t, j) => (
+                          <span
+                            key={j}
+                            className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border border-border bg-surface-2 text-text-subtle"
+                          >
+                            <Tag size={8} /> {t}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </label>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Modal>
+      <ConfirmDialog
+        open={deleteMemoryId !== null}
+        onClose={() => setDeleteMemoryId(null)}
+        onConfirm={async () => {
+          if (deleteMemoryId) await remove(deleteMemoryId);
+          setDeleteMemoryId(null);
+        }}
+        title="Delete memory item"
+        message="Delete this memory item? This cannot be undone."
+        confirmLabel="Delete"
+        confirmVariant="danger"
+      />
     </div>
   );
 }

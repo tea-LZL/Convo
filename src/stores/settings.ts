@@ -11,6 +11,13 @@ export interface AppSettings {
   showTokenCount: boolean;
   showThinking: boolean;
   density: "compact" | "comfortable";
+  /**
+   * Automatically extract durable facts from a chat after it
+   * completes (>= 2 exchanges) and queue them in the Memory page
+   * for review. Default: true. Set false to require manual
+   * "Extract from chat" via Memory route.
+   */
+  memoryAutoEvaluate: boolean;
 }
 
 interface SettingsState extends AppSettings {
@@ -25,6 +32,7 @@ const defaults: AppSettings = {
   showTokenCount: true,
   showThinking: true,
   density: "comfortable",
+  memoryAutoEvaluate: true,
 };
 
 export const useSettingsStore = create<SettingsState>()(

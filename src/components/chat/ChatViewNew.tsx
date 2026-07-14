@@ -41,7 +41,7 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
   const navigate = useNavigate();
   const attachments = useAttachments(sessionId);
 
-  const chat = useChat(sessionId, modelId);
+  const chat = useChat(sessionId, modelId, providerId);
 
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);

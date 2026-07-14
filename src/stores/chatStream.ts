@@ -26,7 +26,14 @@ import { sendNotification } from "@tauri-apps/plugin-notification";
 import { toast } from "./toasts";
 
 /** Default system prompt used when no memory context or override is set. */
-const DEFAULT_SYSTEM = "You are a helpful, concise assistant. Give direct, accurate answers. Avoid rambling, repetition, and filler. If you don't know something, say so honestly.";
+const DEFAULT_SYSTEM = [
+  "You are a helpful, concise assistant. Give direct, accurate answers.",
+  "Avoid rambling, repetition, and filler.",
+  "If you don't know something, say so honestly.",
+  "IMPORTANT: If memory or user context is provided below, use it. " +
+    "When the user asks who they are or about their name, preferences, " +
+    "projects, or environment, answer from the provided context.",
+].join(" ");
 
 export interface SessionState {
   messages: ChatMessage[];
@@ -40,6 +47,11 @@ export interface SessionState {
   _streamGeneration?: number;
   /** Generation for which the user explicitly pressed Stop. */
   _cancelRequestedGeneration?: number;
+  /** Model + provider used for the most recent send. Used by the
+   * auto-eval hook so the same model that answered the chat is the
+   * one that proposes memory facts. */
+  _lastModel?: string;
+  _lastProviderId?: string;
 }
 
 const EMPTY: SessionState = {
@@ -57,6 +69,11 @@ let listenersReady = false;
 
 /** Sessions we've already auto-titled (one-shot, never re-fire). */
 const autoTitled = new Set<string>();
+/** Sessions we've already auto-extracted memory from. One-shot per
+ * session: memory converges quickly; re-running extraction after
+ * every turn just spams the same facts. The user can re-trigger
+ * manually via Memory → "Extract from chat". */
+const autoExtractedMemory = new Set<string>();
 /** Titles that count as "default" — eligible for auto-rename. */
 const DEFAULT_TITLES = new Set(["", "New Chat", "Untitled"]);
 
@@ -189,6 +206,59 @@ async function ensureListeners() {
       // we haven't already kicked off the LLM call for it, ask the LLM
       // for a short title derived from the first user message.
       maybeAutoTitle(cid, s.messages);
+
+      // Auto-evaluate the conversation for durable memory facts
+      // (preferences, project facts, skills). Settings store toggle
+      // `memoryAutoEvaluate` gates this; default on. We require
+      // streamGeneration >= 2: that means the user has sent at
+      // least twice, so we have at least one full Q/A pair beyond
+      // the opener. The very first chat-done fires with gen=1
+      // (the assistant reply to the first user message), which is
+      // too thin to extract from — skip it. Fire-and-forget so
+      // chat-done isn't blocked; the result lands in
+      // MemoryRoute's pending queue via the memory store.
+      const gen = s._streamGeneration ?? 0;
+      const lastModel = s._lastModel;
+      const lastProvider = s._lastProviderId;
+      if (gen >= 2 && !autoExtractedMemory.has(cid)) {
+        // Reserve the slot up-front so a concurrent fire from the
+        // same session (rare; only if events race) doesn't double-
+        // trigger. Errors release it for retry.
+        autoExtractedMemory.add(cid);
+        // Lazy import — settings store pulls in a small chunk.
+        import("../stores/settings").then(({ useSettingsStore }) => {
+          if (!useSettingsStore.getState().memoryAutoEvaluate) {
+            // Setting is OFF: release the slot. Re-enabling the
+            // setting in Settings page will let the next chat-done
+            // re-fire extraction on the same session.
+            autoExtractedMemory.delete(cid);
+            return;
+          }
+          // Don't block chat-done on the LLM. Errors are
+          // best-effort surfaced via console.
+          (async () => {
+            try {
+              const facts = await api.extractFactsFromSession(
+                cid,
+                lastModel,
+                lastProvider
+              );
+              if (facts && facts.length > 0) {
+                useMemoryStore.getState().pushPendingExtract({
+                  sessionId: cid,
+                  facts,
+                });
+                toast.info(
+                  `${facts.length} potential memory item${facts.length === 1 ? "" : "s"} — review in Memory`,
+                  "Memory extraction"
+                );
+              }
+            } catch (e) {
+              console.warn("auto-eval memory:", e);
+            }
+          })();
+        }).catch(console.error);
+      }
 
       playDoneSound(false);
       if (typeof document !== "undefined" && document.hidden) {
@@ -337,6 +407,10 @@ export interface SendOpts {
   systemOverride?: string;
   attachmentsJson?: string | null;
   temperature?: number;
+  /** Provider id backing `model`. Tracked on SessionState so the
+   * auto-eval hook can request facts extraction using the same
+   * model that just answered. */
+  providerId?: string;
 }
 
 export async function sendMessage(
@@ -372,6 +446,8 @@ export async function sendMessage(
   // from a previous stream are rejected in the handler.
   s._streamGeneration = (s._streamGeneration ?? 0) + 1;
   s._cancelRequestedGeneration = undefined;
+  s._lastModel = model;
+  s._lastProviderId = opts.providerId;
   bump(cid);
   playSendSound(false);
 
@@ -380,7 +456,11 @@ export async function sendMessage(
   api.saveMessages(cid, s.messages).catch(() => {});
 
   const memoryBlock = await useMemoryStore.getState().buildContextBlock(cid);
-  const fullSystem = [opts.systemOverride, memoryBlock].filter(Boolean).join("\n\n") || undefined;
+  const recalledBlock = await recallMemories(text, memoryBlock);
+
+  const fullSystem = [opts.systemOverride, memoryBlock, recalledBlock]
+    .filter(Boolean)
+    .join("\n\n") || undefined;
   // Truncate conversation history before sending to the LLM.
   // Keep the last 41 messages (~20 pairs + 1) to avoid context
   // overflow and model-repetition degredation on long conversations.
@@ -417,6 +497,58 @@ export async function stopStream(cid: string) {
     await api.cancelChat(cid);
   } catch (e) {
     console.error("cancelChat:", e);
+  }
+}
+
+/**
+ * Recall: find memories whose content shares words with the user's
+ * message. Uses keyword overlap (similar to Odysseus's BM25) rather
+ * than FTS5 AND matching — FTS5 requires ALL query tokens to appear,
+ * which fails for queries like "what's my name" when the memory is
+ * "User's nickname is tea".
+ *
+ * Returns "" when there are no matches or when listing memory fails.
+ * Always-on items (already in `alwaysOnContent`) are skipped to avoid
+ * sending duplicates to the model. Exported so unit tests can exercise
+ * it without the listener wiring.
+ */
+export async function recallMemories(
+  query: string,
+  alwaysOnContent: string
+): Promise<string> {
+  try {
+    // Use listMemory() (no is_enabled filter) so disabled items
+    // (e.g. created before the isEnabled camelCase fix) can still
+    // be recalled. The always-on block only includes enabled items.
+    const allItems = await api.listMemory();
+    if (allItems.length === 0) return "";
+    const queryWords = query
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((w) => w.length >= 2);
+    if (queryWords.length === 0) return "";
+    const scored = allItems
+      .map((item) => {
+        const contentLower = item.content.toLowerCase();
+        const hits = queryWords.filter((w) => contentLower.includes(w)).length;
+        return { item, score: hits };
+      })
+      .filter((s) => s.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3);
+    // Skip items already in the always-on block.
+    const fresh = scored.filter(
+      (s) => !alwaysOnContent.includes(s.item.content)
+    );
+    if (fresh.length === 0) return "";
+    const lines = fresh.map((s) => `- [${s.item.kind}] ${s.item.content}`);
+    return (
+      "Relevant memory. Do not mention unless the user asks about these topics.\n" +
+      lines.join("\n")
+    );
+  } catch {
+    // Best-effort — silently skip on failure.
+    return "";
   }
 }
 

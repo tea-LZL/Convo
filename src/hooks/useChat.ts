@@ -29,7 +29,8 @@ const EMPTY_MESSAGES: SessionState["messages"] = [];
 
 export function useChat(
   sessionId: string | null,
-  modelName: string
+  modelName: string,
+  providerId: string = ""
 ): UseChat {
   // Per-slice subscriptions. Each `useChatStreamStore` call is its
   // own subscription; Zustand compares the returned value with the
@@ -85,9 +86,10 @@ export function useChat(
       await sendMessage(sessionId, text, modelName, {
         systemOverride: options?.systemOverride,
         attachmentsJson: options?.attachmentsJson,
+        providerId: providerId || undefined,
       });
     },
-    [sessionId, modelName]
+    [sessionId, modelName, providerId]
   );
 
   const stop = useCallback(async () => {

@@ -1,10 +1,11 @@
 import { useState } from "react";
-import { ChevronDown, MoreHorizontal, RefreshCw } from "lucide-react";
+import { Brain, ChevronDown, MoreHorizontal, RefreshCw } from "lucide-react";
 import { Dropdown } from "../ui/Dropdown";
 import { api, Provider, Model } from "../../lib/api";
 import { toast } from "../../stores/toasts";
 import { formatModelLabel } from "./format";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
+import { SessionMemoryModal } from "./SessionMemoryModal";
 
 export function ChatHeader({
   providers,
@@ -32,6 +33,7 @@ export function ChatHeader({
   totalTokens: number;
 }) {
   const [confirmClear, setConfirmClear] = useState(false);
+  const [showMemory, setShowMemory] = useState(false);
   return (
     <div className="flex items-center gap-2 px-3 sm:px-4 h-12 border-b border-border bg-surface-1/40 backdrop-blur">
       <Dropdown
@@ -105,6 +107,12 @@ export function ChatHeader({
         {() => (
           <div className="py-1">
             <button
+              onClick={() => setShowMemory(true)}
+              className="w-full text-left px-3 py-1.5 text-xs text-text-muted hover:bg-surface-2 hover:text-text flex items-center gap-2"
+            >
+              <Brain size={12} /> Memory for this session
+            </button>
+            <button
               onClick={async () => {
                 const md = await api.exportSessionMarkdown(sessionId);
                 const blob = new Blob([md], { type: "text/markdown" });
@@ -145,6 +153,11 @@ export function ChatHeader({
         message="Clear all messages in this session? This cannot be undone."
         confirmLabel="Clear"
         confirmVariant="danger"
+      />
+      <SessionMemoryModal
+        open={showMemory}
+        onClose={() => setShowMemory(false)}
+        sessionId={sessionId}
       />
     </div>
   );

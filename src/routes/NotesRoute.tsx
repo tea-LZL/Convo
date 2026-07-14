@@ -5,6 +5,7 @@ import { api, Note } from "../lib/api";
 import { Button } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
 import { TextArea, TextInput } from "../components/ui/Form";
+import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { toast } from "../stores/toasts";
 
 export function NotesRoute() {
@@ -15,6 +16,7 @@ export function NotesRoute() {
   const [tags, setTags] = useState("");
   const [dirty, setDirty] = useState(false);
   const [query, setQuery] = useState("");
+  const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
 
   const refresh = async () => {
     const n = query.trim() ? await api.searchNotes(query) : await api.listNotes();
@@ -52,7 +54,6 @@ export function NotesRoute() {
   };
 
   const remove = async (id: string) => {
-    if (!confirm("Delete this note?")) return;
     await api.deleteNote(id);
     if (activeId === id) {
       setActiveId(null);
@@ -123,7 +124,7 @@ export function NotesRoute() {
                 className="bg-transparent text-sm font-medium text-text placeholder:text-text-subtle focus:outline-none flex-1 min-w-0"
               />
               {dirty && <span className="text-[10px] text-warn">●</span>}
-              <Button size="sm" variant="ghost" onClick={() => remove(activeId)} icon={<Trash2 size={12} />}>Delete</Button>
+              <Button size="sm" variant="ghost" onClick={() => setDeleteTargetId(activeId)} icon={<Trash2 size={12} />}>Delete</Button>
               <Button size="sm" variant="primary" onClick={save} disabled={!dirty} icon={<Save size={12} />}>Save</Button>
             </div>
             <div className="px-4 py-2 border-b border-border bg-surface-1/20 flex items-center gap-2">
@@ -160,6 +161,18 @@ export function NotesRoute() {
           />
         )}
       </div>
+      <ConfirmDialog
+        open={deleteTargetId !== null}
+        onClose={() => setDeleteTargetId(null)}
+        onConfirm={async () => {
+          if (deleteTargetId) await remove(deleteTargetId);
+          setDeleteTargetId(null);
+        }}
+        title="Delete note"
+        message="Delete this note? This cannot be undone."
+        confirmLabel="Delete"
+        confirmVariant="danger"
+      />
     </div>
   );
 }

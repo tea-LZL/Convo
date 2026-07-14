@@ -14,6 +14,7 @@ import { Dropdown } from "../components/ui/Dropdown";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Modal } from "../components/ui/Modal";
 import { TextArea, TextInput } from "../components/ui/Form";
+import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { diffLines, diffStats } from "../lib/diff";
 import { escapeThinkTags } from "../components/chat/MessageRow";
 import { toast } from "../stores/toasts";
@@ -38,6 +39,7 @@ export function DocumentsRoute() {
   const [aiInstruction, setAiInstruction] = useState("");
   const [pendingDiff, setPendingDiff] = useState<{ original: string; proposed: string; instruction: string } | null>(null);
   const [selection, setSelection] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<Tab | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const refresh = useCallback(async () => {
@@ -152,16 +154,23 @@ export function DocumentsRoute() {
     toast.success(`Saved ${dirty.length} document(s)`);
   }, [tabs, refresh]);
 
+  const performDelete = async (t: Tab) => {
+    if (!t.diskPath) {
+      try { await api.deleteDocument(t.id); } catch (e) { console.error(e); }
+    }
+    setTabs((prev) => prev.filter((x) => x.id !== t.id));
+    if (activeId === t.id) setActiveId(null);
+    await refresh();
+  };
+
   const remove = async (id: string) => {
     const t = tabs.find((x) => x.id === id);
     if (!t) return;
-    if (t.dirty && !confirm(`Discard unsaved changes to "${t.title}"?`)) return;
-    if (!t.diskPath) {
-      try { await api.deleteDocument(id); } catch (e) { console.error(e); }
+    if (t.dirty) {
+      setDeleteTarget(t);
+      return;
     }
-    setTabs((prev) => prev.filter((x) => x.id !== id));
-    if (activeId === id) setActiveId(null);
-    await refresh();
+    await performDelete(t);
   };
 
   const openFromDisk = async () => {
@@ -523,6 +532,18 @@ export function DocumentsRoute() {
       >
         {pendingDiff && <DiffPreview original={pendingDiff.original} proposed={pendingDiff.proposed} />}
       </Modal>
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={async () => {
+          if (deleteTarget) await performDelete(deleteTarget);
+          setDeleteTarget(null);
+        }}
+        title="Discard unsaved changes"
+        message={`Close "${deleteTarget?.title ?? ""}" without saving? Unsaved edits will be lost.`}
+        confirmLabel="Discard"
+        confirmVariant="danger"
+      />
     </div>
   );
 }
@@ -542,6 +563,14 @@ export function DiffPreview({ original, proposed }: { original: string; proposed
         ) : (
           ops.map((op, i) => {
             const lines = op.value.split("\n");
+            // Don't drop the LAST LINE of the WHOLE document if it's empty
+            // and the op is "equal" — `split("\n")` emits a trailing ""
+            // that visually renders as a blank-line marker between two
+            // add/remove blocks. But for ops in the middle of the diff,
+            // that trailing "" is genuinely a blank line and must stay.
+            // ponytail: trailing-empty-line filter on equal ops only —
+            // add/remove ops are kept verbatim so we never lose a
+            // proposed line that happens to be blank.
             return (
               <div key={i}>
                 {lines.map((line, j) => {

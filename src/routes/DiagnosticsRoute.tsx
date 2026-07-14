@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { Activity, Database, Cpu, Folder, RefreshCw, CheckCircle2, AlertCircle, Wifi, WifiOff, Clock, Download, Upload } from "lucide-react";
 import { api, DiagnosticsReport } from "../lib/api";
 import { Button } from "../components/ui/Button";
+import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { toast } from "../stores/toasts";
 
 function formatBytes(n: number): string {
@@ -20,6 +21,7 @@ export function DiagnosticsRoute() {
   const [refreshing, setRefreshing] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [confirmImport, setConfirmImport] = useState(false);
 
   const refresh = async (silent = false) => {
     if (!silent) setRefreshing(true);
@@ -53,8 +55,7 @@ export function DiagnosticsRoute() {
     setExporting(false);
   };
 
-  const importBackup = async () => {
-    if (!confirm("Importing will overwrite the current database. Continue?")) return;
+  const performImport = async () => {
     setImporting(true);
     try {
       const { open } = await import("@tauri-apps/plugin-dialog");
@@ -96,7 +97,7 @@ export function DiagnosticsRoute() {
           <Button size="sm" variant="secondary" onClick={exportBackup} loading={exporting} icon={<Download size={12} />}>
             Export backup
           </Button>
-          <Button size="sm" variant="secondary" onClick={importBackup} loading={importing} icon={<Upload size={12} />}>
+          <Button size="sm" variant="secondary" onClick={() => setConfirmImport(true)} loading={importing} icon={<Upload size={12} />}>
             Import backup
           </Button>
         </div>
@@ -187,6 +188,18 @@ export function DiagnosticsRoute() {
           </Section>
         </div>
       </div>
+      <ConfirmDialog
+        open={confirmImport}
+        onClose={() => setConfirmImport(false)}
+        onConfirm={async () => {
+          setConfirmImport(false);
+          await performImport();
+        }}
+        title="Import backup"
+        message="Importing will overwrite the current database. This cannot be undone. Continue?"
+        confirmLabel="Import"
+        confirmVariant="danger"
+      />
     </div>
   );
 }

@@ -6,6 +6,7 @@ import { useShortcutsStore, comboDisplay } from "../stores/shortcuts";
 import { api, Provider, SearchConfig } from "../lib/api";
 import { Button } from "../components/ui/Button";
 import { Modal } from "../components/ui/Modal";
+import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { Switch, Tabs, TextInput, TextArea, Select, Badge } from "../components/ui/Form";
 import { Dropdown } from "../components/ui/Dropdown";
 import { toast } from "../stores/toasts";
@@ -104,6 +105,16 @@ function GeneralSection() {
           description="Expand model thinking cards automatically"
           control={<Switch checked={settings.showThinking} onChange={(v) => settings.update("showThinking", v)} />}
         />
+        <SettingRow
+          label="Auto-extract memory from chat"
+          description="After each chat with ≥ 2 exchanges, ask the model to propose durable facts (preferences, project facts, skills) for review on the Memory page."
+          control={
+            <Switch
+              checked={settings.memoryAutoEvaluate}
+              onChange={(v) => settings.update("memoryAutoEvaluate", v)}
+            />
+          }
+        />
       </Card>
     </div>
   );
@@ -119,6 +130,7 @@ function ProvidersSection() {
   const [probeMsg, setProbeMsg] = useState<{ ok: boolean; message: string } | null>(null);
   const [discovered, setDiscovered] = useState<Array<{ base_url: string; models: Array<{ name: string }> }>>([]);
   const [scanning, setScanning] = useState(false);
+  const [confirmDeleteProvider, setConfirmDeleteProvider] = useState<string | null>(null);
 
   const refresh = async () => setProviders(await api.listProviders());
   useEffect(() => { refresh(); }, []);
@@ -143,9 +155,9 @@ function ProvidersSection() {
   };
 
   const remove = async (id: string) => {
-    if (!confirm("Delete this provider?")) return;
     await api.deleteProvider(id);
     await refresh();
+    toast.success("Provider deleted");
   };
 
   const setDefault = async (id: string) => {
@@ -213,7 +225,7 @@ function ProvidersSection() {
                 {!p.is_default && (
                   <Button size="xs" variant="ghost" onClick={() => setDefault(p.id)}>Set default</Button>
                 )}
-                <Button size="xs" variant="ghost" onClick={() => remove(p.id)} icon={<Trash2 size={12} />} />
+                <Button size="xs" variant="ghost" onClick={() => setConfirmDeleteProvider(p.id)} icon={<Trash2 size={12} />} />
               </div>
             </div>
           ))
@@ -262,6 +274,20 @@ function ProvidersSection() {
           </div>
         </div>
       )}
+      <ConfirmDialog
+        open={confirmDeleteProvider !== null}
+        onClose={() => setConfirmDeleteProvider(null)}
+        onConfirm={() => {
+          if (confirmDeleteProvider) remove(confirmDeleteProvider);
+          setConfirmDeleteProvider(null);
+        }}
+        title="Delete provider"
+        message={`Delete "${
+          providers.find((p) => p.id === confirmDeleteProvider)?.name ?? "this provider"
+        }"? Models cached for this provider will be removed.`}
+        confirmLabel="Delete"
+        confirmVariant="danger"
+      />
     </div>
   );
 }

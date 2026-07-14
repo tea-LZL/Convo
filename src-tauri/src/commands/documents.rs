@@ -167,36 +167,81 @@ pub async fn ai_edit_document(
     }
     // Strip any leading/trailing code fences the model may have added.
     // Models sometimes wrap their response in a fenced block even when
-    // instructed not to.  Handle both ``` and ~~~ fences, with optional
-    // language tags, and trailing whitespace.
+    // instructed not to. Handle three fence styles:
+    //   ```  (with or without info-string language tag)
+    //   ~~~  (with or without info-string language tag)
+    // …and strip *only the outermost* match so multi-block responses
+    // (e.g. ```rs\nfn x() {}\n```\n\n```\nexplanation\n```) are returned with their inner blocks intact.
     fn unwrap_fence(raw: &str) -> &str {
         let text = raw.trim();
-        // Find the first newline: everything before it is the opening fence
-        // line (may include a language tag).
-        let Some(nl) = text.find('\n') else { return text; };
-        let open_line = &text[..nl];
-        if !(open_line.starts_with("```") || open_line.starts_with("~~~")) {
+        // No newline at all: cannot be a fence block, return as-is.
+        // ponytail: single-line outputs (e.g. language tag with no body)
+        // fall through unchanged rather than risking wrong stripping.
+        let Some(nl) = text.find('\n') else {
+            return text;
+        };
+        let open_line = text[..nl].trim_end_matches('\r');
+        let fence = if open_line.starts_with("```") {
+            Some("```")
+        } else if open_line.starts_with("~~~") {
+            Some("~~~")
+        } else {
+            None
+        };
+        let Some(fence) = fence else {
+            return text;
+        };
+        // Body is everything after the opening fence line, minus
+        // the closing fence (if any). Strip trailing whitespace,
+        // then look for the closing fence on its own line — at the
+        // very end, or before trailing whitespace. Tolerant of
+        // blank-line padding the model might add.
+        let body_and_tail = text[nl + 1..].trim_end_matches('\r');
+        let bytes = body_and_tail.as_bytes();
+        // Search for the fence string preceded by start-of-line or
+        // beginning-of-string. Walk back from each occurrence of the
+        // fence to the start of that line.
+        let mut cut = body_and_tail.len();
+        let fence_bytes = fence.as_bytes();
+        // Find every occurrence; we want the LAST one that's alone
+        // on its line (only whitespace after the prior newline).
+        let mut search_start = 0usize;
+        while let Some(at) = body_and_tail[search_start..].find(fence) {
+            let abs = search_start + at;
+            // Check what's before: start of string or a newline.
+            let line_start_ok = abs == 0
+                || bytes[..abs].last().map(|b| *b == b'\n').unwrap_or(false);
+            // Check what's after: end of string or only whitespace
+            // until next newline / end.
+            let after = abs + fence_bytes.len();
+            let tail_ok = after == body_and_tail.len()
+                || body_and_tail[after..]
+                    .chars()
+                    .take_while(|c| c.is_whitespace())
+                    .any(|_| true)
+                    && (after == body_and_tail.len()
+                        || body_and_tail[after..]
+                            .chars()
+                            .take_while(|c| *c != '\n')
+                            .all(|c| c.is_whitespace()));
+            if line_start_ok && tail_ok {
+                cut = abs;
+                // Keep searching — there may be a later occurrence
+                // (in case the model emitted nested fences).
+                search_start = abs + fence_bytes.len();
+            } else {
+                search_start = abs + 1;
+            }
+        }
+        // Walk `cut` back to before any trailing whitespace lines.
+        let body = body_and_tail[..cut].trim_end();
+        if body.is_empty() {
+            // The body, post-strip, is empty. The model emitted just
+            // a fence with nothing inside. Return the trimmed text
+            // so the caller still gets something non-empty.
             return text;
         }
-        // Strip the trailing fence.  Walk back from end to allow optional
-        // trailing whitespace/newlines.
-        let trimmed = text[nl + 1..].trim();
-        let closing_fence = if open_line.starts_with("```") { "```" } else { "~~~" };
-        let stripped = trimmed
-            .strip_suffix(closing_fence)
-            .or_else(|| trimmed.strip_suffix(&format!("{}\n", closing_fence)))
-            .or_else(|| {
-                // Model may have left trailing newline + fence
-                if trimmed.ends_with(closing_fence) {
-                    Some(&trimmed[..trimmed.len() - closing_fence.len()])
-                } else {
-                    None
-                }
-            });
-        match stripped {
-            Some(body) if !body.trim().is_empty() => body.trim(),
-            _ => text, // fence wasn't cleanly stripped — return original (trimmed)
-        }
+        body
     }
     Ok(unwrap_fence(&out).to_string())
 }
