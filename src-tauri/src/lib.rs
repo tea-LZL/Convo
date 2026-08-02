@@ -107,6 +107,7 @@ pub fn run() {
             services_mod::open_data_dir,
             // Sessions
             sessions_cmd::list_sessions,
+            sessions_cmd::list_extractable_sessions,
             sessions_cmd::create_session,
             sessions_cmd::rename_session,
             sessions_cmd::update_session_model,

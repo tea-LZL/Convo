@@ -105,6 +105,13 @@ export interface Session {
 
 export type SessionWithSnippet = Session & { snippet: string };
 
+export interface ExtractableSession {
+  id: string;
+  title: string;
+  snippet: string;
+  messageCount: number;
+}
+
 export interface CompareConfig {
   prompt: string;
   models: Array<{ provider_id: string; model: string }>;
@@ -328,6 +335,7 @@ export const api = {
   // Sessions
   listSessions: (groupId?: string | null, includeArchived = false) =>
     invoke<Session[]>("list_sessions", { groupId: groupId ?? null, includeArchived }),
+  listExtractableSessions: () => invoke<ExtractableSession[]>("list_extractable_sessions"),
   createSession: (opts: {
     title?: string;
     modelId?: string | null;

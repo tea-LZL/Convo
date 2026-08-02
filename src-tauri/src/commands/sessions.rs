@@ -1,5 +1,5 @@
 use crate::db::models::Session;
-use rusqlite::params;
+use rusqlite::{params, Connection};
 use std::sync::Arc;
 use tauri::State;
 use uuid::Uuid;
@@ -8,6 +8,50 @@ use crate::db::DbPool;
 
 fn now() -> String {
     chrono::Utc::now().to_rfc3339()
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtractableSession {
+    pub id: String,
+    pub title: String,
+    pub snippet: String,
+    pub message_count: i64,
+}
+
+fn query_extractable_sessions(conn: &Connection) -> rusqlite::Result<Vec<ExtractableSession>> {
+    let mut stmt = conn.prepare(
+        "SELECT s.id, s.title,
+                COALESCE((
+                    SELECT substr(m2.content, 1, 160)
+                    FROM messages m2
+                    WHERE m2.session_id = s.id AND trim(m2.content) <> ''
+                    ORDER BY m2.created_at DESC, m2.id DESC
+                    LIMIT 1
+                ), '') AS snippet,
+                COUNT(m.id) AS message_count
+         FROM sessions s
+         JOIN messages m ON m.session_id = s.id
+         GROUP BY s.id, s.title, s.updated_at
+         ORDER BY s.updated_at DESC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(ExtractableSession {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            snippet: row.get(2)?,
+            message_count: row.get(3)?,
+        })
+    })?;
+    rows.collect()
+}
+
+#[tauri::command]
+pub fn list_extractable_sessions(
+    pool: State<'_, Arc<DbPool>>,
+) -> Result<Vec<ExtractableSession>, String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    query_extractable_sessions(&conn).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -255,4 +299,31 @@ pub fn export_session_markdown(
         md.push_str("\n\n");
     }
     Ok(md)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    #[test]
+    fn extractable_sessions_include_archived_and_skip_empty() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT NOT NULL, is_archived INTEGER NOT NULL, updated_at TEXT NOT NULL);
+             CREATE TABLE messages (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL);
+             INSERT INTO sessions VALUES ('archived', 'New Chat', 1, '2026-01-02');
+             INSERT INTO sessions VALUES ('empty', 'Empty', 0, '2026-01-03');
+             INSERT INTO messages VALUES ('m1', 'archived', 'older', '2026-01-01');
+             INSERT INTO messages VALUES ('m2', 'archived', 'latest preview', '2026-01-02');",
+        )
+        .unwrap();
+
+        let sessions = query_extractable_sessions(&conn).unwrap();
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].title, "New Chat");
+        assert_eq!(sessions[0].message_count, 2);
+        assert_eq!(sessions[0].snippet, "latest preview");
+    }
 }

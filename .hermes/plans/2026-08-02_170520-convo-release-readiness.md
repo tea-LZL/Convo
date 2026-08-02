@@ -15,8 +15,8 @@
 - [x] Task 1 — Preserve and verify staged hardware/session hotfixes
 - [x] Task 2 — Normalize Tauri hardware responses — `6bd3ecf`; native payload validation, explicit retry state, nested GPU camelCase test
 - [x] Task 3 — Add route navigation smoke matrix — 14 route/recovery tests; `178/178` frontend tests and production build pass
-- [ ] Task 4 — Wire Memory extraction popup to persisted sessions **(in progress)**
-- [ ] Task 5 — Refresh Memory store after mutations
+- [x] Task 4 — Wire Memory extraction popup to persisted sessions — one summary query includes archived/untitled sessions, skips empty sessions; live DB returns 18 extractable of 25 total
+- [ ] Task 5 — Refresh Memory store after mutations **(next)**
 - [ ] Task 6 — Verify exact outbound nickname prompt
 - [ ] Task 7 — Persist Memory extraction reviews and retries
 - [ ] Task 8 — Fix attachment identity

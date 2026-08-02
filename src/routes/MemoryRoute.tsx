@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Plus, Trash2, Brain, Power, PowerOff, Search, Tag, X, Save, Sparkles, Filter, Edit3, Check, Bell } from "lucide-react";
-import { api, ExtractedFact, MemoryItem, MemorySearchHit } from "../lib/api";
+import { api, ExtractableSession, ExtractedFact, MemoryItem, MemorySearchHit } from "../lib/api";
 import { Button } from "../components/ui/Button";
 import { Dropdown } from "../components/ui/Dropdown";
 import { EmptyState } from "../components/ui/EmptyState";
@@ -45,7 +45,7 @@ export function MemoryRoute() {
   const [selectedFacts, setSelectedFacts] = useState<Set<number>>(new Set());
   const [showAdd, setShowAdd] = useState(false);
   const [extractSessionId, setExtractSessionId] = useState<string | null>(null);
-  const [extractSessions, setExtractSessions] = useState<Array<{ id: string; title: string; snippet: string }>>([]);
+  const [extractSessions, setExtractSessions] = useState<ExtractableSession[]>([]);
   const pendingExtracts = useMemoryStore((s) => s.pendingExtracts);
   const removePendingExtract = useMemoryStore((s) => s.removePendingExtract);
   const [reviewLocalId, setReviewLocalId] = useState<string | null>(null);
@@ -131,33 +131,15 @@ export function MemoryRoute() {
   };
 
   const runExtract = async () => {
-    // Step 1: show session picker. Show the most recently updated
-    // 20 sessions, period. The earlier "filter out New Chat when
-    // there are >5 sessions" heuristic dropped every placeholder
-    // session and made the picker feel empty for users who never
-    // renamed chats.
     setExtractBusy(true);
+    setExtractSessions([]);
     try {
-      const sessions = await api.listSessions(undefined, true);
-      const candidates = sessions.slice(0, 20);
-      if (candidates.length === 0) {
-        toast.error("No chat sessions to extract from. Start a conversation first.");
-        setExtractBusy(false);
-        return;
-      }
-      setExtractSessions(
-        candidates.map((s) => ({
-          id: s.id,
-          title: s.title || "Untitled",
-          snippet: s.snippet || s.title || "(no preview)",
-        }))
-      );
-      setExtractBusy(false);
-      return;
+      setExtractSessions(await api.listExtractableSessions());
     } catch (e) {
       toast.error(String(e));
+    } finally {
+      setExtractBusy(false);
     }
-    setExtractBusy(false);
   };
 
   const runExtractOnSession = async (sessionId: string) => {
@@ -506,22 +488,22 @@ export function MemoryRoute() {
             ))}
           </ul>
           )
+        ) : extractBusy ? (
+          <div className="flex items-center gap-2 py-4"><Spinner size={14} /> Loading sessions...</div>
         ) : extractSessions.length > 0 ? (
           <div className="space-y-1 max-h-[50vh] overflow-y-auto">
-            {extractBusy ? (
-              <div className="flex items-center gap-2 py-4"><Spinner size={14} /> Loading sessions...</div>
-            ) : (
-              extractSessions.map((s) => (
-                <button
-                  key={s.id}
-                  onClick={() => runExtractOnSession(s.id)}
-                  className="w-full text-left p-3 bg-surface-2 hover:bg-surface-3 border border-border rounded-md transition-colors"
-                >
-                  <div className="text-sm font-medium text-text truncate">{s.title}</div>
-                  <div className="text-xs text-text-muted mt-0.5">{s.snippet}</div>
-                </button>
-              ))
-            )}
+            {extractSessions.map((s) => (
+              <button
+                key={s.id}
+                onClick={() => runExtractOnSession(s.id)}
+                className="w-full text-left p-3 bg-surface-2 hover:bg-surface-3 border border-border rounded-md transition-colors"
+              >
+                <div className="text-sm font-medium text-text truncate">{s.title || "Untitled"}</div>
+                <div className="text-xs text-text-muted mt-0.5">
+                  {s.messageCount} message{s.messageCount === 1 ? "" : "s"} · {s.snippet || "(no preview)"}
+                </div>
+              </button>
+            ))}
           </div>
         ) : (
           <div className="text-sm text-text-muted py-4 text-center">
