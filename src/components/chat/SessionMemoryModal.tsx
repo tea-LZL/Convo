@@ -5,6 +5,7 @@ import { Modal } from "../ui/Modal";
 import { Button } from "../ui/Button";
 import { Spinner } from "../ui/Form";
 import { toast } from "../../stores/toasts";
+import { useMemoryStore } from "../../stores/memory";
 
 interface SessionMemoryModalProps {
   open: boolean;
@@ -16,6 +17,7 @@ export function SessionMemoryModal({ open, onClose, sessionId }: SessionMemoryMo
   const [items, setItems] = useState<MemoryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [excludedIds, setExcludedIds] = useState<Set<string>>(new Set());
+  const setSessionOverrides = useMemoryStore((state) => state.setSessionOverrides);
 
   const toggleItem = async (id: string) => {
     const next = new Set(excludedIds);
@@ -33,7 +35,7 @@ export function SessionMemoryModal({ open, onClose, sessionId }: SessionMemoryMo
     const included = enabledIds.filter((eid) => !next.has(eid));
     const payload = next.size > 0 ? included : [];
     try {
-      await api.setSessionMemoryOverrides(sessionId, payload);
+      await setSessionOverrides(sessionId, payload);
     } catch {
       // Rollback on failure
       setExcludedIds(excludedIds);

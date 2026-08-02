@@ -48,6 +48,9 @@ export function MemoryRoute() {
   const [extractSessions, setExtractSessions] = useState<ExtractableSession[]>([]);
   const pendingExtracts = useMemoryStore((s) => s.pendingExtracts);
   const removePendingExtract = useMemoryStore((s) => s.removePendingExtract);
+  const upsertMemory = useMemoryStore((s) => s.upsert);
+  const toggleMemory = useMemoryStore((s) => s.toggle);
+  const removeMemory = useMemoryStore((s) => s.remove);
   const [reviewLocalId, setReviewLocalId] = useState<string | null>(null);
   const [reviewSelected, setReviewSelected] = useState<Set<number>>(new Set());
   const navigate = useNavigate();
@@ -75,12 +78,12 @@ export function MemoryRoute() {
   }, [query, filter]);
 
   const toggle = async (item: MemoryItem) => {
-    await api.toggleMemory(item.id, !item.is_enabled);
+    await toggleMemory(item.id, !item.is_enabled);
     await refresh();
   };
 
   const remove = async (id: string) => {
-    await api.deleteMemory(id);
+    await removeMemory(id);
     await refresh();
   };
 
@@ -100,7 +103,7 @@ export function MemoryRoute() {
       toast.error("Content cannot be empty");
       return;
     }
-    await api.upsertMemory({
+    await upsertMemory({
       id: editing.id,
       kind: editing.kind as "user_pref" | "project_fact" | "skill",
       title: draft.title || null,
@@ -115,7 +118,7 @@ export function MemoryRoute() {
 
   const add = async (kind: "user_pref" | "project_fact" | "skill") => {
     try {
-      const id = await api.upsertMemory({
+      const id = await upsertMemory({
         kind,
         title: null,
         content: "",
@@ -159,7 +162,7 @@ export function MemoryRoute() {
     if (!extractFacts) return;
     const chosen = extractFacts.filter((_, i) => selectedFacts.has(i));
     for (const f of chosen) {
-      await api.upsertMemory({
+      await upsertMemory({
         kind: f.kind as "user_pref" | "project_fact" | "skill",
         title: f.title,
         content: f.content,
@@ -551,7 +554,7 @@ export function MemoryRoute() {
                 onClick={async () => {
                   const chosen = reviewPending.facts.filter((_, i) => reviewSelected.has(i));
                   for (const f of chosen) {
-                    await api.upsertMemory({
+                    await upsertMemory({
                       kind: f.kind as "user_pref" | "project_fact" | "skill",
                       title: f.title,
                       content: f.content,

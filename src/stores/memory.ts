@@ -16,6 +16,13 @@ export interface PendingExtract {
   facts: ExtractedFact[];
 }
 
+let refreshPromise: Promise<void> | null = null;
+
+async function refreshAfterMutation(refresh: () => Promise<void>) {
+  if (refreshPromise) await refreshPromise;
+  await refresh();
+}
+
 interface MemoryState {
   items: MemoryItem[];
   loaded: boolean;
@@ -23,6 +30,10 @@ interface MemoryState {
   /** Out-of-band queue of auto-extracted facts awaiting user review. */
   pendingExtracts: PendingExtract[];
   refresh: () => Promise<void>;
+  upsert: (item: Parameters<typeof api.upsertMemory>[0]) => Promise<string>;
+  toggle: (id: string, enabled: boolean) => Promise<void>;
+  remove: (id: string) => Promise<void>;
+  setSessionOverrides: (sessionId: string, itemIds: string[]) => Promise<void>;
   /** Returns enabled memory items as a system prompt block.
    *  When sessionId is provided, filters to only items included
    *  in that session's overrides (if overrides exist). */
@@ -43,15 +54,39 @@ export const useMemoryStore = create<MemoryState>((set, get) => ({
   loading: false,
   _overrides: {},
   pendingExtracts: [],
-  refresh: async () => {
+  refresh: () => {
+    if (refreshPromise) return refreshPromise;
     set({ loading: true });
-    try {
-      const items = await api.getEnabledMemory();
-      set({ items, loaded: true, loading: false });
-    } catch (e) {
-      console.error("Failed to load memory:", e);
-      set({ loading: false });
-    }
+    refreshPromise = api.getEnabledMemory()
+      .then((items) => set({ items, loaded: true }))
+      .catch((e) => console.error("Failed to load memory:", e))
+      .finally(() => {
+        refreshPromise = null;
+        set({ loading: false });
+      });
+    return refreshPromise;
+  },
+  upsert: async (item) => {
+    const id = await api.upsertMemory(item);
+    set({ _overrides: {} });
+    await refreshAfterMutation(get().refresh);
+    return id;
+  },
+  toggle: async (id, enabled) => {
+    await api.toggleMemory(id, enabled);
+    set({ _overrides: {} });
+    await refreshAfterMutation(get().refresh);
+  },
+  remove: async (id) => {
+    await api.deleteMemory(id);
+    set({ _overrides: {} });
+    await refreshAfterMutation(get().refresh);
+  },
+  setSessionOverrides: async (sessionId, itemIds) => {
+    await api.setSessionMemoryOverrides(sessionId, itemIds);
+    set((state) => ({
+      _overrides: { ...state._overrides, [sessionId]: [...itemIds] },
+    }));
   },
   pushPendingExtract: (extract) => {
     // Skip empty payloads — extract_facts_from_session returns [] when
@@ -81,7 +116,7 @@ export const useMemoryStore = create<MemoryState>((set, get) => ({
     // fire-and-forget — on the first send the promise may not have
     // resolved yet.  Guard with a one-shot load here.
     let items = get().items;
-    if ((!items || items.length === 0) && !get().loaded && !get().loading) {
+    if (!get().loaded && (get().loading || !items || items.length === 0)) {
       await get().refresh();
       items = get().items;
     }

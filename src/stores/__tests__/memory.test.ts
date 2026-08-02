@@ -1,6 +1,19 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { api } from "../../lib/api";
 import { useMemoryStore } from "../memory";
 import { memoryItems, preferenceItem, factItem, skillItem, extractedFacts } from "../../test/fixtures/memory";
+
+beforeEach(() => {
+  vi.restoreAllMocks();
+  vi.spyOn(api, "getEnabledMemory").mockResolvedValue([]);
+  useMemoryStore.setState({
+    items: [],
+    loaded: false,
+    loading: false,
+    _overrides: {},
+    pendingExtracts: [],
+  });
+});
 
 describe("useMemoryStore", () => {
   it("starts empty and unloaded", () => {
@@ -11,6 +24,79 @@ describe("useMemoryStore", () => {
 
   it("buildContextBlock returns an empty string when no items", async () => {
     expect(await useMemoryStore.getState().buildContextBlock()).toBe("");
+  });
+
+  it("buildContextBlock waits for an in-flight refresh", async () => {
+    let resolve!: (items: typeof memoryItems) => void;
+    vi.mocked(api.getEnabledMemory).mockReturnValue(
+      new Promise((done) => { resolve = done; }),
+    );
+
+    const refresh = useMemoryStore.getState().refresh();
+    const context = useMemoryStore.getState().buildContextBlock();
+    resolve(memoryItems);
+
+    await refresh;
+    expect(await context).toContain(preferenceItem.content);
+  });
+
+  it("upsert makes enabled memory immediately available to prompts", async () => {
+    const nickname = { ...preferenceItem, content: "The user's nickname is Kevin." };
+    vi.spyOn(api, "upsertMemory").mockResolvedValue(nickname.id);
+    vi.mocked(api.getEnabledMemory).mockResolvedValue([nickname]);
+
+    await useMemoryStore.getState().upsert({
+      kind: nickname.kind,
+      title: nickname.title,
+      content: nickname.content,
+      is_enabled: true,
+    });
+
+    expect(await useMemoryStore.getState().buildContextBlock()).toContain("Kevin");
+  });
+
+  it("upsert reloads after an older refresh finishes", async () => {
+    const nickname = { ...preferenceItem, content: "The user's nickname is Kevin." };
+    let resolveOld!: (items: typeof memoryItems) => void;
+    vi.mocked(api.getEnabledMemory)
+      .mockReturnValueOnce(new Promise((done) => { resolveOld = done; }))
+      .mockResolvedValueOnce([nickname]);
+    vi.spyOn(api, "upsertMemory").mockResolvedValue(nickname.id);
+
+    const oldRefresh = useMemoryStore.getState().refresh();
+    const upsert = useMemoryStore.getState().upsert(nickname);
+    resolveOld([]);
+    await Promise.all([oldRefresh, upsert]);
+
+    expect(useMemoryStore.getState().items).toEqual([nickname]);
+  });
+
+  it("toggle refreshes enabled memory", async () => {
+    useMemoryStore.setState({ items: [preferenceItem], loaded: true });
+    vi.spyOn(api, "toggleMemory").mockResolvedValue();
+    vi.mocked(api.getEnabledMemory).mockResolvedValue([]);
+
+    await useMemoryStore.getState().toggle(preferenceItem.id, false);
+
+    expect(useMemoryStore.getState().items).toEqual([]);
+  });
+
+  it("remove refreshes enabled memory", async () => {
+    useMemoryStore.setState({ items: [preferenceItem], loaded: true });
+    vi.spyOn(api, "deleteMemory").mockResolvedValue();
+    vi.mocked(api.getEnabledMemory).mockResolvedValue([]);
+
+    await useMemoryStore.getState().remove(preferenceItem.id);
+
+    expect(useMemoryStore.getState().items).toEqual([]);
+  });
+
+  it("setSessionOverrides updates the prompt cache", async () => {
+    vi.spyOn(api, "setSessionMemoryOverrides").mockResolvedValue();
+
+    await useMemoryStore.getState().setSessionOverrides("session-1", [preferenceItem.id]);
+
+    expect(useMemoryStore.getState()._overrides["session-1"]).toEqual([preferenceItem.id]);
   });
 
   it("buildContextBlock groups items by kind", async () => {
