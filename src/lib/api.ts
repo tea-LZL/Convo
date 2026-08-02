@@ -3,6 +3,7 @@
  * Rust commands. Provides type safety + a single place to mock for tests.
  */
 import { invoke } from "@tauri-apps/api/core";
+import { normalizeFitReport, normalizeHardwareReport } from "./contracts";
 
 export interface OllamaModel {
   name: string;
@@ -508,8 +509,9 @@ export const api = {
     }),
 
   // Hardware + recommendations
-  getHardware: () => invoke<HardwareReport>("get_hardware"),
-  recommendModels: (hw: HardwareReport) => invoke<FitReport>("recommend_models", { hw }),
+  getHardware: () => invoke<unknown>("get_hardware").then(normalizeHardwareReport),
+  recommendModels: (hw: HardwareReport) =>
+    invoke<unknown>("recommend_models", { hw }).then(normalizeFitReport),
 
   // Diagnostics + backup
   getDiagnostics: () => invoke<DiagnosticsReport>("get_diagnostics"),

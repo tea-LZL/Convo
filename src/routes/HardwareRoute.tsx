@@ -19,16 +19,21 @@ export function HardwareRoute() {
   const [hw, setHw] = useState<HardwareReport | null>(null);
   const [fit, setFit] = useState<FitReport | null>(null);
   const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
   const navigate = useNavigate();
 
   const scan = async () => {
     setLoading(true);
+    setFailed(false);
+    setHw(null);
+    setFit(null);
     try {
       const h = await api.getHardware();
       setHw(h);
       const f = await api.recommendModels(h);
       setFit(f);
     } catch (e) {
+      setFailed(true);
       toast.error(String(e));
     }
     setLoading(false);
@@ -36,10 +41,20 @@ export function HardwareRoute() {
 
   useEffect(() => { scan(); }, []);
 
-  if (loading || !hw || !fit) {
+  if (loading) {
     return (
       <div className="flex-1 flex items-center justify-center text-text-subtle">
         Scanning hardware…
+      </div>
+    );
+  }
+
+  if (failed || !hw || !fit) {
+    return (
+      <div role="alert" className="flex-1 flex flex-col items-center justify-center gap-3 text-text-muted">
+        <AlertTriangle size={20} className="text-error" />
+        <div>Hardware scan failed</div>
+        <Button size="sm" variant="secondary" onClick={scan}>Re-scan</Button>
       </div>
     );
   }

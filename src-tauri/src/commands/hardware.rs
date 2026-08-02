@@ -13,6 +13,7 @@ pub struct HardwareReport {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct GpuInfo {
     pub name: String,
     pub vendor: String,
@@ -269,6 +270,19 @@ pub fn recommend_models(hw: HardwareReport) -> FitReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gpu_info_serializes_camel_case() {
+        let value = serde_json::to_value(GpuInfo {
+            name: "Test GPU".into(),
+            vendor: "AMD".into(),
+            vram_bytes: Some(16),
+        })
+        .unwrap();
+
+        assert_eq!(value["vramBytes"], 16);
+        assert!(value.get("vram_bytes").is_none());
+    }
 
     #[test]
     fn fit_report_serializes_camel_case() {
