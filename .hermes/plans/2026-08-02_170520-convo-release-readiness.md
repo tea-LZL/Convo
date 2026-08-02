@@ -17,8 +17,8 @@
 - [x] Task 3 — Add route navigation smoke matrix — 14 route/recovery tests; `178/178` frontend tests and production build pass
 - [x] Task 4 — Wire Memory extraction popup to persisted sessions — one summary query includes archived/untitled sessions, skips empty sessions; live DB returns 18 extractable of 25 total
 - [x] Task 5 — Refresh Memory store after mutations — CRUD and session overrides centralized; concurrent refreshes coalesce without stale prompt context
-- [ ] Task 6 — Verify exact outbound nickname prompt **(next)**
-- [ ] Task 7 — Persist Memory extraction reviews and retries
+- [x] Task 6 — Verify exact outbound nickname prompt — `chat_stream_v2` payload test proves base prompt + enabled nickname Memory; stop-word and disabled-item recall guarded
+- [ ] Task 7 — Persist Memory extraction reviews and retries **(next)**
 - [ ] Task 8 — Fix attachment identity
 - [ ] Task 9 — Persist chat turns append-only
 - [ ] Task 10 — Add stream IDs and exact terminal events

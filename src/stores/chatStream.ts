@@ -35,6 +35,21 @@ const DEFAULT_SYSTEM = [
     "projects, or environment, answer from the provided context.",
 ].join(" ");
 
+const RECALL_STOP_WORDS = new Set([
+  "a", "an", "and", "are", "about", "do", "does", "for", "in", "is",
+  "me", "my", "of", "on", "or", "please", "the", "to", "what", "who",
+]);
+
+export function composeSystemPrompt(parts: {
+  override?: string;
+  alwaysOnMemory?: string;
+  recalledMemory?: string;
+}): string {
+  return [DEFAULT_SYSTEM, parts.override, parts.alwaysOnMemory, parts.recalledMemory]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 export interface SessionState {
   messages: ChatMessage[];
   streaming: boolean;
@@ -458,9 +473,11 @@ export async function sendMessage(
   const memoryBlock = await useMemoryStore.getState().buildContextBlock(cid);
   const recalledBlock = await recallMemories(text, memoryBlock);
 
-  const fullSystem = [opts.systemOverride, memoryBlock, recalledBlock]
-    .filter(Boolean)
-    .join("\n\n") || undefined;
+  const fullSystem = composeSystemPrompt({
+    override: opts.systemOverride,
+    alwaysOnMemory: memoryBlock,
+    recalledMemory: recalledBlock,
+  });
   // Truncate conversation history before sending to the LLM.
   // Keep the last 41 messages (~20 pairs + 1) to avoid context
   // overflow and model-repetition degredation on long conversations.
@@ -479,7 +496,7 @@ export async function sendMessage(
       sessionId: cid,
       model,
       messages: cleanMessages,
-      system: fullSystem || DEFAULT_SYSTEM,
+      system: fullSystem,
       temperature: opts.temperature ?? 0.7,
     });
   } catch (e) {
@@ -523,22 +540,16 @@ export async function recallMemories(
   alwaysOnContent: string
 ): Promise<string> {
   try {
-    // Use listMemory() (no is_enabled filter) so disabled items
-    // (e.g. created before the isEnabled camelCase fix) can still
-    // be recalled. The always-on block only includes enabled items.
     let allItems = await api.listMemory();
     if (!allItems || allItems.length === 0) {
-      // Last-ditch fallback: try the enabled-only list. If the
-      // user disabled then re-enabled an item, the index in
-      // listMemory can transiently show nothing while FTS catches
-      // up; getEnabledMemory is the more reliable source.
       allItems = await api.getEnabledMemory();
     }
-    if (!allItems || allItems.length === 0) return "";
+    allItems = (allItems ?? []).filter((item) => item.is_enabled);
+    if (allItems.length === 0) return "";
     const queryWords = query
       .toLowerCase()
       .split(/[^a-z0-9]+/)
-      .filter((w) => w.length >= 2);
+      .filter((w) => w.length >= 2 && !RECALL_STOP_WORDS.has(w));
     if (queryWords.length === 0) return "";
     const scored = allItems
       .map((item) => {

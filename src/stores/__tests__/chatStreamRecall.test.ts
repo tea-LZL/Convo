@@ -16,28 +16,36 @@ describe("recallMemories", () => {
   });
 
   it("matches memory content against query words and returns a relevant block", async () => {
-    // Each recall call invokes api.listMemory(); queue enough
-    // mock responses so every assertion works.
-    mockedInvoke.mockResolvedValue([
-      preferenceItem,
-      factItem,
-      skillItem,
-    ] as never);
-    // "what is my nickname" — preferenceItem has none of those,
-    // but factItem contains "is" (2 chars), which is a token of
-    // length >= 2 and matches.
+    const nickname = {
+      ...preferenceItem,
+      id: "nickname",
+      title: "User nickname",
+      content: "The user's nickname is Kevin.",
+    };
+    mockedInvoke.mockResolvedValue([nickname, preferenceItem, factItem] as never);
+
     const block = await recallMemories("what is my nickname", "");
-    expect(block).not.toBe("");
     expect(block).toContain("Relevant facts you MUST use");
-    expect(block).toContain(factItem.content);
+    expect(block).toContain(nickname.content);
 
-    // Query with no overlap at all yields empty.
-    const empty = await recallMemories("xyzzy plover", "");
-    expect(empty).toBe("");
+    expect(await recallMemories("xyzzy plover", "")).toBe("");
+    expect(await recallMemories("please be concise", "")).toContain(preferenceItem.content);
+  });
 
-    // Direct keyword match — "concise" is in preferenceItem.
-    const block2 = await recallMemories("please be concise", "");
-    expect(block2).toContain(preferenceItem.content);
+  it("does not recall unrelated memory through stop words", async () => {
+    mockedInvoke.mockResolvedValueOnce([
+      { ...factItem, content: "This is my project." },
+    ] as never);
+
+    expect(await recallMemories("what is my nickname", "")).toBe("");
+  });
+
+  it("does not recall disabled memory", async () => {
+    mockedInvoke.mockResolvedValueOnce([
+      { ...preferenceItem, title: "Nickname", content: "Nickname is Kevin.", is_enabled: false },
+    ] as never);
+
+    expect(await recallMemories("what is my nickname", "")).toBe("");
   });
 
   it("skips items already in the always-on block", async () => {
@@ -60,7 +68,7 @@ describe("recallMemories", () => {
   it("caps at three items and prefers higher keyword overlap", async () => {
     const A = { ...preferenceItem, id: "a", content: "tea coffee tea" };
     const B = { ...factItem, id: "b", content: "tea and cake" };
-    const C = { ...skillItem, id: "c", content: "cake and fork" };
+    const C = { ...skillItem, id: "c", content: "cake and fork", is_enabled: true };
     const D = { ...preferenceItem, id: "d", content: "unrelated work" };
     mockedInvoke.mockResolvedValueOnce([A, B, C, D] as never);
     const block = await recallMemories("tea cake", "");
