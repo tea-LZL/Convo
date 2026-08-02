@@ -20,6 +20,7 @@ pub struct GpuInfo {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct ModelFit {
     pub name: String,
     pub family: String,
@@ -39,7 +40,10 @@ pub fn get_hardware() -> HardwareReport {
 
     // NVIDIA via nvidia-smi if available
     if let Ok(out) = std::process::Command::new("nvidia-smi")
-        .args(["--query-gpu=name,memory.total,memory.free", "--format=csv,noheader,nounits"])
+        .args([
+            "--query-gpu=name,memory.total,memory.free",
+            "--format=csv,noheader,nounits",
+        ])
         .output()
     {
         if out.status.success() {
@@ -71,17 +75,25 @@ pub fn get_hardware() -> HardwareReport {
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
                     if let Some(arr) = json.get("SPDisplaysDataType").and_then(|v| v.as_array()) {
                         for d in arr {
-                            let name = d.get("spdisplays_vendor")
+                            let name = d
+                                .get("spdisplays_vendor")
                                 .and_then(|v| v.as_str())
-                                .or_else(|| d.get("spdisplays_device_name").and_then(|v| v.as_str()))
+                                .or_else(|| {
+                                    d.get("spdisplays_device_name").and_then(|v| v.as_str())
+                                })
                                 .unwrap_or("Apple GPU")
                                 .to_string();
-                            let vram = d.get("spdisplays_vram")
+                            let vram = d
+                                .get("spdisplays_vram")
                                 .and_then(|v| v.as_str())
                                 .and_then(|s| s.split_whitespace().next())
                                 .and_then(|s| s.parse::<u64>().ok())
                                 .map(|mb| mb * 1024 * 1024)
-                                .or_else(|| d.get("spdisplays_vram_shared").and_then(|v| v.as_str()).map(|_| 0));
+                                .or_else(|| {
+                                    d.get("spdisplays_vram_shared")
+                                        .and_then(|v| v.as_str())
+                                        .map(|_| 0)
+                                });
                             gpus.push(GpuInfo {
                                 name,
                                 vendor: "Apple".to_string(),
@@ -117,8 +129,8 @@ pub fn get_hardware() -> HardwareReport {
                 // parts[0] = "card0"; parts[1] = VRAM total in bytes.
                 // parts[2] (if present) = VRAM used in bytes.
                 // parts[3] (older builds) = VRAM free in bytes.
-                let vram_bytes: Option<u64> = parts.get(1)
-                    .and_then(|s| s.trim().parse::<u64>().ok());
+                let vram_bytes: Option<u64> =
+                    parts.get(1).and_then(|s| s.trim().parse::<u64>().ok());
                 if vram_bytes.is_none() {
                     continue;
                 }
@@ -138,7 +150,11 @@ pub fn get_hardware() -> HardwareReport {
     HardwareReport {
         os: std::env::consts::OS.to_string(),
         arch: std::env::consts::ARCH.to_string(),
-        cpu_brand: sys.cpus().first().map(|c| c.brand().to_string()).unwrap_or_default(),
+        cpu_brand: sys
+            .cpus()
+            .first()
+            .map(|c| c.brand().to_string())
+            .unwrap_or_default(),
         cpu_cores: sys.cpus().len(),
         total_memory_bytes: sys.total_memory(),
         available_memory_bytes: sys.available_memory(),
@@ -147,6 +163,7 @@ pub fn get_hardware() -> HardwareReport {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct FitReport {
     pub ram_bytes: u64,
     pub vram_bytes: u64,
@@ -180,7 +197,9 @@ pub fn recommend_models(hw: HardwareReport) -> FitReport {
     ];
 
     let total_ram_gb = hw.total_memory_bytes as f64 / 1_073_741_824.0;
-    let total_vram_gb: f64 = hw.gpus.iter()
+    let total_vram_gb: f64 = hw
+        .gpus
+        .iter()
         .filter_map(|g| g.vram_bytes)
         .map(|b| b as f64 / 1_073_741_824.0)
         .sum();
@@ -220,7 +239,10 @@ pub fn recommend_models(hw: HardwareReport) -> FitReport {
                 family: family.to_string(),
                 size_label,
                 fits: false,
-                reason: format!("Tight fit: need ~{:.0} GB, have {:.0} GB", required, available),
+                reason: format!(
+                    "Tight fit: need ~{:.0} GB, have {:.0} GB",
+                    required, available
+                ),
                 recommended_quant: Some(quant.to_string()),
             });
         } else {
@@ -241,5 +263,27 @@ pub fn recommend_models(hw: HardwareReport) -> FitReport {
         fits,
         partial,
         too_big,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fit_report_serializes_camel_case() {
+        let value = serde_json::to_value(FitReport {
+            ram_bytes: 1,
+            vram_bytes: 2,
+            fits: vec![],
+            partial: vec![],
+            too_big: vec![],
+        })
+        .unwrap();
+
+        assert_eq!(value["ramBytes"], 1);
+        assert_eq!(value["vramBytes"], 2);
+        assert!(value.get("tooBig").is_some());
+        assert!(value.get("too_big").is_none());
     }
 }

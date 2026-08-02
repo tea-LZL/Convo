@@ -138,7 +138,7 @@ export function MemoryRoute() {
     // renamed chats.
     setExtractBusy(true);
     try {
-      const sessions = await api.listSessions();
+      const sessions = await api.listSessions(undefined, true);
       const candidates = sessions.slice(0, 20);
       if (candidates.length === 0) {
         toast.error("No chat sessions to extract from. Start a conversation first.");
@@ -203,7 +203,10 @@ export function MemoryRoute() {
         <h1 className="text-sm font-semibold text-text">Memory</h1>
         <span className="text-xs text-text-subtle">{items.length} item(s)</span>
         <div className="flex-1" />
-        <Button size="xs" variant="secondary" icon={<Sparkles size={11} />} onClick={() => setShowExtract(true)}>
+        <Button size="xs" variant="secondary" icon={<Sparkles size={11} />} onClick={() => {
+          setShowExtract(true);
+          void runExtract();
+        }}>
           Extract from chat
         </Button>
         <Button size="xs" variant="primary" icon={<Plus size={11} />} onClick={() => setShowAdd(true)}>
