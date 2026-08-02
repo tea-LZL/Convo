@@ -1,8 +1,8 @@
 /**
  * App shell — sidebar + routed content + toasts + command palette.
  */
-import { useEffect, useState } from "react";
-import { HashRouter, Routes, Route, Navigate } from "react-router-dom";
+import { ReactNode, useEffect, useState } from "react";
+import { HashRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { Sidebar } from "../components/sidebar/Sidebar";
 import { CommandPalette } from "../components/CommandPalette";
 import { SessionSearch } from "../components/SessionSearch";
@@ -28,6 +28,15 @@ import { TourOverlay } from "../components/tour/TourOverlay";
 import { useTourStore } from "../stores/tour";
 import { api } from "../lib/api";
 import { listen } from "@tauri-apps/api/event";
+
+function RouteErrorBoundary({ children }: { children: ReactNode }) {
+  const { pathname } = useLocation();
+  return (
+    <ErrorBoundary label="Routes" resetKey={pathname}>
+      {children}
+    </ErrorBoundary>
+  );
+}
 
 export default function App() {
   const initTheme = useThemeStore((s) => s.init);
@@ -94,7 +103,7 @@ export default function App() {
           }}
         />
         <main className="flex-1 min-w-0 h-full flex flex-col relative animate-fade-in">
-          <ErrorBoundary label="Routes">
+          <RouteErrorBoundary>
             <Routes>
               <Route path="/" element={<Navigate to="/chat" replace />} />
               <Route path="/chat" element={<ChatRoute />} />
@@ -110,7 +119,7 @@ export default function App() {
               <Route path="/about" element={<AboutRoute />} />
               <Route path="*" element={<Navigate to="/chat" replace />} />
             </Routes>
-          </ErrorBoundary>
+          </RouteErrorBoundary>
         </main>
         <CommandPalette />
         <SessionSearch />

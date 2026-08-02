@@ -12,10 +12,10 @@
 
 > Updated during implementation so progress survives chat/session changes.
 
-- [x] Task 1 — Preserve and verify staged hardware/session hotfixes — `149/149` frontend tests, build, Cargo check, and focused Rust test pass
-- [ ] Task 2 — Normalize Tauri hardware responses **(next)**
-- [ ] Task 3 — Add route navigation smoke matrix
-- [ ] Task 4 — Wire Memory extraction popup to persisted sessions
+- [x] Task 1 — Preserve and verify staged hardware/session hotfixes
+- [x] Task 2 — Normalize Tauri hardware responses — `6bd3ecf`; native payload validation, explicit retry state, nested GPU camelCase test
+- [x] Task 3 — Add route navigation smoke matrix — 14 route/recovery tests; `178/178` frontend tests and production build pass
+- [ ] Task 4 — Wire Memory extraction popup to persisted sessions **(in progress)**
 - [ ] Task 5 — Refresh Memory store after mutations
 - [ ] Task 6 — Verify exact outbound nickname prompt
 - [ ] Task 7 — Persist Memory extraction reviews and retries

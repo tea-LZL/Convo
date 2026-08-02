@@ -64,13 +64,16 @@ Object.defineProperty(globalThis, "matchMedia", {
   })),
 });
 
-Object.defineProperty(globalThis, "URL", {
-  writable: true,
-  configurable: true,
-  value: {
-    ...URL,
-    createObjectURL: vi.fn(() => "blob://mock-object-url"),
-    revokeObjectURL: vi.fn(),
+Object.defineProperties(globalThis.URL, {
+  createObjectURL: {
+    configurable: true,
+    writable: true,
+    value: vi.fn(() => "blob://mock-object-url"),
+  },
+  revokeObjectURL: {
+    configurable: true,
+    writable: true,
+    value: vi.fn(),
   },
 });
 
