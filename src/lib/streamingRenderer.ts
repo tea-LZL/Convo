@@ -83,7 +83,7 @@ export function createStreamRenderer(
   let tailMarker: Comment | null = null; // finalized nodes precede it; live-tail nodes follow it
   let committedLen = 0; // chars of source already frozen
   let lastText = ""; // most recent full text (for finalize / degraded fallback)
-  let tailShownLen = 0; // rendered-text length of the live tail (drives token fade)
+  let tailShownLen = 0;
   let appendMode: { codeText: Text; appendedLen: number } | null = null; // open fence
   let degraded = false; // latched on first throw → fall back to full re-render
 
@@ -131,7 +131,6 @@ export function createStreamRenderer(
     }
     const holder = document.createElement("div");
     holder.innerHTML = render(tailText);
-    fadeNewText(holder, tailShownLen);
     tailShownLen = holder.textContent.length;
     while (holder.firstChild) contentEl.appendChild(holder.firstChild);
   }
@@ -156,36 +155,6 @@ export function createStreamRenderer(
     if (code.length > appendMode.appendedLen) {
       appendMode.codeText.appendData(code.slice(appendMode.appendedLen));
       appendMode.appendedLen = code.length;
-    }
-  }
-
-  // Wrap tail text past `prevLen` characters in <span
-  // class="token-new"> for the streaming fade-in. Skips code
-  // (<pre>) and thinking blocks (.thinking-content). Operates on
-  // the detached fragment before insertion.
-  function fadeNewText(container: Element, prevLen: number) {
-    if (!prevLen) return;
-    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
-    let count = 0;
-    const toWrap: { node: Text; splitAt: number }[] = [];
-    while (walker.nextNode()) {
-      const node = walker.currentNode as Text;
-      const len = node.textContent.length;
-      if (count + len <= prevLen) {
-        count += len;
-        continue;
-      }
-      toWrap.push({ node, splitAt: count < prevLen ? prevLen - count : 0 });
-      count += len;
-    }
-    for (const { node, splitAt } of toWrap) {
-      const parent = node.parentNode as Element | null;
-      if (!parent || parent.closest("pre, .thinking-content")) continue;
-      const target = splitAt > 0 ? node.splitText(splitAt) : node;
-      const span = document.createElement("span");
-      span.className = "token-new";
-      parent.replaceChild(span, target);
-      span.appendChild(target);
     }
   }
 

@@ -122,7 +122,7 @@ const DEFAULT_TITLES = new Set(["", "New Chat", "Untitled"]);
  * affected session synchronously before reading `streamContent`, so
  * the final message saved to the DB is not stale by one frame.
  */
-const pendingFullContent = new Map<string, string>();
+const pendingDeltas = new Map<string, string>();
 let flushRafScheduled = false;
 
 function scheduleFlush() {
@@ -130,26 +130,20 @@ function scheduleFlush() {
   flushRafScheduled = true;
   requestAnimationFrame(() => {
     flushRafScheduled = false;
-    for (const [cid, text] of pendingFullContent) {
-      pendingFullContent.delete(cid);
+    for (const [cid, delta] of pendingDeltas) {
+      pendingDeltas.delete(cid);
       const s = getOrCreate(cid);
-      if (s.streamContent !== text) {
-        s.streamContent = text;
-        bump(cid);
-      }
+      s.streamContent += delta;
+      bump(cid);
     }
   });
 }
 
 function drainPendingFor(cid: string) {
-  const pending = pendingFullContent.get(cid);
-  if (pending === undefined) return;
-  pendingFullContent.delete(cid);
-  const s = getOrCreate(cid);
-  s.streamContent = pending;
-  // No bump here — the caller is about to bump for its own state
-  // change (s.messages append, s.streaming=false, s.error=...). The
-  // pending flush is folded into that re-render.
+  const delta = pendingDeltas.get(cid);
+  if (delta === undefined) return;
+  pendingDeltas.delete(cid);
+  getOrCreate(cid).streamContent += delta;
 }
 
 async function ensureListeners() {
@@ -171,21 +165,19 @@ async function ensureListeners() {
     )
   );
 
-  // chat-chunk — frame-batched. The Rust side already sends
-  // full_content on every chunk (it holds the in-memory text);
-  // we just take the latest one per session per frame.
+  // chat-chunk — frame-batched deltas; avoid resending the accumulated prefix.
   unlisteners.push(
-    await listen<{ conversation_id: string; stream_id?: string; content: string; full_content: string }>(
+    await listen<{ conversation_id: string; stream_id?: string; delta: string }>(
       "chat-chunk",
       (e) => {
         const cid = e.payload.conversation_id;
         const s = getOrCreate(cid);
         if (!isCurrentStream(s, e.payload.stream_id)) return;
-        if (!pendingFullContent.has(cid)) {
+        if (!pendingDeltas.has(cid)) {
           // First chunk for this session: ensure streaming is on.
           if (!s.streaming) s.streaming = true;
         }
-        pendingFullContent.set(cid, e.payload.full_content);
+        pendingDeltas.set(cid, (pendingDeltas.get(cid) ?? "") + e.payload.delta);
         scheduleFlush();
       }
     )

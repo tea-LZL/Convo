@@ -161,7 +161,7 @@ pub async fn chat_stream_v2(
                                     "chat-done",
                                     serde_json::json!({
                                         "conversation_id": &session_id,
-                                    "stream_id": &stream_id_for_events,
+                                        "stream_id": &stream_id_for_events,
                                         "prompt_tokens": prompt_tokens,
                                         "output_tokens": output_tokens,
                                         "completed_at": completed_at,
@@ -177,7 +177,7 @@ pub async fn chat_stream_v2(
                                         "chat-thinking",
                                         serde_json::json!({
                                             "conversation_id": &session_id,
-                                    "stream_id": &stream_id_for_events,
+                                        "stream_id": &stream_id_for_events,
                                             "thinking": &full_thinking,
                                         }),
                                     );
@@ -188,9 +188,8 @@ pub async fn chat_stream_v2(
                                         "chat-chunk",
                                         serde_json::json!({
                                             "conversation_id": &session_id,
-                                    "stream_id": &stream_id_for_events,
-                                            "content": &msg.content,
-                                            "full_content": &full_content,
+                                        "stream_id": &stream_id_for_events,
+                                            "delta": &msg.content,
                                         }),
                                     );
                                 }
@@ -201,7 +200,7 @@ pub async fn chat_stream_v2(
                                 "chat-error",
                                 serde_json::json!({
                                     "conversation_id": &session_id,
-                                    "stream_id": &stream_id_for_events,
+                                        "stream_id": &stream_id_for_events,
                                     "error": e.to_string(),
                                 }),
                             );
@@ -240,7 +239,7 @@ pub async fn chat_stream_v2(
                 "chat-done",
                 serde_json::json!({
                     "conversation_id": &session_id,
-                                    "stream_id": &stream_id_for_events,
+                                        "stream_id": &stream_id_for_events,
                     "prompt_tokens": null,
                     "output_tokens": null,
                     "completed_at": chrono::Utc::now().to_rfc3339(),

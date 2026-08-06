@@ -187,18 +187,6 @@ textarea::-webkit-scrollbar {
   background: var(--color-surface-3);
 }
 
-/* Per-token streaming fade — new words materialize (v0.6.7). */
-.token-new {
-  animation: token-fade 0.4s ease-out both;
-}
-@keyframes token-fade {
-  from { opacity: 0; }
-  to   { opacity: 1; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .token-new { animation: none !important; }
-}
-
 /* ── v0.7 animation keyframes ── */
 
 /* Message entrance — slides up slightly + fades in */

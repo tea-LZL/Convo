@@ -572,7 +572,9 @@ git add src-tauri/src/commands/chat_stream.rs src/stores/chatStream.ts src/lib/a
 git commit -m "fix(stream): isolate generations with stream ids"
 ```
 
-### Task 11: Switch streaming transport to deltas and remove token flicker
+### Task 11: Switch streaming transport to deltas and remove token flicker **(complete)**
+
+Implemented delta-only bridge payloads, frame-batched accumulation, removed per-token fade wrapping/CSS, and added transport-volume coverage. Verified with 201 frontend tests, typecheck, build, Cargo check, touched-module formatting, and diff check. Project-wide Cargo formatting remains blocked by unrelated pre-existing drift.
 
 **Objective:** Eliminate O(n²) bridge traffic and make streamed text visually stable.
 
