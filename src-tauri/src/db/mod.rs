@@ -13,12 +13,14 @@ pub type DbConn = r2d2::PooledConnection<SqliteConnectionManager>;
 const MIGRATION_V001: &str = include_str!("../../migrations/V001__initial_schema.sql");
 const MIGRATION_V002: &str = include_str!("../../migrations/V002__fts_and_skills.sql");
 const MIGRATION_V003: &str = include_str!("../../migrations/V003__drop_presets.sql");
+const MIGRATION_V004: &str = include_str!("../../migrations/V004__memory_reviews.sql");
 
 fn migrations() -> Migrations<'static> {
     Migrations::new(vec![
         M::up(MIGRATION_V001),
         M::up(MIGRATION_V002),
         M::up(MIGRATION_V003),
+        M::up(MIGRATION_V004),
     ])
 }
 
@@ -61,4 +63,46 @@ pub fn run_migrations(pool: &DbPool) -> Result<(), String> {
     m.to_latest(&mut conn)
         .map_err(|e| format!("Migration failed: {}", e))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    #[test]
+    fn migrates_existing_database_to_memory_reviews() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        Migrations::new(vec![
+            M::up(MIGRATION_V001),
+            M::up(MIGRATION_V002),
+            M::up(MIGRATION_V003),
+        ])
+        .to_latest(&mut conn)
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, title) VALUES ('existing', 'Existing')",
+            [],
+        )
+        .unwrap();
+
+        migrations().to_latest(&mut conn).unwrap();
+
+        let table: String = conn
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'pending_memory_reviews'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let session: String = conn
+            .query_row(
+                "SELECT title FROM sessions WHERE id = 'existing'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(table, "pending_memory_reviews");
+        assert_eq!(session, "Existing");
+    }
 }

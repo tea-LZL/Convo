@@ -84,11 +84,6 @@ let listenersReady = false;
 
 /** Sessions we've already auto-titled (one-shot, never re-fire). */
 const autoTitled = new Set<string>();
-/** Sessions we've already auto-extracted memory from. One-shot per
- * session: memory converges quickly; re-running extraction after
- * every turn just spams the same facts. The user can re-trigger
- * manually via Memory → "Extract from chat". */
-const autoExtractedMemory = new Set<string>();
 /** Titles that count as "default" — eligible for auto-rename. */
 const DEFAULT_TITLES = new Set(["", "New Chat", "Untitled"]);
 
@@ -229,49 +224,15 @@ async function ensureListeners() {
       // least twice, so we have at least one full Q/A pair beyond
       // the opener. The very first chat-done fires with gen=1
       // (the assistant reply to the first user message), which is
-      // too thin to extract from — skip it. Fire-and-forget so
-      // chat-done isn't blocked; the result lands in
-      // MemoryRoute's pending queue via the memory store.
+      // too thin to extract from — skip it. Fire-and-forget; the
+      // persisted review queue owns extraction and retry state.
       const gen = s._streamGeneration ?? 0;
       const lastModel = s._lastModel;
       const lastProvider = s._lastProviderId;
-      if (gen >= 2 && !autoExtractedMemory.has(cid)) {
-        // Reserve the slot up-front so a concurrent fire from the
-        // same session (rare; only if events race) doesn't double-
-        // trigger. Errors release it for retry.
-        autoExtractedMemory.add(cid);
-        // Lazy import — settings store pulls in a small chunk.
+      if (gen >= 2) {
         import("../stores/settings").then(({ useSettingsStore }) => {
-          if (!useSettingsStore.getState().memoryAutoEvaluate) {
-            // Setting is OFF: release the slot. Re-enabling the
-            // setting in Settings page will let the next chat-done
-            // re-fire extraction on the same session.
-            autoExtractedMemory.delete(cid);
-            return;
-          }
-          // Don't block chat-done on the LLM. Errors are
-          // best-effort surfaced via console.
-          (async () => {
-            try {
-              const facts = await api.extractFactsFromSession(
-                cid,
-                lastModel,
-                lastProvider
-              );
-              if (facts && facts.length > 0) {
-                useMemoryStore.getState().pushPendingExtract({
-                  sessionId: cid,
-                  facts,
-                });
-                toast.info(
-                  `${facts.length} potential memory item${facts.length === 1 ? "" : "s"} — review in Memory`,
-                  "Memory extraction"
-                );
-              }
-            } catch (e) {
-              console.warn("auto-eval memory:", e);
-            }
-          })();
+          if (!useSettingsStore.getState().memoryAutoEvaluate) return;
+          void useMemoryStore.getState().queueReview(cid, lastModel, lastProvider).catch(console.error);
         }).catch(console.error);
       }
 

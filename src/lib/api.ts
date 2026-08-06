@@ -196,6 +196,15 @@ export interface ExtractedFact {
   tags: string | null;
 }
 
+export interface MemoryReview {
+  id: string;
+  sessionId: string;
+  facts: ExtractedFact[];
+  status: "extracting" | "pending" | "failed" | "reviewed";
+  error: string | null;
+  createdAt: string;
+}
+
 export interface Document {
   id: string;
   title: string;
@@ -449,6 +458,16 @@ export const api = {
       modelId: modelId ?? null,
       providerId: providerId ?? null,
     }),
+  listMemoryReviews: () => invoke<MemoryReview[]>("list_memory_reviews"),
+  queueMemoryReview: (sessionId: string) =>
+    invoke<string | null>("queue_memory_review", { sessionId }),
+  finishMemoryReview: (id: string, facts: ExtractedFact[]) =>
+    invoke<void>("finish_memory_review", { id, facts }),
+  failMemoryReview: (id: string, error: string) =>
+    invoke<void>("fail_memory_review", { id, error }),
+  retryMemoryReview: (id: string) => invoke<string>("retry_memory_review", { id }),
+  markMemoryReviewReviewed: (id: string) =>
+    invoke<void>("mark_memory_review_reviewed", { id }),
 
   // Documents
   listDocuments: () => invoke<Document[]>("list_documents"),

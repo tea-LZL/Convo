@@ -6,6 +6,7 @@ pub mod compare;
 pub mod documents;
 pub mod hardware;
 pub mod memory;
+pub mod memory_reviews;
 pub mod models;
 pub mod notes;
 pub mod search;

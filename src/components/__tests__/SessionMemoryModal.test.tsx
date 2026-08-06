@@ -21,7 +21,7 @@ beforeEach(() => {
     }
     return null;
   });
-  useMemoryStore.setState({ items: [], pendingExtracts: [] });
+  useMemoryStore.setState({ items: [] });
 });
 
 describe("SessionMemoryModal", () => {

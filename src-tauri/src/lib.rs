@@ -15,6 +15,7 @@ use commands::compare as compare_cmd;
 use commands::documents as documents_cmd;
 use commands::hardware as hardware_cmd;
 use commands::memory as memory_cmd;
+use commands::memory_reviews as memory_reviews_cmd;
 use commands::models as models_cmd;
 use commands::notes as notes_cmd;
 use commands::search as search_cmd;
@@ -167,6 +168,12 @@ pub fn run() {
             memory_cmd::get_session_memory_overrides,
             memory_cmd::set_session_memory_overrides,
             memory_cmd::extract_facts_from_session,
+            memory_reviews_cmd::fail_memory_review,
+            memory_reviews_cmd::finish_memory_review,
+            memory_reviews_cmd::list_memory_reviews,
+            memory_reviews_cmd::mark_memory_review_reviewed,
+            memory_reviews_cmd::queue_memory_review,
+            memory_reviews_cmd::retry_memory_review,
             // Documents
             documents_cmd::list_documents,
             documents_cmd::upsert_document,

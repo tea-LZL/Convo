@@ -46,6 +46,8 @@ export function ChatInput({
 }) {
   const [input, setInput] = useState("");
   const ref = useRef<HTMLTextAreaElement>(null);
+  const hasAttachmentError = attachments.attachments.some((attachment) => attachment.status === "error");
+  const attachmentsBlocked = attachments.attachments.some((attachment) => attachment.status !== "ready");
 
   useEffect(() => {
     if (ref.current) {
@@ -109,7 +111,7 @@ export function ChatInput({
 
   const handleSend = async () => {
     const text = input.trim();
-    if (!text || streaming || disabled) return;
+    if (!text || streaming || disabled || attachmentsBlocked) return;
     const parsed = parseCommand(text);
     if (parsed) {
       const result = await runCommand(parsed, slashCtx);
@@ -161,6 +163,9 @@ export function ChatInput({
           <Tooltip content="Attach file (or drag & drop)">
             <IconButton icon={<Paperclip size={14} />} label="Attach" size="sm" onClick={openPicker} />
           </Tooltip>
+          {hasAttachmentError && (
+            <span role="alert" className="text-xs text-error">Remove failed attachments to send</span>
+          )}
         </div>
         <div className="flex items-center gap-1.5">
           {streaming ? (
@@ -172,7 +177,7 @@ export function ChatInput({
               size="sm"
               variant="primary"
               onClick={handleSend}
-              disabled={!input.trim() || disabled}
+              disabled={!input.trim() || disabled || attachmentsBlocked}
               icon={<Send size={12} />}
             >
               Send

@@ -61,8 +61,12 @@ export interface UseAttachments {
 
 export function useAttachments(sessionId: string | null): UseAttachments {
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  const attachmentsRef = useRef(attachments);
+  attachmentsRef.current = attachments;
   const [isDragging, setIsDragging] = useState(false);
   const dragCounter = useRef(0);
+  const fileByLocalId = useRef(new Map<string, File>());
+  const activeUploads = useRef(new Set<string>());
 
   const addFiles = useCallback(
     (filesIn: File[] | FileList) => {
@@ -77,8 +81,10 @@ export function useAttachments(sessionId: string | null): UseAttachments {
             toastOnce(`${f.name} is too large (max 25 MB)`);
             continue;
           }
+          const localId = crypto.randomUUID();
+          fileByLocalId.current.set(localId, f);
           next.push({
-            localId: crypto.randomUUID(),
+            localId,
             serverId: null,
             name: f.name,
             mime: f.type || "application/octet-stream",
@@ -96,16 +102,19 @@ export function useAttachments(sessionId: string | null): UseAttachments {
 
   // Upload pending files as they appear.
   useEffect(() => {
-    const uploading = attachments.filter((a) => a.status === "uploading" && a.serverId === null);
+    const uploading = attachments.filter(
+      (a) => a.status === "uploading" && a.serverId === null && !activeUploads.current.has(a.localId)
+    );
     if (uploading.length === 0) return;
+    for (const attachment of uploading) activeUploads.current.add(attachment.localId);
     (async () => {
       for (const a of uploading) {
         try {
-          // Re-read the file from input. We stored only metadata; the File
-          // object isn't kept in state to avoid serialization issues. We
-          // instead re-pick it from a temporary global ref populated by addFiles.
-          const f = (window as any).__pendingFileByLocalId?.[a.localId];
-          if (!f) continue;
+          const f = fileByLocalId.current.get(a.localId);
+          if (!f) {
+            activeUploads.current.delete(a.localId);
+            continue;
+          }
           const data = await readAsBase64(f);
           const result = await api.addAttachment({
             name: a.name,
@@ -119,15 +128,19 @@ export function useAttachments(sessionId: string | null): UseAttachments {
               x.localId === a.localId ? { ...x, serverId: result.id, status: "ready" } : x
             )
           );
+          fileByLocalId.current.delete(a.localId);
         } catch (e) {
+          if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
           setAttachments((prev) =>
             prev.map((x) =>
               x.localId === a.localId
-                ? { ...x, status: "error", error: String(e) }
+                ? { ...x, previewUrl: null, status: "error", error: String(e) }
                 : x
             )
           );
+          fileByLocalId.current.delete(a.localId);
         }
+        activeUploads.current.delete(a.localId);
       }
     })();
   }, [attachments, sessionId]);
@@ -136,6 +149,8 @@ export function useAttachments(sessionId: string | null): UseAttachments {
     setAttachments((prev) => {
       const found = prev.find((x) => x.localId === localId);
       if (found?.previewUrl) URL.revokeObjectURL(found.previewUrl);
+      fileByLocalId.current.delete(localId);
+      activeUploads.current.delete(localId);
       // Best-effort delete on the server
       if (found?.serverId) api.deleteAttachment(found.serverId).catch(() => {});
       return prev.filter((x) => x.localId !== localId);
@@ -148,8 +163,18 @@ export function useAttachments(sessionId: string | null): UseAttachments {
         if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
         if (a.serverId) api.deleteAttachment(a.serverId).catch(() => {});
       }
+      fileByLocalId.current.clear();
+      activeUploads.current.clear();
       return [];
     });
+  }, []);
+
+  useEffect(() => () => {
+    for (const attachment of attachmentsRef.current) {
+      if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
+    }
+    fileByLocalId.current.clear();
+    activeUploads.current.clear();
   }, []);
 
   const serializeForMessage = useCallback((ids: string[]) => {
@@ -177,28 +202,13 @@ export function useAttachments(sessionId: string | null): UseAttachments {
       dragCounter.current = Math.max(0, dragCounter.current - 1);
       if (dragCounter.current === 0) setIsDragging(false);
     };
+    const onDragOver = (e: DragEvent) => e.preventDefault();
     const onDrop = (e: DragEvent) => {
       e.preventDefault();
       dragCounter.current = 0;
       setIsDragging(false);
       if (e.dataTransfer?.files?.length) {
-        // Stash file objects in a global ref keyed by local id
-        const files = Array.from(e.dataTransfer.files);
-        const ref = ((window as any).__pendingFileByLocalId ??= {});
-        for (const f of files) {
-          const lid = crypto.randomUUID();
-          ref[lid] = f;
-        }
-        addFiles(
-          files.map((f) => {
-            const lid = crypto.randomUUID();
-            ref[lid] = f;
-            // We need to give the file to addFiles, but addFiles uses the
-            // upload path that calls readAsBase64 from a global ref. So we
-            // simply replace the local file ref with this one.
-            return f;
-          })
-        );
+        addFiles(e.dataTransfer.files);
       }
     };
     const onPaste = (e: ClipboardEvent) => {
@@ -212,21 +222,17 @@ export function useAttachments(sessionId: string | null): UseAttachments {
         }
       }
       if (files.length === 0) return;
-      const ref = ((window as any).__pendingFileByLocalId ??= {});
-      for (const f of files) {
-        const lid = crypto.randomUUID();
-        ref[lid] = f;
-      }
       addFiles(files);
     };
     document.addEventListener("dragenter", onDragEnter);
     document.addEventListener("dragleave", onDragLeave);
-    document.addEventListener("dragover", (e) => e.preventDefault());
+    document.addEventListener("dragover", onDragOver);
     document.addEventListener("drop", onDrop);
     document.addEventListener("paste", onPaste);
     return () => {
       document.removeEventListener("dragenter", onDragEnter);
       document.removeEventListener("dragleave", onDragLeave);
+      document.removeEventListener("dragover", onDragOver);
       document.removeEventListener("drop", onDrop);
       document.removeEventListener("paste", onPaste);
     };

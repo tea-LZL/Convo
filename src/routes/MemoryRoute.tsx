@@ -46,12 +46,14 @@ export function MemoryRoute() {
   const [showAdd, setShowAdd] = useState(false);
   const [extractSessionId, setExtractSessionId] = useState<string | null>(null);
   const [extractSessions, setExtractSessions] = useState<ExtractableSession[]>([]);
-  const pendingExtracts = useMemoryStore((s) => s.pendingExtracts);
-  const removePendingExtract = useMemoryStore((s) => s.removePendingExtract);
+  const reviews = useMemoryStore((s) => s.reviews);
+  const refreshReviews = useMemoryStore((s) => s.refreshReviews);
+  const retryReview = useMemoryStore((s) => s.retryReview);
+  const markReviewReviewed = useMemoryStore((s) => s.markReviewReviewed);
   const upsertMemory = useMemoryStore((s) => s.upsert);
   const toggleMemory = useMemoryStore((s) => s.toggle);
   const removeMemory = useMemoryStore((s) => s.remove);
-  const [reviewLocalId, setReviewLocalId] = useState<string | null>(null);
+  const [reviewId, setReviewId] = useState<string | null>(null);
   const [reviewSelected, setReviewSelected] = useState<Set<number>>(new Set());
   const navigate = useNavigate();
 
@@ -62,6 +64,7 @@ export function MemoryRoute() {
   };
 
   useEffect(() => { refresh(); }, [filter]);
+  useEffect(() => { void refreshReviews(); }, [refreshReviews]);
 
   useEffect(() => {
     if (!query.trim()) {
@@ -178,7 +181,7 @@ export function MemoryRoute() {
   };
 
   const visible = searchHits ?? items.map((i) => ({ item: i, snippet: "" }));
-  const reviewPending = reviewLocalId ? pendingExtracts.find((p) => p.localId === reviewLocalId) ?? null : null;
+  const reviewPending = reviewId ? reviews.find((review) => review.id === reviewId) ?? null : null;
   const [deleteMemoryId, setDeleteMemoryId] = useState<string | null>(null);
 
   return (
@@ -219,31 +222,35 @@ export function MemoryRoute() {
           ]}
         />
       </div>
-      {pendingExtracts.length > 0 && (
+      {reviews.length > 0 && (
         <div className="border-b border-border bg-accent/5 px-4 py-2 flex items-center gap-2 flex-wrap">
-          <Bell size={12} className="text-accent shrink-0 animate-pulse-dot" />
-          <span className="text-xs text-text">
-            {pendingExtracts.length} pending memory review
-            {pendingExtracts.length === 1 ? "" : "s"}
-            {" · "}
-            {pendingExtracts.reduce((n, p) => n + p.facts.length, 0)} suggested facts total
-          </span>
+          <Bell size={12} className="text-accent shrink-0" />
+          <span className="text-xs text-text">Memory extraction reviews</span>
           <div className="flex-1" />
-          {pendingExtracts.map((p) => (
-            <Button
-              key={p.localId}
-              size="xs"
-              variant="secondary"
-              icon={<Sparkles size={11} />}
-              onClick={() => {
-                setReviewLocalId(p.localId);
-                setReviewSelected(new Set(p.facts.map((_, i) => i)));
-              }}
-              title={`From session ${p.sessionId.slice(0, 8)}…`}
-            >
-              Review ({p.facts.length})
-            </Button>
-          ))}
+          {reviews.map((review) => {
+            const label = review.status === "pending"
+              ? `Pending (${review.facts.length})`
+              : review.status === "failed" ? "Failed · Retry"
+                : review.status === "extracting" ? "Extracting · Retry" : "Reviewed";
+            return (
+              <Button
+                key={review.id}
+                size="xs"
+                variant="secondary"
+                disabled={review.status === "reviewed"}
+                onClick={() => {
+                  if (review.status === "failed" || review.status === "extracting") void retryReview(review.id);
+                  if (review.status === "pending") {
+                    setReviewId(review.id);
+                    setReviewSelected(new Set(review.facts.map((_, i) => i)));
+                  }
+                }}
+                title={`From session ${review.sessionId.slice(0, 8)}…`}
+              >
+                {label}
+              </Button>
+            );
+          })}
         </div>
       )}
       <div className="flex-1 overflow-y-auto p-3 sm:p-4 max-w-2xl mx-auto w-full">
@@ -518,9 +525,9 @@ export function MemoryRoute() {
       {/* Pending review modal — surfaces auto-extracted facts from
           chat-done. User picks which to save as memory items. */}
       <Modal
-        open={!!reviewLocalId}
+        open={!!reviewId}
         onClose={() => {
-          setReviewLocalId(null);
+          setReviewId(null);
           setReviewSelected(new Set());
         }}
         title="Review extracted facts"
@@ -535,9 +542,9 @@ export function MemoryRoute() {
             <>
               <Button
                 variant="ghost"
-                onClick={() => {
-                  removePendingExtract(reviewPending.localId);
-                  setReviewLocalId(null);
+                onClick={async () => {
+                  await markReviewReviewed(reviewPending.id);
+                  setReviewId(null);
                   setReviewSelected(new Set());
                 }}
               >
@@ -563,8 +570,8 @@ export function MemoryRoute() {
                     });
                   }
                   toast.success(`Saved ${chosen.length} memory item${chosen.length === 1 ? "" : "s"}`);
-                  removePendingExtract(reviewPending.localId);
-                  setReviewLocalId(null);
+                  await markReviewReviewed(reviewPending.id);
+                  setReviewId(null);
                   setReviewSelected(new Set());
                   await refresh();
                 }}
@@ -577,7 +584,7 @@ export function MemoryRoute() {
                 variant="outline"
                 onClick={() => {
                   const sid = reviewPending.sessionId;
-                  setReviewLocalId(null);
+                  setReviewId(null);
                   setReviewSelected(new Set());
                   navigate(`/chat/${sid}`);
                 }}

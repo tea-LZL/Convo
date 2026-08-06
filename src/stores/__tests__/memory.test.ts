@@ -11,7 +11,7 @@ beforeEach(() => {
     loaded: false,
     loading: false,
     _overrides: {},
-    pendingExtracts: [],
+    reviews: [],
   });
 });
 
@@ -19,7 +19,7 @@ describe("useMemoryStore", () => {
   it("starts empty and unloaded", () => {
     expect(useMemoryStore.getState().items).toEqual([]);
     expect(useMemoryStore.getState().loaded).toBe(false);
-    expect(useMemoryStore.getState().pendingExtracts).toEqual([]);
+    expect(useMemoryStore.getState().reviews).toEqual([]);
   });
 
   it("buildContextBlock returns an empty string when no items", async () => {
@@ -38,6 +38,59 @@ describe("useMemoryStore", () => {
 
     await refresh;
     expect(await context).toContain(preferenceItem.content);
+  });
+
+  it("loads persisted memory reviews", async () => {
+    const review = {
+      id: "review-1",
+      sessionId: "session-1",
+      facts: [{ kind: "user_pref", title: "Tone", content: "Prefers concise replies.", tags: null }],
+      status: "pending" as const,
+      error: null,
+      createdAt: "2026-08-02T00:00:00Z",
+    };
+    vi.spyOn(api, "listMemoryReviews").mockResolvedValue([review]);
+
+    await useMemoryStore.getState().refreshReviews();
+
+    expect(useMemoryStore.getState().reviews).toEqual([review]);
+  });
+
+  it("persists automatic extraction before requesting facts", async () => {
+    vi.spyOn(api, "queueMemoryReview").mockResolvedValue("review-1");
+    vi.spyOn(api, "extractFactsFromSession").mockResolvedValue(extractedFacts);
+    vi.spyOn(api, "finishMemoryReview").mockResolvedValue();
+    vi.spyOn(api, "listMemoryReviews").mockResolvedValue([]);
+
+    await useMemoryStore.getState().queueReview("session-1", "model-1", "provider-1");
+
+    expect(api.queueMemoryReview).toHaveBeenCalledWith("session-1");
+    expect(api.extractFactsFromSession).toHaveBeenCalledWith("session-1", "model-1", "provider-1");
+    expect(api.finishMemoryReview).toHaveBeenCalledWith("review-1", extractedFacts);
+  });
+
+  it("persists automatic extraction failures for retry", async () => {
+    vi.spyOn(api, "queueMemoryReview").mockResolvedValue("review-1");
+    vi.spyOn(api, "extractFactsFromSession").mockRejectedValue(new Error("offline"));
+    vi.spyOn(api, "failMemoryReview").mockResolvedValue();
+    vi.spyOn(api, "listMemoryReviews").mockResolvedValue([]);
+
+    await useMemoryStore.getState().queueReview("session-1");
+
+    expect(api.failMemoryReview).toHaveBeenCalledWith("review-1", "offline");
+  });
+
+  it("retries a failed persisted review", async () => {
+    vi.spyOn(api, "retryMemoryReview").mockResolvedValue("session-1");
+    vi.spyOn(api, "extractFactsFromSession").mockResolvedValue(extractedFacts);
+    vi.spyOn(api, "finishMemoryReview").mockResolvedValue();
+    vi.spyOn(api, "listMemoryReviews").mockResolvedValue([]);
+
+    await useMemoryStore.getState().retryReview("review-1");
+
+    expect(api.extractFactsFromSession).toHaveBeenCalledWith("session-1");
+    expect(api.finishMemoryReview).toHaveBeenCalledWith("review-1", extractedFacts);
+    expect(useMemoryStore.getState().reviews).toEqual([]);
   });
 
   it("upsert makes enabled memory immediately available to prompts", async () => {
@@ -122,51 +175,5 @@ describe("useMemoryStore", () => {
     });
     const block = await useMemoryStore.getState().buildContextBlock();
     expect(block).toContain(`- ${preferenceItem.content}`);
-  });
-});
-
-describe("useMemoryStore.pendingExtracts", () => {
-  it("pushPendingExtract assigns a localId and timestamps", () => {
-    useMemoryStore.getState().clearPendingExtracts();
-    useMemoryStore.getState().pushPendingExtract({
-      sessionId: "session-abc",
-      facts: extractedFacts,
-    });
-    const pe = useMemoryStore.getState().pendingExtracts;
-    expect(pe).toHaveLength(1);
-    expect(pe[0].sessionId).toBe("session-abc");
-    expect(pe[0].facts).toEqual(extractedFacts);
-    expect(pe[0].localId).toMatch(/^pe-/);
-    expect(typeof pe[0].extractedAt).toBe("number");
-  });
-
-  it("pushPendingExtract silently drops empty fact lists", () => {
-    useMemoryStore.getState().clearPendingExtracts();
-    useMemoryStore.getState().pushPendingExtract({ sessionId: "x", facts: [] });
-    expect(useMemoryStore.getState().pendingExtracts).toHaveLength(0);
-  });
-
-  it("removePendingExtract drops by localId", () => {
-    useMemoryStore.getState().clearPendingExtracts();
-    useMemoryStore.getState().pushPendingExtract({ sessionId: "a", facts: extractedFacts });
-    useMemoryStore.getState().pushPendingExtract({ sessionId: "b", facts: extractedFacts });
-    const [first] = useMemoryStore.getState().pendingExtracts;
-    useMemoryStore.getState().removePendingExtract(first.localId);
-    const remaining = useMemoryStore.getState().pendingExtracts;
-    expect(remaining).toHaveLength(1);
-    expect(remaining[0].localId).not.toBe(first.localId);
-  });
-
-  it("clearPendingExtracts targets one session or all", () => {
-    useMemoryStore.getState().clearPendingExtracts();
-    useMemoryStore.getState().pushPendingExtract({ sessionId: "a", facts: extractedFacts });
-    useMemoryStore.getState().pushPendingExtract({ sessionId: "a", facts: extractedFacts });
-    useMemoryStore.getState().pushPendingExtract({ sessionId: "b", facts: extractedFacts });
-    expect(useMemoryStore.getState().pendingExtracts).toHaveLength(3);
-    useMemoryStore.getState().clearPendingExtracts("a");
-    expect(useMemoryStore.getState().pendingExtracts).toHaveLength(1);
-    expect(useMemoryStore.getState().pendingExtracts[0].sessionId).toBe("b");
-    useMemoryStore.getState().clearPendingExtracts();
-    expect(useMemoryStore.getState().pendingExtracts).toHaveLength(0);
   });
 });

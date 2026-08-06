@@ -15,6 +15,7 @@ describe("MemoryRoute", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockImplementation(async (command) => {
       if (command === "list_memory") return [];
+      if (command === "list_memory_reviews") return [];
       if (command === "list_extractable_sessions") return sessions;
       return null;
     });
@@ -39,6 +40,7 @@ describe("MemoryRoute", () => {
     let resolveSessions!: (value: unknown[]) => void;
     vi.mocked(invoke).mockImplementation((command) => {
       if (command === "list_memory") return Promise.resolve([]);
+      if (command === "list_memory_reviews") return Promise.resolve([]);
       if (command === "list_extractable_sessions") {
         return new Promise((resolve) => { resolveSessions = resolve; });
       }
@@ -56,5 +58,37 @@ describe("MemoryRoute", () => {
 
     await act(async () => resolveSessions([]));
     await waitFor(() => expect(screen.getByText(/No sessions available/)).toBeInTheDocument());
+  });
+
+  it("restores review states and retries failures", async () => {
+    const reviews = [
+      { id: "pending", sessionId: "session-1", facts: [{ kind: "user_pref", title: null, content: "Fact", tags: null }], status: "pending", error: null, createdAt: "now" },
+      { id: "failed", sessionId: "session-2", facts: [], status: "failed", error: "offline", createdAt: "now" },
+      { id: "extracting", sessionId: "session-3", facts: [], status: "extracting", error: null, createdAt: "now" },
+      { id: "reviewed", sessionId: "session-4", facts: [], status: "reviewed", error: null, createdAt: "now" },
+    ];
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "list_memory") return [];
+      if (command === "list_memory_reviews") return reviews;
+      if (command === "retry_memory_review") return "session-2";
+      if (command === "extract_facts_from_session") return [];
+      return null;
+    });
+
+    render(
+      <MemoryRouter>
+        <MemoryRoute />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole("button", { name: "Pending (1)" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Extracting · Retry" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Reviewed" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Pending (1)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Discard all" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("mark_memory_review_reviewed", { id: "pending" }));
+    fireEvent.click(screen.getByRole("button", { name: "Failed · Retry" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("retry_memory_review", { id: "failed" }));
+    expect(invoke).toHaveBeenCalledWith("finish_memory_review", { id: "failed", facts: [] });
   });
 });

@@ -3,18 +3,7 @@
  * exposes builders for the system prompt to inject.
  */
 import { create } from "zustand";
-import { api, ExtractedFact, MemoryItem } from "../lib/api";
-
-export interface PendingExtract {
-  /** Local-only ID so React can key the row. */
-  localId: string;
-  /** The session this came from, for "Open chat" links. */
-  sessionId: string;
-  /** Timestamp the extract ran (ms). */
-  extractedAt: number;
-  /** Fact candidates from the LLM. */
-  facts: ExtractedFact[];
-}
+import { api, MemoryItem, MemoryReview } from "../lib/api";
 
 let refreshPromise: Promise<void> | null = null;
 
@@ -23,12 +12,31 @@ async function refreshAfterMutation(refresh: () => Promise<void>) {
   await refresh();
 }
 
+async function extractReview(
+  id: string,
+  sessionId: string,
+  modelId?: string,
+  providerId?: string,
+) {
+  try {
+    const facts = modelId || providerId
+      ? await api.extractFactsFromSession(sessionId, modelId, providerId)
+      : await api.extractFactsFromSession(sessionId);
+    await api.finishMemoryReview(id, facts);
+  } catch (error) {
+    await api.failMemoryReview(id, error instanceof Error ? error.message : String(error));
+  }
+}
+
 interface MemoryState {
   items: MemoryItem[];
   loaded: boolean;
   loading: boolean;
-  /** Out-of-band queue of auto-extracted facts awaiting user review. */
-  pendingExtracts: PendingExtract[];
+  reviews: MemoryReview[];
+  refreshReviews: () => Promise<void>;
+  queueReview: (sessionId: string, modelId?: string, providerId?: string) => Promise<void>;
+  retryReview: (id: string) => Promise<void>;
+  markReviewReviewed: (id: string) => Promise<void>;
   refresh: () => Promise<void>;
   upsert: (item: Parameters<typeof api.upsertMemory>[0]) => Promise<string>;
   toggle: (id: string, enabled: boolean) => Promise<void>;
@@ -40,12 +48,6 @@ interface MemoryState {
   buildContextBlock: (sessionId?: string) => Promise<string>;
   /** Pre-fetched per-session override lists (cached in memory). */
   _overrides: Record<string, string[] | null>;
-  /** Add a pending extract (e.g. from auto-eval after chat-done). */
-  pushPendingExtract: (extract: Omit<PendingExtract, "localId" | "extractedAt">) => void;
-  /** Drop a pending extract (after user reviews / saves / discards). */
-  removePendingExtract: (localId: string) => void;
-  /** Drop every pending extract, optionally for one sessionId. */
-  clearPendingExtracts: (sessionId?: string) => void;
 }
 
 export const useMemoryStore = create<MemoryState>((set, get) => ({
@@ -53,7 +55,26 @@ export const useMemoryStore = create<MemoryState>((set, get) => ({
   loaded: false,
   loading: false,
   _overrides: {},
-  pendingExtracts: [],
+  reviews: [],
+  refreshReviews: async () => {
+    set({ reviews: await api.listMemoryReviews() });
+  },
+  queueReview: async (sessionId, modelId, providerId) => {
+    const id = await api.queueMemoryReview(sessionId);
+    if (!id) return;
+    await extractReview(id, sessionId, modelId, providerId);
+    await get().refreshReviews();
+  },
+  retryReview: async (id) => {
+    const sessionId = await api.retryMemoryReview(id);
+    await extractReview(id, sessionId);
+    await get().refreshReviews();
+  },
+  markReviewReviewed: async (id) => {
+    await api.markMemoryReviewReviewed(id);
+    await get().refreshReviews();
+  },
+
   refresh: () => {
     if (refreshPromise) return refreshPromise;
     set({ loading: true });
@@ -88,29 +109,6 @@ export const useMemoryStore = create<MemoryState>((set, get) => ({
       _overrides: { ...state._overrides, [sessionId]: [...itemIds] },
     }));
   },
-  pushPendingExtract: (extract) => {
-    // Skip empty payloads — extract_facts_from_session returns [] when
-    // it can't find anything durable, and that's not worth surfacing.
-    if (!extract.facts || extract.facts.length === 0) return;
-    set((s) => ({
-      pendingExtracts: [
-        ...s.pendingExtracts,
-        {
-          ...extract,
-          localId: `pe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          extractedAt: Date.now(),
-        },
-      ],
-    }));
-  },
-  removePendingExtract: (localId) =>
-    set((s) => ({ pendingExtracts: s.pendingExtracts.filter((p) => p.localId !== localId) })),
-  clearPendingExtracts: (sessionId) =>
-    set((s) => ({
-      pendingExtracts: sessionId
-        ? s.pendingExtracts.filter((p) => p.sessionId !== sessionId)
-        : [],
-    })),
   buildContextBlock: async (sessionId) => {
     // Ensure items are loaded.  refresh() is called on mount but is
     // fire-and-forget — on the first send the promise may not have
