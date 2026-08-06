@@ -67,6 +67,7 @@ export interface SessionState {
    * one that proposes memory facts. */
   _lastModel?: string;
   _lastProviderId?: string;
+  _streamId?: string;
 }
 
 const EMPTY: SessionState = {
@@ -79,6 +80,22 @@ const EMPTY: SessionState = {
 };
 
 const stateBySession = new Map<string, SessionState>();
+const terminalStreams = new Set<string>();
+
+function eventStreamKey(cid: string, streamId?: string): string {
+  return `${cid}:${streamId ?? "legacy"}`;
+}
+
+function isCurrentStream(s: SessionState, streamId?: string): boolean {
+  return !streamId || !s._streamId || s._streamId === streamId;
+}
+
+export function acceptTerminalEvent(cid: string, streamId?: string): boolean {
+  const key = eventStreamKey(cid, streamId);
+  if (terminalStreams.has(key)) return false;
+  terminalStreams.add(key);
+  return true;
+}
 const unlisteners: UnlistenFn[] = [];
 let listenersReady = false;
 
@@ -141,11 +158,12 @@ async function ensureListeners() {
 
   // chat-thinking
   unlisteners.push(
-    await listen<{ conversation_id: string; thinking: string }>(
+    await listen<{ conversation_id: string; stream_id?: string; thinking: string }>(
       "chat-thinking",
       (e) => {
         const cid = e.payload.conversation_id;
         const s = getOrCreate(cid);
+        if (!isCurrentStream(s, e.payload.stream_id)) return;
         s.streamThinking = e.payload.thinking;
         if (!s.streaming) s.streaming = true;
         bump(cid);
@@ -157,13 +175,14 @@ async function ensureListeners() {
   // full_content on every chunk (it holds the in-memory text);
   // we just take the latest one per session per frame.
   unlisteners.push(
-    await listen<{ conversation_id: string; content: string; full_content: string }>(
+    await listen<{ conversation_id: string; stream_id?: string; content: string; full_content: string }>(
       "chat-chunk",
       (e) => {
         const cid = e.payload.conversation_id;
+        const s = getOrCreate(cid);
+        if (!isCurrentStream(s, e.payload.stream_id)) return;
         if (!pendingFullContent.has(cid)) {
           // First chunk for this session: ensure streaming is on.
-          const s = getOrCreate(cid);
           if (!s.streaming) s.streaming = true;
         }
         pendingFullContent.set(cid, e.payload.full_content);
@@ -176,16 +195,19 @@ async function ensureListeners() {
   unlisteners.push(
     await listen<{
       conversation_id: string;
+      stream_id?: string;
       prompt_tokens: number | null;
       output_tokens: number | null;
       completed_at: string;
     }>("chat-done", (e) => {
       const cid = e.payload.conversation_id;
+      const s = getOrCreate(cid);
+      if (!isCurrentStream(s, e.payload.stream_id)) return;
+      if (!acceptTerminalEvent(cid, e.payload.stream_id)) return;
       // Drain any pending chunk for this session. The terminal
       // event may arrive between two rAF drains; we need the
       // latest server text in the saved message.
       drainPendingFor(cid);
-      const s = getOrCreate(cid);
       const thinking = (s.streamThinking || "").trim() || null;
       s.streaming = false;
       if (s.streamContent) {
@@ -248,12 +270,14 @@ async function ensureListeners() {
 
   // chat-error
   unlisteners.push(
-    await listen<{ conversation_id: string; error: string }>(
+    await listen<{ conversation_id: string; stream_id?: string; error: string }>(
       "chat-error",
       (e) => {
         const cid = e.payload.conversation_id;
-        drainPendingFor(cid);
         const s = getOrCreate(cid);
+        if (!isCurrentStream(s, e.payload.stream_id)) return;
+        if (!acceptTerminalEvent(cid, e.payload.stream_id)) return;
+        drainPendingFor(cid);
         s.streaming = false;
         s.error = e.payload.error;
         // Persist whatever we have so the user message isn't lost
@@ -268,10 +292,12 @@ async function ensureListeners() {
 
   // chat-cancelled
   unlisteners.push(
-    await listen<string>("chat-cancelled", (e) => {
-      const cid = e.payload;
-      drainPendingFor(cid);
+    await listen<{ conversation_id: string; stream_id?: string }>("chat-cancelled", (e) => {
+      const cid = e.payload.conversation_id;
       const s = getOrCreate(cid);
+      if (!isCurrentStream(s, e.payload.stream_id)) return;
+      if (!acceptTerminalEvent(cid, e.payload.stream_id)) return;
+      drainPendingFor(cid);
       const streamGeneration = s._streamGeneration ?? 0;
       const cancelRequestedGeneration = s._cancelRequestedGeneration ?? -1;
       // Ignore stale chat-cancelled events caused by an old Rust
@@ -422,6 +448,8 @@ export async function sendMessage(
   // from a previous stream are rejected in the handler.
   s._streamGeneration = (s._streamGeneration ?? 0) + 1;
   s._cancelRequestedGeneration = undefined;
+  s._streamId = crypto.randomUUID();
+  terminalStreams.delete(eventStreamKey(cid, s._streamId));
   s._lastModel = model;
   s._lastProviderId = opts.providerId;
   bump(cid);
@@ -466,6 +494,7 @@ export async function sendMessage(
       messages: cleanMessages,
       system: fullSystem,
       temperature: opts.temperature ?? 0.7,
+      streamId: s._streamId,
     });
   } catch (e) {
     s.streaming = false;
@@ -479,7 +508,7 @@ export async function stopStream(cid: string) {
   const s = getOrCreate(cid);
   s._cancelRequestedGeneration = s._streamGeneration ?? 0;
   try {
-    await api.cancelChat(cid);
+    await api.cancelChat(cid, s._streamId);
   } catch (e) {
     console.error("cancelChat:", e);
   }

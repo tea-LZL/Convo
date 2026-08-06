@@ -526,7 +526,9 @@ git add src-tauri/src/commands/chat.rs src-tauri/src/commands/chat_stream.rs src
 git commit -m "fix(chat): persist streamed turns append-only"
 ```
 
-### Task 10: Add stream IDs and exactly-once terminal events
+### Task 10: Add stream IDs and exactly-once terminal events **(complete)**
+
+Implemented unique stream IDs, stream-keyed cancellation/cleanup, stale-event filtering, and frontend exactly-once terminal deduplication. Verified with 200 frontend tests, typecheck, build, Cargo check, touched-module formatting, and diff check. Project-wide Cargo formatting remains blocked by unrelated pre-existing drift.
 
 **Objective:** Prevent stale chunks/done/cancel events from mutating a newer generation.
 

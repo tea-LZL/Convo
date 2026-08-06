@@ -417,8 +417,10 @@ export const api = {
     numCtx?: number;
     repeatPenalty?: number;
     stop?: string[];
+    streamId?: string;
   }) => invoke<void>("chat_stream_v2", { args }),
-  cancelChat: (sessionId: string) => invoke<void>("cancel_chat_v2", { sessionId }),
+  cancelChat: (sessionId: string, streamId?: string) =>
+    invoke<void>("cancel_chat_v2", { sessionId, streamId: streamId ?? null }),
 
   // Providers
   listProviders: () => invoke<Provider[]>("list_providers"),

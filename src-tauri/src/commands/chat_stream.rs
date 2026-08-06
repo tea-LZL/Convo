@@ -20,6 +20,8 @@ pub struct ChatHistoryMessage {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatStreamArgs {
+    #[serde(default)]
+    pub stream_id: Option<String>,
     pub session_id: String,
     pub model: String,
     pub messages: Vec<ChatHistoryMessage>,
@@ -73,12 +75,11 @@ pub async fn chat_stream_v2(
 
     let provider: Box<dyn Provider> = match kind.as_str() {
         "ollama" => Box::new(crate::providers::ollama::OllamaProvider::new(
-            base_url,
-            api_key,
+            base_url, api_key,
         )),
-        "openai_compat" => Box::new(
-            crate::providers::openai_compat::OpenAiCompatProvider::new(base_url, api_key),
-        ),
+        "openai_compat" => Box::new(crate::providers::openai_compat::OpenAiCompatProvider::new(
+            base_url, api_key,
+        )),
         other => return Err(format!("Unknown provider: {}", other)),
     };
 
@@ -108,15 +109,33 @@ pub async fn chat_stream_v2(
 
     let stream = provider.chat_stream(req).await?;
     let (rx, _handle) = channelize(stream);
+    let stream_id = args
+        .stream_id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let stream_key = format!("{}:{}", args.session_id, stream_id);
 
     let (tx, rx_cancel) = oneshot::channel::<()>();
     {
         let mut map = streams.0.lock().map_err(|e| e.to_string())?;
-        map.insert(args.session_id.clone(), tx);
+        let prefix = format!("{}:", args.session_id);
+        for key in map
+            .keys()
+            .filter(|key| key.starts_with(&prefix))
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            if let Some(previous) = map.remove(&key) {
+                let _ = previous.send(());
+            }
+        }
+        map.insert(stream_key.clone(), tx);
     }
 
     let app_clone = app.clone();
     let session_id = args.session_id.clone();
+    let stream_id_for_events = stream_id.clone();
+    let stream_key_for_cleanup = stream_key.clone();
     let streams_clone = ActiveStreams(streams.0.clone());
     tokio::spawn(async move {
         let mut full_content = String::new();
@@ -142,6 +161,7 @@ pub async fn chat_stream_v2(
                                     "chat-done",
                                     serde_json::json!({
                                         "conversation_id": &session_id,
+                                    "stream_id": &stream_id_for_events,
                                         "prompt_tokens": prompt_tokens,
                                         "output_tokens": output_tokens,
                                         "completed_at": completed_at,
@@ -157,6 +177,7 @@ pub async fn chat_stream_v2(
                                         "chat-thinking",
                                         serde_json::json!({
                                             "conversation_id": &session_id,
+                                    "stream_id": &stream_id_for_events,
                                             "thinking": &full_thinking,
                                         }),
                                     );
@@ -167,6 +188,7 @@ pub async fn chat_stream_v2(
                                         "chat-chunk",
                                         serde_json::json!({
                                             "conversation_id": &session_id,
+                                    "stream_id": &stream_id_for_events,
                                             "content": &msg.content,
                                             "full_content": &full_content,
                                         }),
@@ -179,6 +201,7 @@ pub async fn chat_stream_v2(
                                 "chat-error",
                                 serde_json::json!({
                                     "conversation_id": &session_id,
+                                    "stream_id": &stream_id_for_events,
                                     "error": e.to_string(),
                                 }),
                             );
@@ -196,12 +219,18 @@ pub async fn chat_stream_v2(
         // a spurious chat-cancelled for this session).
         {
             if let Ok(mut map) = streams_clone.0.lock() {
-                map.remove(&session_id);
+                map.remove(&stream_key_for_cleanup);
             }
         }
 
         if was_cancelled {
-            let _ = app_clone.emit("chat-cancelled", &session_id);
+            let _ = app_clone.emit(
+                "chat-cancelled",
+                serde_json::json!({
+                    "conversation_id": &session_id,
+                    "stream_id": &stream_id_for_events,
+                }),
+            );
         } else if !terminal_event_emitted {
             // The stream ended without a done chunk (provider closed
             // the connection or dropped the final done event). Emit a
@@ -211,6 +240,7 @@ pub async fn chat_stream_v2(
                 "chat-done",
                 serde_json::json!({
                     "conversation_id": &session_id,
+                                    "stream_id": &stream_id_for_events,
                     "prompt_tokens": null,
                     "output_tokens": null,
                     "completed_at": chrono::Utc::now().to_rfc3339(),
@@ -222,9 +252,16 @@ pub async fn chat_stream_v2(
 }
 
 #[tauri::command]
-pub fn cancel_chat_v2(streams: State<'_, ActiveStreams>, session_id: String) -> Result<(), String> {
+pub fn cancel_chat_v2(
+    streams: State<'_, ActiveStreams>,
+    session_id: String,
+    stream_id: Option<String>,
+) -> Result<(), String> {
     let mut map = streams.0.lock().map_err(|e| e.to_string())?;
-    if let Some(tx) = map.remove(&session_id) {
+    let key = stream_id
+        .map(|id| format!("{}:{}", session_id, id))
+        .unwrap_or(session_id);
+    if let Some(tx) = map.remove(&key) {
         let _ = tx.send(());
     }
     Ok(())
