@@ -208,9 +208,9 @@ async function ensureListeners() {
       s.streamThinking = "";
       // Persist to DB unconditionally — the user may have navigated
       // away and we still need the final state on disk.
-      api.saveMessages(cid, s.messages).catch((e) => {
-        console.error("saveMessages (chat-done):", e);
-      });
+      for (const message of s.messages) {
+        api.upsertMessage(message).catch((e) => console.error("upsertMessage (chat-done):", e));
+      }
 
       // One-shot auto-title: if the user hasn't renamed the session and
       // we haven't already kicked off the LLM call for it, ask the LLM
@@ -257,9 +257,9 @@ async function ensureListeners() {
         s.streaming = false;
         s.error = e.payload.error;
         // Persist whatever we have so the user message isn't lost
-        api.saveMessages(cid, s.messages).catch((err) => {
-          console.error("saveMessages (chat-error):", err);
-        });
+        for (const message of s.messages) {
+          api.upsertMessage(message).catch((err) => console.error("upsertMessage (chat-error):", err));
+        }
         toast.error(e.payload.error, "Chat error");
         bump(cid);
       }
@@ -301,9 +301,9 @@ async function ensureListeners() {
       }
       s.streamContent = "";
       s.streamThinking = "";
-      api.saveMessages(cid, s.messages).catch((err) => {
-        console.error("saveMessages (chat-cancelled):", err);
-      });
+      for (const message of s.messages) {
+        api.upsertMessage(message).catch((err) => console.error("upsertMessage (chat-cancelled):", err));
+      }
       bump(cid);
     })
   );
@@ -429,7 +429,14 @@ export async function sendMessage(
 
   // Persist the user message to DB immediately so it survives even
   // if the stream connection fails before chat-done fires.
-  api.saveMessages(cid, s.messages).catch(() => {});
+  try {
+    await api.upsertMessage(userMsg);
+  } catch (e) {
+    s.messages = s.messages.filter((message) => message.id !== userMsg.id);
+    s.streaming = false;
+    bump(cid);
+    throw e;
+  }
 
   const memoryBlock = await useMemoryStore.getState().buildContextBlock(cid);
   const recalledBlock = await recallMemories(text, memoryBlock);

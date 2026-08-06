@@ -126,6 +126,7 @@ pub fn run() {
             chat_cmd::list_messages,
             chat_cmd::save_messages,
             chat_cmd::append_message,
+            chat_cmd::upsert_message,
             chat_stream_cmd::chat_stream_v2,
             chat_stream_cmd::cancel_chat_v2,
             chat_cmd::generate_session_title,

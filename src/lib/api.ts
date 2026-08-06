@@ -374,7 +374,34 @@ export const api = {
   // Messages
   listMessages: (sessionId: string) => invoke<ChatMessage[]>("list_messages", { sessionId }),
   saveMessages: (sessionId: string, messages: ChatMessage[]) =>
-    invoke<void>("save_messages", { sessionId, messages }),
+    invoke<void>("save_messages", {
+      sessionId,
+      messages: messages.map((message) => ({
+        id: message.id,
+        sessionId: message.session_id,
+        role: message.role,
+        content: message.content,
+        thinking: message.thinking,
+        attachmentsJson: message.attachments_json,
+        promptTokens: message.prompt_tokens,
+        outputTokens: message.output_tokens,
+        createdAt: message.created_at,
+      })),
+    }),
+  upsertMessage: (message: ChatMessage) =>
+    invoke<void>("upsert_message", {
+      message: {
+        id: message.id,
+        sessionId: message.session_id,
+        role: message.role,
+        content: message.content,
+        thinking: message.thinking,
+        attachmentsJson: message.attachments_json,
+        promptTokens: message.prompt_tokens,
+        outputTokens: message.output_tokens,
+        createdAt: message.created_at,
+      },
+    }),
   appendMessage: (sessionId: string, role: string, content: string, thinking?: string, attachmentsJson?: string) =>
     invoke<string>("append_message", { sessionId, role, content, thinking: thinking ?? null, attachmentsJson: attachmentsJson ?? null }),
 

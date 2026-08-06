@@ -48,34 +48,25 @@ pub fn save_messages(
 ) -> Result<(), String> {
     let mut conn = pool.get().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM messages WHERE session_id = ?1", params![session_id])
-        .map_err(|e| e.to_string())?;
-    for m in messages {
-        let id = if m.id.is_empty() { Uuid::new_v4().to_string() } else { m.id };
-        let created = m.created_at.unwrap_or_else(now);
+    if messages.is_empty() {
         tx.execute(
-            "INSERT INTO messages (id, session_id, role, content, thinking, attachments_json, prompt_tokens, output_tokens, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![
-                id,
-                session_id,
-                m.role,
-                m.content,
-                m.thinking,
-                m.attachments_json,
-                m.prompt_tokens,
-                m.output_tokens,
-                created,
-            ],
-        ).map_err(|e| e.to_string())?;
+            "DELETE FROM messages WHERE session_id = ?1",
+            params![session_id],
+        )
+        .map_err(|e| e.to_string())?;
     }
-    tx.execute(
-        "UPDATE sessions SET updated_at = ?1 WHERE id = ?2",
-        params![now(), session_id],
-    )
-    .map_err(|e| e.to_string())?;
+    for mut m in messages {
+        m.session_id = session_id.clone();
+        upsert_message_conn(&tx, &m)?;
+    }
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[tauri::command]
+pub fn upsert_message(pool: State<'_, Arc<DbPool>>, message: MessageInput) -> Result<(), String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    upsert_message_conn(&conn, &message)
 }
 
 #[tauri::command]
@@ -103,10 +94,35 @@ pub fn append_message(
     Ok(id)
 }
 
+fn upsert_message_conn(conn: &rusqlite::Connection, m: &MessageInput) -> Result<(), String> {
+    let id = if m.id.is_empty() {
+        Uuid::new_v4().to_string()
+    } else {
+        m.id.clone()
+    };
+    let created = m.created_at.clone().unwrap_or_else(now);
+    conn.execute(
+        "INSERT INTO messages (id, session_id, role, content, thinking, attachments_json, prompt_tokens, output_tokens, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT(id) DO UPDATE SET content=excluded.content, thinking=excluded.thinking,
+           attachments_json=excluded.attachments_json, prompt_tokens=excluded.prompt_tokens,
+           output_tokens=excluded.output_tokens",
+        params![id, m.session_id, m.role, m.content, m.thinking, m.attachments_json,
+            m.prompt_tokens, m.output_tokens, created],
+    ).map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE sessions SET updated_at = ?1 WHERE id = ?2",
+        params![now(), m.session_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageInput {
     pub id: String,
+    pub session_id: String,
     pub role: String,
     pub content: String,
     pub thinking: Option<String>,
@@ -144,9 +160,15 @@ pub async fn generate_session_title(
                 (Some(p), Some(m)) => (p, m),
                 _ => {
                     let p: Option<String> = conn
-                        .query_row("SELECT id FROM providers WHERE is_default = 1 LIMIT 1", [], |r| r.get(0))
+                        .query_row(
+                            "SELECT id FROM providers WHERE is_default = 1 LIMIT 1",
+                            [],
+                            |r| r.get(0),
+                        )
                         .ok();
-                    let Some(p) = p else { return Err("No default provider configured".into()); };
+                    let Some(p) = p else {
+                        return Err("No default provider configured".into());
+                    };
                     let m: Option<String> = conn
                         .query_row(
                             "SELECT name FROM models WHERE provider_id = ?1 ORDER BY name LIMIT 1",
@@ -154,7 +176,9 @@ pub async fn generate_session_title(
                             |r| r.get(0),
                         )
                         .ok();
-                    let Some(m) = m else { return Err("No models cached for default provider".into()); };
+                    let Some(m) = m else {
+                        return Err("No models cached for default provider".into());
+                    };
                     (p, m)
                 }
             };
@@ -167,7 +191,8 @@ pub async fn generate_session_title(
                 .map_err(|e| format!("Provider: {}", e))?;
             let key = crate::services::get_api_key(&p);
             Ok((p, m, k, bu, key))
-        })();
+        })(
+        );
         resolve?
     };
     let _ = pid;
@@ -206,7 +231,9 @@ pub async fn generate_session_title(
                 if let Some(msg) = chunk.message {
                     out.push_str(&msg.content);
                 }
-                if chunk.done { break; }
+                if chunk.done {
+                    break;
+                }
             }
             Err(e) => return Err(format!("Title LLM error: {}", e)),
         }
@@ -229,13 +256,17 @@ fn clean_title(s: &str) -> String {
         }
     }
     // Take first non-empty line
-    let first_line = t.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    let first_line = t
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim();
     // Strip a leading list marker like "1." "- " "* " etc.
-    let stripped = first_line
-        .trim_start_matches(|c: char| {
-            c.is_ascii_digit() || c == '.' || c == ')' || c == '-' || c == '*' || c == ' '
-        });
-    let stripped = stripped.trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | '“' | '”' | '‘' | '’'));
+    let stripped = first_line.trim_start_matches(|c: char| {
+        c.is_ascii_digit() || c == '.' || c == ')' || c == '-' || c == '*' || c == ' '
+    });
+    let stripped =
+        stripped.trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | '“' | '”' | '‘' | '’'));
     // Cap at 60 chars on a word boundary
     let cap = 60;
     let out = if stripped.chars().count() <= cap {
@@ -243,7 +274,9 @@ fn clean_title(s: &str) -> String {
     } else {
         let mut s = String::new();
         for c in stripped.chars() {
-            if s.chars().count() + 1 > cap { break; }
+            if s.chars().count() + 1 > cap {
+                break;
+            }
             s.push(c);
         }
         s.push('…');
@@ -256,7 +289,20 @@ fn clean_title(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::clean_title;
+    use super::{clean_title, upsert_message_conn, MessageInput};
+    use rusqlite::Connection;
+
+    #[test]
+    fn upsert_message_preserves_concurrent_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE sessions (id TEXT PRIMARY KEY, updated_at TEXT NOT NULL); CREATE TABLE messages (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, thinking TEXT, attachments_json TEXT, prompt_tokens INTEGER, output_tokens INTEGER, created_at TEXT NOT NULL); INSERT INTO sessions VALUES ('s1', 'old');").unwrap();
+        for (id, role, content, created_at) in [("user-1", "user", "hello", "2026-01-01T00:00:00Z"), ("assistant-1", "assistant", "hi", "2026-01-01T00:00:01Z")] {
+            upsert_message_conn(&conn, &MessageInput { id: id.into(), session_id: "s1".into(), role: role.into(), content: content.into(), thinking: None, attachments_json: None, prompt_tokens: None, output_tokens: None, created_at: Some(created_at.into()) }).unwrap();
+        }
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 2);
+    }
+
     #[test]
     fn strips_fences_and_quotes() {
         assert_eq!(clean_title("```\nMy Cool Title\n```"), "My Cool Title");

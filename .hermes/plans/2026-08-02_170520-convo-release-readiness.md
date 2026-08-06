@@ -439,7 +439,11 @@ git commit -m "feat(memory): persist extraction review queue"
 
 ## Phase 2 — Repair chat, persistence, streaming, and attachments
 
-### Task 8: Fix attachment identity for picker, drop, and paste
+- [ ] Task 8 — Fix attachment identity for picker, drop, and paste (deferred)
+
+- [x] Task 9 — Persist chat turns append-only
+
+Implemented idempotent per-message upserts, awaited user-message persistence before streaming, append-only terminal persistence, and explicit empty-session clearing. Verified with frontend ordering and SQLite concurrency regressions, full frontend tests (199 passed), typecheck, build, Cargo check, and diff check. Project-wide Cargo formatting remains blocked by pre-existing unrelated formatting drift.
 
 **Objective:** Ensure every queued attachment retains the exact `File` used by its upload.
 
