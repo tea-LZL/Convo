@@ -1,3 +1,4 @@
+use crate::commands::chat::{upsert_message_conn, MessageInput};
 use crate::db::DbPool;
 use crate::providers::types::{ChatRequest, MessageContent};
 use crate::providers::{channelize, Provider};
@@ -20,8 +21,8 @@ pub struct ChatHistoryMessage {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatStreamArgs {
-    #[serde(default)]
-    pub stream_id: Option<String>,
+    pub stream_id: String,
+    pub assistant_message_id: String,
     pub session_id: String,
     pub model: String,
     pub messages: Vec<ChatHistoryMessage>,
@@ -34,6 +35,83 @@ pub struct ChatStreamArgs {
     pub stop: Option<Vec<String>>,
 }
 
+#[derive(Debug, Serialize, Clone)]
+struct ChatThinkingEvent {
+    conversation_id: String,
+    stream_id: String,
+    assistant_message_id: String,
+    delta: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct ChatChunkEvent {
+    conversation_id: String,
+    stream_id: String,
+    assistant_message_id: String,
+    delta: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct ChatDoneEvent {
+    conversation_id: String,
+    stream_id: String,
+    assistant_message_id: String,
+    prompt_tokens: Option<u32>,
+    output_tokens: Option<u32>,
+    completed_at: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct ChatErrorEvent {
+    conversation_id: String,
+    stream_id: String,
+    assistant_message_id: String,
+    error: String,
+    completed_at: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct ChatCancelledEvent {
+    conversation_id: String,
+    stream_id: String,
+    assistant_message_id: String,
+    completed_at: String,
+}
+
+fn persist_assistant(
+    pool: &DbPool,
+    session_id: &str,
+    message_id: &str,
+    content: &str,
+    thinking: &str,
+    prompt_tokens: Option<u32>,
+    output_tokens: Option<u32>,
+    created_at: &str,
+) {
+    if content.is_empty() && thinking.is_empty() {
+        return;
+    }
+    let result = pool.get().map_err(|e| e.to_string()).and_then(|conn| {
+        upsert_message_conn(
+            &conn,
+            &MessageInput {
+                id: message_id.to_string(),
+                session_id: session_id.to_string(),
+                role: "assistant".to_string(),
+                content: content.to_string(),
+                thinking: (!thinking.is_empty()).then(|| thinking.to_string()),
+                attachments_json: None,
+                prompt_tokens: prompt_tokens.map(|v| v as i64),
+                output_tokens: output_tokens.map(|v| v as i64),
+                created_at: Some(created_at.to_string()),
+            },
+        )
+    });
+    if let Err(error) = result {
+        tracing::error!(session_id, message_id, %error, "could not persist assistant message");
+    }
+}
+
 #[tauri::command]
 pub async fn chat_stream_v2(
     app: AppHandle,
@@ -41,6 +119,9 @@ pub async fn chat_stream_v2(
     streams: State<'_, ActiveStreams>,
     args: ChatStreamArgs,
 ) -> Result<(), String> {
+    if args.stream_id.trim().is_empty() || args.assistant_message_id.trim().is_empty() {
+        return Err("stream_id and assistant_message_id are required".into());
+    }
     // Resolve provider from session -> model -> provider_id, fallback to default
     let conn = pool.get().map_err(|e| e.to_string())?;
     let provider_id: Option<String> = conn
@@ -109,10 +190,8 @@ pub async fn chat_stream_v2(
 
     let stream = provider.chat_stream(req).await?;
     let (rx, _handle) = channelize(stream);
-    let stream_id = args
-        .stream_id
-        .clone()
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let stream_id = args.stream_id.clone();
+    let assistant_message_id = args.assistant_message_id.clone();
     let stream_key = format!("{}:{}", args.session_id, stream_id);
 
     let (tx, rx_cancel) = oneshot::channel::<()>();
@@ -135,8 +214,10 @@ pub async fn chat_stream_v2(
     let app_clone = app.clone();
     let session_id = args.session_id.clone();
     let stream_id_for_events = stream_id.clone();
+    let assistant_message_id_for_events = assistant_message_id.clone();
     let stream_key_for_cleanup = stream_key.clone();
     let streams_clone = ActiveStreams(streams.0.clone());
+    let pool_clone = pool.inner().clone();
     tokio::spawn(async move {
         let mut full_content = String::new();
         let mut full_thinking = String::new();
@@ -157,15 +238,26 @@ pub async fn chat_stream_v2(
                                 let prompt_tokens = chunk.prompt_eval_count;
                                 let output_tokens = chunk.eval_count;
                                 let completed_at = chrono::Utc::now().to_rfc3339();
+                                persist_assistant(
+                                    &pool_clone,
+                                    &session_id,
+                                    &assistant_message_id_for_events,
+                                    &full_content,
+                                    &full_thinking,
+                                    prompt_tokens,
+                                    output_tokens,
+                                    &completed_at,
+                                );
                                 let _ = app_clone.emit(
                                     "chat-done",
-                                    serde_json::json!({
-                                        "conversation_id": &session_id,
-                                        "stream_id": &stream_id_for_events,
-                                        "prompt_tokens": prompt_tokens,
-                                        "output_tokens": output_tokens,
-                                        "completed_at": completed_at,
-                                    }),
+                                    ChatDoneEvent {
+                                        conversation_id: session_id.clone(),
+                                        stream_id: stream_id_for_events.clone(),
+                                        assistant_message_id: assistant_message_id_for_events.clone(),
+                                        prompt_tokens,
+                                        output_tokens,
+                                        completed_at,
+                                    },
                                 );
                                 terminal_event_emitted = true;
                                 break;
@@ -175,34 +267,49 @@ pub async fn chat_stream_v2(
                                     full_thinking.push_str(&t);
                                     let _ = app_clone.emit(
                                         "chat-thinking",
-                                        serde_json::json!({
-                                            "conversation_id": &session_id,
-                                        "stream_id": &stream_id_for_events,
-                                            "thinking": &full_thinking,
-                                        }),
+                                        ChatThinkingEvent {
+                                            conversation_id: session_id.clone(),
+                                            stream_id: stream_id_for_events.clone(),
+                                            assistant_message_id: assistant_message_id_for_events.clone(),
+                                            delta: t,
+                                        },
                                     );
                                 }
                                 if !msg.content.is_empty() {
                                     full_content.push_str(&msg.content);
                                     let _ = app_clone.emit(
                                         "chat-chunk",
-                                        serde_json::json!({
-                                            "conversation_id": &session_id,
-                                        "stream_id": &stream_id_for_events,
-                                            "delta": &msg.content,
-                                        }),
+                                        ChatChunkEvent {
+                                            conversation_id: session_id.clone(),
+                                            stream_id: stream_id_for_events.clone(),
+                                            assistant_message_id: assistant_message_id_for_events.clone(),
+                                            delta: msg.content,
+                                        },
                                     );
                                 }
                             }
                         }
                         Some(Err(e)) => {
+                            let completed_at = chrono::Utc::now().to_rfc3339();
+                            persist_assistant(
+                                &pool_clone,
+                                &session_id,
+                                &assistant_message_id_for_events,
+                                &full_content,
+                                &full_thinking,
+                                None,
+                                None,
+                                &completed_at,
+                            );
                             let _ = app_clone.emit(
                                 "chat-error",
-                                serde_json::json!({
-                                    "conversation_id": &session_id,
-                                        "stream_id": &stream_id_for_events,
-                                    "error": e.to_string(),
-                                }),
+                                ChatErrorEvent {
+                                    conversation_id: session_id.clone(),
+                                    stream_id: stream_id_for_events.clone(),
+                                    assistant_message_id: assistant_message_id_for_events.clone(),
+                                    error: e.to_string(),
+                                    completed_at,
+                                },
                             );
                             terminal_event_emitted = true;
                             break;
@@ -223,27 +330,57 @@ pub async fn chat_stream_v2(
         }
 
         if was_cancelled {
+            let completed_at = chrono::Utc::now().to_rfc3339();
+            let content = if full_content.is_empty() {
+                String::new()
+            } else {
+                format!("{} [stopped]", full_content)
+            };
+            persist_assistant(
+                &pool_clone,
+                &session_id,
+                &assistant_message_id_for_events,
+                &content,
+                &full_thinking,
+                None,
+                None,
+                &completed_at,
+            );
             let _ = app_clone.emit(
                 "chat-cancelled",
-                serde_json::json!({
-                    "conversation_id": &session_id,
-                    "stream_id": &stream_id_for_events,
-                }),
+                ChatCancelledEvent {
+                    conversation_id: session_id.clone(),
+                    stream_id: stream_id_for_events.clone(),
+                    assistant_message_id: assistant_message_id_for_events.clone(),
+                    completed_at,
+                },
             );
         } else if !terminal_event_emitted {
             // The stream ended without a done chunk (provider closed
             // the connection or dropped the final done event). Emit a
             // synthetic chat-done so the frontend can finalize — set
             // s.streaming = false and save the partial content.
+            let completed_at = chrono::Utc::now().to_rfc3339();
+            persist_assistant(
+                &pool_clone,
+                &session_id,
+                &assistant_message_id_for_events,
+                &full_content,
+                &full_thinking,
+                None,
+                None,
+                &completed_at,
+            );
             let _ = app_clone.emit(
                 "chat-done",
-                serde_json::json!({
-                    "conversation_id": &session_id,
-                                        "stream_id": &stream_id_for_events,
-                    "prompt_tokens": null,
-                    "output_tokens": null,
-                    "completed_at": chrono::Utc::now().to_rfc3339(),
-                }),
+                ChatDoneEvent {
+                    conversation_id: session_id,
+                    stream_id: stream_id_for_events,
+                    assistant_message_id: assistant_message_id_for_events,
+                    prompt_tokens: None,
+                    output_tokens: None,
+                    completed_at,
+                },
             );
         }
     });
@@ -256,12 +393,43 @@ pub fn cancel_chat_v2(
     session_id: String,
     stream_id: Option<String>,
 ) -> Result<(), String> {
+    let Some(stream_id) = stream_id.filter(|id| !id.trim().is_empty()) else {
+        return Err("stream_id is required".into());
+    };
     let mut map = streams.0.lock().map_err(|e| e.to_string())?;
-    let key = stream_id
-        .map(|id| format!("{}:{}", session_id, id))
-        .unwrap_or(session_id);
+    let key = format!("{}:{}", session_id, stream_id);
     if let Some(tx) = map.remove(&key) {
         let _ = tx.send(());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ChatChunkEvent, ChatDoneEvent};
+
+    #[test]
+    fn stream_events_always_carry_generation_and_message_identity() {
+        let chunk = serde_json::to_value(ChatChunkEvent {
+            conversation_id: "session-1".into(),
+            stream_id: "stream-1".into(),
+            assistant_message_id: "assistant-1".into(),
+            delta: "hello".into(),
+        })
+        .unwrap();
+        assert_eq!(chunk["stream_id"], "stream-1");
+        assert_eq!(chunk["assistant_message_id"], "assistant-1");
+
+        let done = serde_json::to_value(ChatDoneEvent {
+            conversation_id: "session-1".into(),
+            stream_id: "stream-1".into(),
+            assistant_message_id: "assistant-1".into(),
+            prompt_tokens: None,
+            output_tokens: None,
+            completed_at: "now".into(),
+        })
+        .unwrap();
+        assert_eq!(done["conversation_id"], "session-1");
+        assert!(done.get("stream_id").is_some());
+    }
 }

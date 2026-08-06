@@ -14,19 +14,19 @@
 
 - [x] Task 1 — Preserve and verify staged hardware/session hotfixes
 - [x] Task 2 — Normalize Tauri hardware responses — `6bd3ecf`; native payload validation, explicit retry state, nested GPU camelCase test
-- [x] Task 3 — Add route navigation smoke matrix — 14 route/recovery tests; `178/178` frontend tests and production build pass
+- [x] Task 3 — Add route navigation smoke matrix — every sidebar route and Settings tab, route identity, and repeated-navigation recovery coverage
 - [x] Task 4 — Wire Memory extraction popup to persisted sessions — one summary query includes archived/untitled sessions, skips empty sessions; live DB returns 18 extractable of 25 total
 - [x] Task 5 — Refresh Memory store after mutations — CRUD and session overrides centralized; concurrent refreshes coalesce without stale prompt context
 - [x] Task 6 — Verify exact outbound nickname prompt — `chat_stream_v2` payload test proves base prompt + enabled nickname Memory; stop-word and disabled-item recall guarded
 - [x] Task 7 — Persist Memory extraction reviews and retries — SQLite-backed deduplicated queue, restart-safe failed/interrupted retry, explicit pending review, terminal reviewed state, and empty-result cleanup; 189 frontend tests plus focused Rust/migration/live-copy checks pass
-- [x] Task 8 — Fix attachment identity for picker/drop/paste — hook-owned file identity, exactly-once uploads, cleanup on failure/removal/unmount, and blocked send for unresolved attachments; 198 tests pass
-- [ ] Task 9 — Persist chat turns append-only **(next)**
-- [ ] Task 10 — Add stream IDs and exact terminal events
-- [ ] Task 11 — Switch streaming to batched deltas
-- [ ] Task 12 — Cover interrupted chat lifecycle
-- [ ] Task 13 — Test provider stream adapters
-- [ ] Task 14 — Enforce Tauri command registration parity
-- [ ] Task 15 — Complete Providers and Models setup
+- [x] Task 8 — Fix attachment identity for picker/drop/paste — hook-owned identity, exactly-once uploads, retry/lifetime cleanup, committed-blob preservation, and provider image forwarding
+- [x] Task 9 — Persist chat turns append-only — awaited user upsert, Rust-owned assistant finalization, explicit clear/delete/truncate commands, and non-destructive reload
+- [x] Task 10 — Add stream IDs and exact terminal events — required stream/message IDs, stream-keyed cancellation/deltas, stale-event rejection, and terminal deduplication
+- [x] Task 11 — Switch streaming to batched deltas — content/thinking deltas, one-frame accumulation, no token fades, and streamed/static Markdown parity coverage
+- [x] Task 12 — Cover interrupted chat lifecycle — explicit status states, stop timeout, partial error/stop retention, retry, edit/regenerate truncation, and non-reloading clear
+- [x] Task 13 — Test provider stream adapters — Ollama/OpenAI content, reasoning, usage, malformed lines, HTTP failures, SSE, DONE, and EOF fixtures
+- [x] Task 14 — Enforce Tauri command registration parity — exhaustive frontend/Rust command scan, registered `search_notes`, and Notes command-contract coverage
+- [x] Task 15 — Complete Providers and Models setup — provider edit/validation/probe/default/delete plus provider-scoped refresh, pull/cancel/delete/custom-create, model selection, and Start chat
 - [ ] Task 16 — Finish Notes and Tasks
 - [ ] Task 17 — Harden Documents
 - [ ] Task 18 — Finish Compare
@@ -439,11 +439,11 @@ git commit -m "feat(memory): persist extraction review queue"
 
 ## Phase 2 — Repair chat, persistence, streaming, and attachments
 
-- [ ] Task 8 — Fix attachment identity for picker, drop, and paste (deferred)
+- [x] Task 8 — Fix attachment identity for picker, drop, and paste
 
 - [x] Task 9 — Persist chat turns append-only
 
-Implemented idempotent per-message upserts, awaited user-message persistence before streaming, append-only terminal persistence, and explicit empty-session clearing. Verified with frontend ordering and SQLite concurrency regressions, full frontend tests (199 passed), typecheck, build, Cargo check, and diff check. Project-wide Cargo formatting remains blocked by pre-existing unrelated formatting drift.
+Implemented idempotent per-message upserts, awaited user-message persistence before streaming, Rust-owned terminal persistence, explicit clear/delete/truncate operations, and non-destructive reloads. Verified with frontend persistence/lifecycle regressions, 230 frontend tests, typecheck, build, Cargo tests, and touched-module formatting. Project-wide Cargo formatting remains blocked by pre-existing unrelated formatting drift.
 
 **Objective:** Ensure every queued attachment retains the exact `File` used by its upload.
 
@@ -528,7 +528,7 @@ git commit -m "fix(chat): persist streamed turns append-only"
 
 ### Task 10: Add stream IDs and exactly-once terminal events **(complete)**
 
-Implemented unique stream IDs, stream-keyed cancellation/cleanup, stale-event filtering, and frontend exactly-once terminal deduplication. Verified with 200 frontend tests, typecheck, build, Cargo check, touched-module formatting, and diff check. Project-wide Cargo formatting remains blocked by unrelated pre-existing drift.
+Implemented required stream/message IDs, stream-keyed cancellation and pending deltas, stale-event filtering, typed event payloads, EOF finalization, and frontend exactly-once terminal deduplication. Verified with event-driven stale/duplicate/cancel tests, 230 frontend tests, typecheck, build, Cargo tests, touched-module formatting, and command parity.
 
 **Objective:** Prevent stale chunks/done/cancel events from mutating a newer generation.
 
@@ -574,7 +574,7 @@ git commit -m "fix(stream): isolate generations with stream ids"
 
 ### Task 11: Switch streaming transport to deltas and remove token flicker **(complete)**
 
-Implemented delta-only bridge payloads, frame-batched accumulation, removed per-token fade wrapping/CSS, and added transport-volume coverage. Verified with 201 frontend tests, typecheck, build, Cargo check, touched-module formatting, and diff check. Project-wide Cargo formatting remains blocked by unrelated pre-existing drift.
+Implemented content/thinking delta-only bridge payloads, stream-keyed frame-batched accumulation, removed per-token fade wrapping/CSS, and added burst-volume plus Markdown parity coverage. Verified with 230 frontend tests, typecheck, build, Cargo tests, and touched-module formatting.
 
 **Objective:** Eliminate O(n²) bridge traffic and make streamed text visually stable.
 
@@ -619,7 +619,7 @@ git commit -m "perf(stream): batch delta events without token fades"
 
 ### Task 12: Cover stop, retry, edit, regenerate, navigation, and restart **(complete)**
 
-Implemented atomic truncation for edit/regenerate, removed reload-based clear, and added lifecycle persistence coverage. Verified with typecheck, Cargo check, focused lifecycle tests, and diff check.
+Implemented atomic truncation for edit/regenerate, explicit delete/clear commands, retry and stop-timeout handling, partial error/stop retention, route-safe reloads, and lifecycle persistence coverage. Verified with 230 frontend tests, typecheck, build, Cargo tests, and command parity.
 
 **Objective:** Turn the basic chat function into a reliable release feature under interruption.
 
@@ -659,7 +659,7 @@ git commit -m "test(chat): cover interrupted stream lifecycle"
 
 ### Task 13: Verify provider protocol adapters **(complete)**
 
-Added sanitized Ollama fixture coverage for content/thinking/usage and verified provider tests. Full HTTP fixture matrix remains deferred until a test HTTP server dependency is justified.
+Added Ollama and OpenAI-compatible fixture coverage for content, reasoning, usage, malformed lines, HTTP status failures, CRLF/LF SSE, `[DONE]`, and EOF behavior without adding a test-server dependency.
 
 **Objective:** Make Ollama and OpenAI-compatible streaming behavior deterministic across partial, thinking, usage, error, and EOF events.
 
@@ -697,7 +697,7 @@ git commit -m "test(providers): cover Ollama and OpenAI stream protocols"
 
 ### Task 14: Add command registration parity tests **(complete)**
 
-Added `check:commands`, registered `search_notes`, and verified all 87 frontend invoke literals have a registration match.
+Added exhaustive `check:commands` coverage across all frontend source files and Rust command declarations, registered `search_notes`, and verified 94 frontend commands and 98 Rust commands have registration parity.
 
 **Objective:** Prevent implemented backend features from remaining unreachable.
 
@@ -730,7 +730,7 @@ git commit -m "fix: enforce Tauri command registration parity"
 
 ### Task 15: Make Providers and Models a complete setup workflow **(complete)**
 
-Added provider-scoped Models settings with refresh and status rendering, replacing the placeholder panel. Verified with focused model settings test, typecheck, command parity, Cargo check, and diff check. Full CRUD/pull/delete workflow remains deferred until those controls are needed.
+Added provider edit/validation/probe/default/delete controls, provider-scoped model discovery/status rows, provider-aware Ollama pull progress/cancellation/delete/custom-create commands, model selection, and Start chat navigation with composite model IDs. Verified with focused provider/model tests, 230 frontend tests, typecheck, build, command parity, and Cargo tests.
 
 **Objective:** Let users add, edit, probe, default, refresh, pull/delete, and select models without hidden welcome-screen panels.
 

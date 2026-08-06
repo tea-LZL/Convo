@@ -5,8 +5,11 @@ import { Tooltip } from "../ui/Form";
 import { IconButton } from "../ui/IconButton";
 import { useAttachments } from "../../hooks/useAttachments";
 import { parseCommand, runCommand, SlashCommandContext } from "../../lib/slashCommands";
+import type { ChatStatus } from "../../stores/chatStream";
 
-function fallbackFilePicker(attachments: ReturnType<typeof useAttachments>) {
+type ChatInputAttachments = Pick<ReturnType<typeof useAttachments>, "attachments" | "addFiles">;
+
+function fallbackFilePicker(attachments: ChatInputAttachments) {
   const input = document.createElement("input");
   input.type = "file";
   input.multiple = true;
@@ -30,6 +33,7 @@ function guessMime(name: string): string {
 export function ChatInput({
   disabled,
   streaming,
+  status = streaming ? "streaming" : "idle",
   attachments,
   onSend,
   onStop,
@@ -38,7 +42,8 @@ export function ChatInput({
 }: {
   disabled: boolean;
   streaming: boolean;
-  attachments: ReturnType<typeof useAttachments>;
+  status?: ChatStatus;
+  attachments: ChatInputAttachments;
   onSend: (text: string) => Promise<void> | void;
   onStop: () => void;
   onInputChange: (text: string) => void;
@@ -169,8 +174,14 @@ export function ChatInput({
         </div>
         <div className="flex items-center gap-1.5">
           {streaming ? (
-            <Button size="sm" variant="danger" onClick={onStop} icon={<Square size={12} fill="currentColor" />}>
-              Stop
+            <Button
+              size="sm"
+              variant="danger"
+              onClick={onStop}
+              disabled={status === "stopping"}
+              icon={<Square size={12} fill="currentColor" />}
+            >
+              {status === "stopping" ? "Stopping…" : "Stop"}
             </Button>
           ) : (
             <Button

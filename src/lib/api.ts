@@ -370,9 +370,19 @@ export const api = {
   listModelsForProvider: (providerId: string) => invoke<Model[]>("list_models_for_provider", { providerId }),
   listAllModels: () => invoke<Model[]>("list_all_models"),
   refreshModels: (providerId: string) => invoke<Model[]>("refresh_models", { providerId }),
+  pullModelForProvider: (providerId: string, name: string) =>
+    invoke<string>("pull_model_for_provider", { providerId, name }),
+  cancelModelPull: (operationId: string) => invoke<void>("cancel_model_pull", { operationId }),
+  deleteModelForProvider: (providerId: string, name: string) =>
+    invoke<void>("delete_model_for_provider", { providerId, name }),
+  createCustomModelForProvider: (providerId: string, name: string, baseModel: string, numCtx: number) =>
+    invoke<void>("create_custom_model_for_provider", { providerId, name, baseModel, numCtx }),
 
   // Messages
   listMessages: (sessionId: string) => invoke<ChatMessage[]>("list_messages", { sessionId }),
+  clearMessages: (sessionId: string) => invoke<void>("clear_messages", { sessionId }),
+  deleteMessage: (sessionId: string, messageId: string) =>
+    invoke<void>("delete_message", { sessionId, messageId }),
   saveMessages: (sessionId: string, messages: ChatMessage[]) =>
     invoke<void>("save_messages", {
       sessionId,
@@ -420,6 +430,7 @@ export const api = {
     repeatPenalty?: number;
     stop?: string[];
     streamId?: string;
+    assistantMessageId?: string;
   }) => invoke<void>("chat_stream_v2", { args }),
   cancelChat: (sessionId: string, streamId?: string) =>
     invoke<void>("cancel_chat_v2", { sessionId, streamId: streamId ?? null }),

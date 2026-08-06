@@ -19,6 +19,7 @@ export function ChatHeader({
   sessionId,
   contextLength,
   totalTokens,
+  onClear,
 }: {
   providers: Provider[];
   models: Model[];
@@ -31,6 +32,7 @@ export function ChatHeader({
   sessionId: string;
   contextLength: number;
   totalTokens: number;
+  onClear: () => Promise<void>;
 }) {
   const [confirmClear, setConfirmClear] = useState(false);
   const [showMemory, setShowMemory] = useState(false);
@@ -146,8 +148,8 @@ export function ChatHeader({
         open={confirmClear}
         onClose={() => setConfirmClear(false)}
         onConfirm={async () => {
-          await api.saveMessages(sessionId, []);
-          window.location.reload();
+          await onClear();
+          setConfirmClear(false);
         }}
         title="Clear session"
         message="Clear all messages in this session? This cannot be undone."

@@ -1,9 +1,9 @@
 pub mod discovery;
 pub mod ollama;
 pub mod openai_compat;
-pub mod types;
 #[cfg(test)]
 mod tests;
+pub mod types;
 
 use async_trait::async_trait;
 use futures_util::Stream;
@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 
 pub use types::{ChatRequest, ChatResponseChunk, MessageContent};
 
-use crate::services::{DiscoveredModel, ProbeResult};
+use crate::services::ProbeResult;
 
 #[derive(Debug, Error)]
 pub enum ProviderError {
@@ -47,9 +47,7 @@ pub trait Provider: Send + Sync {
     fn list_models<'a>(
         &'a self,
     ) -> Pin<Box<dyn std::future::Future<Output = ProviderResult<Vec<ModelInfo>>> + Send + 'a>>;
-    fn probe<'a>(
-        &'a self,
-    ) -> Pin<Box<dyn std::future::Future<Output = ProbeOutcome> + Send + 'a>>;
+    fn probe<'a>(&'a self) -> Pin<Box<dyn std::future::Future<Output = ProbeOutcome> + Send + 'a>>;
     fn chat_stream<'a>(
         &'a self,
         request: ChatRequest,
@@ -111,7 +109,12 @@ pub enum ProbeOutcome {
 
 /// Spawn a stream into a Tauri-style mpsc channel that the Tauri command loop
 /// can `recv()` on to emit events.
-pub fn channelize<S>(stream: S) -> (mpsc::Receiver<ProviderResult<ChatResponseChunk>>, tokio::task::JoinHandle<()>)
+pub fn channelize<S>(
+    stream: S,
+) -> (
+    mpsc::Receiver<ProviderResult<ChatResponseChunk>>,
+    tokio::task::JoinHandle<()>,
+)
 where
     S: Stream<Item = ProviderResult<ChatResponseChunk>> + Send + Unpin + 'static,
 {

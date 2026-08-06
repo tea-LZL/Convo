@@ -1,7 +1,5 @@
 use super::types::ChatRequest;
-use super::{
-    ChatResponseChunk, ModelInfo, ProbeOutcome, Provider, ProviderError, ProviderResult,
-};
+use super::{ChatResponseChunk, ModelInfo, ProbeOutcome, Provider, ProviderError, ProviderResult};
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use std::pin::Pin;
@@ -18,9 +16,7 @@ pub struct OllamaProvider {
 
 impl OllamaProvider {
     pub fn new(base_url: String, api_key: Option<String>) -> Self {
-        let http = reqwest::Client::builder()
-            .build()
-            .expect("reqwest client");
+        let http = reqwest::Client::builder().build().expect("reqwest client");
         Self {
             base_url,
             api_key,
@@ -72,7 +68,10 @@ impl Provider for OllamaProvider {
                     name: m.name,
                     family: m.details.as_ref().and_then(|d| d.family.clone()),
                     parameter_size: m.details.as_ref().and_then(|d| d.parameter_size.clone()),
-                    quantization: m.details.as_ref().and_then(|d| d.quantization_level.clone()),
+                    quantization: m
+                        .details
+                        .as_ref()
+                        .and_then(|d| d.quantization_level.clone()),
                     context_length: None,
                     size_bytes: Some(m.size),
                     supports_thinking: false,
@@ -83,9 +82,7 @@ impl Provider for OllamaProvider {
         })
     }
 
-    fn probe<'a>(
-        &'a self,
-    ) -> Pin<Box<dyn std::future::Future<Output = ProbeOutcome> + Send + 'a>> {
+    fn probe<'a>(&'a self) -> Pin<Box<dyn std::future::Future<Output = ProbeOutcome> + Send + 'a>> {
         Box::pin(async move {
             match self.list_models().await {
                 Ok(models) => {
@@ -136,34 +133,39 @@ impl Provider for OllamaProvider {
                 return Err(ProviderError::Api { status, body });
             }
             let stream = resp.bytes_stream();
-            let reader = tokio_util::io::StreamReader::new(stream.map(|r| {
-                r.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-            }));
+            let reader = tokio_util::io::StreamReader::new(
+                stream.map(|r| r.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))),
+            );
             let buf = tokio::io::BufReader::new(reader);
             let lines = LinesStream::new(buf.lines());
             let parsed = lines.filter_map(|line| async move {
                 match line {
-                    Ok(l) => {
-                        let trimmed = l.trim();
-                        if trimmed.is_empty() {
-                            return None;
+                    Ok(l) => match parse_ollama_line(&l) {
+                        Ok(chunk) => chunk.map(Ok),
+                        Err(error) => {
+                            tracing::warn!(%error, "ignoring malformed Ollama stream line");
+                            None
                         }
-                        match serde_json::from_str::<ChatResponseChunk>(trimmed) {
-                            Ok(c) => Some(Ok(c)),
-                            Err(e) => Some(Err(ProviderError::Parse(e.to_string()))),
-                        }
-                    }
+                    },
                     Err(e) => Some(Err(ProviderError::Stream(e.to_string()))),
                 }
             });
             Ok(Box::pin(parsed)
                 as Pin<
-                    Box<
-                        dyn futures_util::Stream<Item = ProviderResult<ChatResponseChunk>> + Send,
-                    >,
+                    Box<dyn futures_util::Stream<Item = ProviderResult<ChatResponseChunk>> + Send>,
                 >)
         })
     }
+}
+
+pub(crate) fn parse_ollama_line(line: &str) -> ProviderResult<Option<ChatResponseChunk>> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    serde_json::from_str::<ChatResponseChunk>(trimmed)
+        .map(Some)
+        .map_err(|e| ProviderError::Parse(e.to_string()))
 }
 
 #[derive(serde::Deserialize)]
@@ -204,7 +206,9 @@ pub async fn fetch_running_models(
     Ok(body.models)
 }
 
-pub async fn fetch_models(base_url: &str) -> Result<Vec<super::super::db::models::OllamaModel>, String> {
+pub async fn fetch_models(
+    base_url: &str,
+) -> Result<Vec<super::super::db::models::OllamaModel>, String> {
     let client = reqwest::Client::new();
     let url = format!("{}/api/tags", base_url.trim_end_matches('/'));
     let resp = client

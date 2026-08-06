@@ -121,7 +121,7 @@ function GeneralSection() {
   );
 }
 
-function ProvidersSection() {
+export function ProvidersSection() {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
@@ -132,6 +132,7 @@ function ProvidersSection() {
   const [discovered, setDiscovered] = useState<Array<{ base_url: string; models: Array<{ name: string }> }>>([]);
   const [scanning, setScanning] = useState(false);
   const [confirmDeleteProvider, setConfirmDeleteProvider] = useState<string | null>(null);
+  const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
 
   const refresh = async () => setProviders(await api.listProviders());
   useEffect(() => { refresh(); }, []);
@@ -147,23 +148,37 @@ function ProvidersSection() {
 
   const add = async () => {
     try {
-      await api.addProvider(kind, name || `${kind} (${baseUrl})`, baseUrl, apiKey || null);
+      const providerName = name.trim() || `${kind} (${baseUrl})`;
+      let providerId: string;
+      if (editingProvider) {
+        await api.updateProvider(editingProvider.id, providerName, baseUrl.trim() || null, apiKey || null, null);
+        providerId = editingProvider.id;
+      } else {
+        const created = await api.addProvider(kind, providerName, baseUrl.trim() || null, apiKey || null);
+        providerId = created.id;
+      }
       setAdding(false);
+      setEditingProvider(null);
       setName(""); setApiKey(""); setProbeMsg(null);
       await refresh();
-      toast.success("Provider added");
+      await api.refreshModels(providerId).catch(() => {});
+      toast.success(editingProvider ? "Provider updated" : "Provider added");
     } catch (e) { toast.error(String(e)); }
   };
 
   const remove = async (id: string) => {
-    await api.deleteProvider(id);
-    await refresh();
-    toast.success("Provider deleted");
+    try {
+      await api.deleteProvider(id);
+      await refresh();
+      toast.success("Provider deleted");
+    } catch (e) { toast.error(String(e)); }
   };
 
   const setDefault = async (id: string) => {
-    await api.updateProvider(id, null, null, null, true);
-    await refresh();
+    try {
+      await api.updateProvider(id, null, null, null, true);
+      await refresh();
+    } catch (e) { toast.error(String(e)); }
   };
 
   const scan = async () => {
@@ -180,7 +195,19 @@ function ProvidersSection() {
     <div>
       <SectionTitle title="Providers" description="Connect to Ollama, OpenAI-compatible APIs, or local servers (vLLM, llama.cpp)." />
       <div className="mb-4 flex items-center gap-2">
-        <Button variant="primary" onClick={() => setAdding(true)} icon={<Plus size={12} />}>Add provider</Button>
+         <Button
+           variant="primary"
+           onClick={() => {
+             setEditingProvider(null);
+             setName("");
+             setKind("ollama");
+             setBaseUrl("http://localhost:11434");
+             setApiKey("");
+             setProbeMsg(null);
+             setAdding(true);
+           }}
+           icon={<Plus size={12} />}
+         >Add provider</Button>
         <Button variant="outline" onClick={scan} loading={scanning} icon={<Search size={12} />}>Discover local servers</Button>
       </div>
       {discovered.length > 0 && (
@@ -223,6 +250,19 @@ function ProvidersSection() {
                 <div className="text-xs text-text-muted">{p.kind} · {p.base_url ?? "—"}</div>
               </div>
               <div className="flex items-center gap-1">
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  onClick={() => {
+                    setEditingProvider(p);
+                    setName(p.name);
+                    setKind(p.kind);
+                    setBaseUrl(p.base_url ?? "");
+                    setApiKey("");
+                    setProbeMsg(null);
+                    setAdding(true);
+                  }}
+                >Edit</Button>
                 {!p.is_default && (
                   <Button size="xs" variant="ghost" onClick={() => setDefault(p.id)}>Set default</Button>
                 )}
@@ -236,13 +276,13 @@ function ProvidersSection() {
         <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm animate-fade-in" onClick={() => setAdding(false)}>
           <div className="bg-surface-1 border border-border rounded-2xl shadow-modal w-full max-w-md p-5 animate-scale-in" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-base font-semibold text-text">Add provider</h3>
+               <h3 className="text-base font-semibold text-text">{editingProvider ? "Edit provider" : "Add provider"}</h3>
               <button onClick={() => setAdding(false)} className="text-text-subtle hover:text-text"><X size={16} /></button>
             </div>
             <div className="space-y-3">
               <div>
                 <label className="text-xs text-text-muted block mb-1">Kind</label>
-                <Select value={kind} onChange={(v) => setKind(v as any)} options={[
+                <Select disabled={editingProvider !== null} value={kind} onChange={(v) => setKind(v as any)} options={[
                   { value: "ollama", label: "Ollama" },
                   { value: "openai_compat", label: "OpenAI-compatible" },
                 ]} />
@@ -258,7 +298,7 @@ function ProvidersSection() {
               {kind === "openai_compat" && (
                 <div>
                   <label className="text-xs text-text-muted block mb-1">API key (optional, stored in OS keyring)</label>
-                  <TextInput value={apiKey} onChange={setApiKey} type="password" placeholder="sk-..." />
+                   <TextInput value={apiKey} onChange={setApiKey} type="password" placeholder={editingProvider ? "Leave blank to keep current key" : "sk-..."} />
                 </div>
               )}
               {probeMsg && (
@@ -269,7 +309,7 @@ function ProvidersSection() {
               )}
               <div className="flex items-center justify-end gap-2 pt-2">
                 <Button size="sm" variant="ghost" onClick={probe}>Test connection</Button>
-                <Button size="sm" variant="primary" onClick={add}>Add</Button>
+                 <Button size="sm" variant="primary" onClick={add}>{editingProvider ? "Save" : "Add"}</Button>
               </div>
             </div>
           </div>

@@ -111,6 +111,53 @@ describe("useAttachments", () => {
     expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob://mock-object-url");
   });
 
+  it("retries a failed upload with the original File", async () => {
+    vi.mocked(api.addAttachment)
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce(attachmentResult("server-retry"));
+    const { result } = renderHook(() => useAttachments("session-1"));
+    const file = new File(["retry"], "retry.txt", { type: "text/plain" });
+
+    act(() => result.current.addFiles([file]));
+    await waitFor(() => expect(result.current.attachments[0]?.status).toBe("error"));
+    act(() => result.current.retry(result.current.attachments[0].localId));
+    await waitFor(() => expect(result.current.attachments[0]?.status).toBe("ready"));
+
+    expect(api.addAttachment).toHaveBeenCalledTimes(2);
+    expect(api.addAttachment).toHaveBeenLastCalledWith(expect.objectContaining({
+      name: "retry.txt",
+      dataBase64: "cmV0cnk=",
+    }));
+  });
+
+  it("does not delete blobs committed to a sent message", async () => {
+    const deleteSpy = vi.spyOn(api, "deleteAttachment").mockResolvedValue(undefined);
+    const { result } = renderHook(() => useAttachments("session-1"));
+    act(() => result.current.addFiles([new File(["sent"], "sent.txt", { type: "text/plain" })]));
+    await waitFor(() => expect(result.current.attachments[0]?.status).toBe("ready"));
+
+    act(() => result.current.clear());
+
+    expect(deleteSpy).not.toHaveBeenCalled();
+  });
+
+  it("deletes a late server upload after local removal", async () => {
+    let resolveUpload!: (value: ReturnType<typeof attachmentResult>) => void;
+    vi.mocked(api.addAttachment).mockImplementationOnce(() => new Promise((resolve) => {
+      resolveUpload = resolve;
+    }));
+    const deleteSpy = vi.spyOn(api, "deleteAttachment").mockResolvedValue(undefined);
+    const { result } = renderHook(() => useAttachments("session-1"));
+    act(() => result.current.addFiles([new File(["late"], "late.txt", { type: "text/plain" })]));
+    await waitFor(() => expect(result.current.attachments[0]?.status).toBe("uploading"));
+    await waitFor(() => expect(api.addAttachment).toHaveBeenCalled());
+    const localId = result.current.attachments[0].localId;
+    act(() => result.current.remove(localId));
+    resolveUpload(attachmentResult("late-server"));
+
+    await waitFor(() => expect(deleteSpy).toHaveBeenCalledWith("late-server"));
+  });
+
   it("revokes previews when the hook unmounts", async () => {
     const { result, unmount } = renderHook(() => useAttachments("session-1"));
     const file = new File(["image"], "image.png", { type: "image/png" });

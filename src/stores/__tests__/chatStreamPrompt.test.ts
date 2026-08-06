@@ -55,4 +55,29 @@ describe("sendMessage persistence", () => {
     expect(system).toContain("User's nickname");
     expect(system).toContain("Kevin");
   });
+
+  it("forwards image attachment bytes to the stream request", async () => {
+    mockedInvoke.mockImplementation(async (command) => {
+      if (command === "list_messages") return [] as never;
+      if (command === "get_enabled_memory" || command === "list_memory") return [] as never;
+      if (command === "get_session_memory_overrides") return [] as never;
+      return undefined as never;
+    });
+
+    await sendMessage("image-session", "describe this", "vision-model", {
+      providerId: "provider-1",
+      attachmentsJson: JSON.stringify([{
+        id: "attachment-1",
+        name: "image.png",
+        mime: "image/png",
+        size: 4,
+        kind: "image",
+        dataBase64: "aW1hZ2U=",
+      }]),
+    });
+
+    const call = mockedInvoke.mock.calls.find(([command]) => command === "chat_stream_v2");
+    expect((call?.[1] as { args: { messages: Array<{ images?: string[] }> } }).args.messages[0].images)
+      .toEqual(["aW1hZ2U="]);
+  });
 });

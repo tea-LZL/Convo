@@ -23,7 +23,15 @@ export function AttachmentChip({ att }: { att: AttachmentData }) {
   );
 }
 
-export function AttachmentStripItem({ a, onRemove }: { a: PendingAttachment; onRemove: () => void }) {
+export function AttachmentStripItem({
+  a,
+  onRemove,
+  onRetry,
+}: {
+  a: PendingAttachment;
+  onRemove: () => void;
+  onRetry?: () => void;
+}) {
   return (
     <div className="relative group">
       {a.previewUrl ? (
@@ -46,6 +54,15 @@ export function AttachmentStripItem({ a, onRemove }: { a: PendingAttachment; onR
         <div className="absolute inset-0 bg-black/30 rounded-md flex items-center justify-center">
           <Spinner size={12} />
         </div>
+      )}
+      {a.status === "error" && onRetry && (
+        <button
+          type="button"
+          onClick={onRetry}
+          className="absolute inset-x-1 bottom-1 rounded bg-surface-1/90 px-1 py-0.5 text-[10px] text-error hover:text-text"
+        >
+          Retry
+        </button>
       )}
     </div>
   );

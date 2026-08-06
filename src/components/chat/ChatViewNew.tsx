@@ -137,18 +137,24 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
   useEffect(() => {
     if (!sessionLoaded || !modelId || !providerId) return;
     setLastUsedChatModel(providerId, modelId);
-    api.updateSessionModel(sessionId, modelId, providerId).catch(console.error);
+    api.updateSessionModel(sessionId, `${providerId}::${modelId}`, providerId).catch(console.error);
   }, [modelId, providerId, sessionId, sessionLoaded]);
 
   // Resolve context length when model changes
   useEffect(() => {
     if (!modelId) return;
-    api.getModelContextLength(modelId).then(setContextLength).catch(() => {
-      const m = models.find((m) => m.name === modelId);
-      if (m?.context_length !== null && m?.context_length !== undefined) setContextLength(m.context_length);
-      else setContextLength(8192);
-    });
-  }, [modelId, models]);
+    const model = models.find((m) => m.name === modelId);
+    if (model?.context_length !== null && model?.context_length !== undefined) {
+      setContextLength(model.context_length);
+      return;
+    }
+    const provider = providers.find((p) => p.id === providerId);
+    if (provider?.kind !== "ollama") {
+      setContextLength(8192);
+      return;
+    }
+    api.getModelContextLength(modelId).then(setContextLength).catch(() => setContextLength(8192));
+  }, [modelId, models, providerId, providers]);
 
   // Auto-scroll tracking
   useEffect(() => {
@@ -170,8 +176,13 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
     stickToBottom.current = true;
     const readyIds = attachments.attachments.filter((a) => a.serverId).map((a) => a.serverId!);
     const attJson = attachments.serializeForMessage(readyIds);
-    await chat.send(text, { attachmentsJson: attJson });
-    attachments.clear();
+    attachments.commit(readyIds);
+    try {
+      await chat.send(text, { attachmentsJson: attJson });
+    } catch (error) {
+      attachments.releaseCommitted(readyIds);
+      throw error;
+    }
   };
 
   const handleSlashInput = (text: string): boolean => {
@@ -198,9 +209,10 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
   }, []);
 
   const onResend = useCallback(async (msgIndex: number, content: string) => {
-    const truncated = chat.messages.slice(0, msgIndex);
+    const message = chat.messages[msgIndex];
+    if (!message) return;
     try {
-      await api.saveMessages(sessionId, truncated);
+      await api.truncateMessages(sessionId, message.id);
     } catch (e) { console.error(e); }
     setEditingMessageId(null);
     await chat.reload();
@@ -217,8 +229,7 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
       if (lastUser) await chat.send(lastUser.content);
     },
     clearAll: async () => {
-      await api.saveMessages(sessionId, []);
-      await chat.reload();
+      await chat.clear();
     },
     newSession: async () => {
       navigate("/chat");
@@ -237,8 +248,9 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
         setModels={setModels}
         setContextLength={setContextLength}
         sessionId={sessionId}
-        contextLength={contextLength}
-        totalTokens={chat.totalTokens}
+          contextLength={contextLength}
+          totalTokens={chat.totalTokens}
+          onClear={chat.clear}
       />
 
       {/* Messages */}
@@ -281,7 +293,12 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
         <div className="px-3 sm:px-4 pb-1.5">
           <div className="max-w-3xl mx-auto flex flex-wrap gap-1.5">
             {attachments.attachments.map((a) => (
-              <AttachmentStripItem key={a.localId} a={a} onRemove={() => attachments.remove(a.localId)} />
+              <AttachmentStripItem
+                key={a.localId}
+                a={a}
+                onRemove={() => attachments.remove(a.localId)}
+                onRetry={() => attachments.retry(a.localId)}
+              />
             ))}
           </div>
         </div>
@@ -319,12 +336,22 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
         <div className="max-w-3xl mx-auto">
           {chat.error && (
             <div role="alert" className="mb-2 px-3 py-2 bg-error/10 border border-error/30 rounded-lg text-error text-xs">
-              {chat.error}
+              <div className="flex items-center justify-between gap-2">
+                <span>{chat.error}</span>
+                <button
+                  type="button"
+                  onClick={() => chat.retryLast().catch(console.error)}
+                  className="shrink-0 underline hover:text-text"
+                >
+                  Retry
+                </button>
+              </div>
             </div>
           )}
           <ChatInput
             disabled={chat.streaming || !modelId}
             streaming={chat.streaming}
+            status={chat.status}
             attachments={attachments}
             onSend={onSend}
             onStop={() => chat.stop()}

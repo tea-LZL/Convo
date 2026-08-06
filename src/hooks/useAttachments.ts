@@ -19,6 +19,8 @@ export interface PendingAttachment {
   size: number;
   kind: "image" | "document" | "audio" | "unknown";
   previewUrl: string | null;
+  /** Kept for image attachments so the provider can receive the image. */
+  dataBase64?: string;
   status: "uploading" | "ready" | "error";
   error?: string;
 }
@@ -49,11 +51,21 @@ function readAsBase64(file: File): Promise<string> {
   });
 }
 
+function deleteAttachmentQuietly(id: string): void {
+  void Promise.resolve(api.deleteAttachment(id)).catch(() => {});
+}
+
 export interface UseAttachments {
   attachments: PendingAttachment[];
   addFiles: (files: File[] | FileList) => void;
   remove: (localId: string) => void;
+  retry: (localId: string) => void;
+  commit: (serverIds: string[]) => void;
+  releaseCommitted: (serverIds: string[]) => void;
+  /** Commit uploaded attachments to a message without deleting their blobs. */
   clear: () => void;
+  /** Discard local attachments and delete any uploaded blobs. */
+  discard: () => void;
   /** Build the JSON payload to embed in a chat message's `attachments_json`. */
   serializeForMessage: (ids: string[]) => string;
   isDragging: boolean;
@@ -67,6 +79,9 @@ export function useAttachments(sessionId: string | null): UseAttachments {
   const dragCounter = useRef(0);
   const fileByLocalId = useRef(new Map<string, File>());
   const activeUploads = useRef(new Set<string>());
+  const uploadTokens = useRef(new Map<string, string>());
+  const mounted = useRef(true);
+  const committedServerIds = useRef(new Set<string>());
 
   const addFiles = useCallback(
     (filesIn: File[] | FileList) => {
@@ -83,6 +98,7 @@ export function useAttachments(sessionId: string | null): UseAttachments {
           }
           const localId = crypto.randomUUID();
           fileByLocalId.current.set(localId, f);
+          uploadTokens.current.set(localId, crypto.randomUUID());
           next.push({
             localId,
             serverId: null,
@@ -109,9 +125,10 @@ export function useAttachments(sessionId: string | null): UseAttachments {
     for (const attachment of uploading) activeUploads.current.add(attachment.localId);
     (async () => {
       for (const a of uploading) {
+        const uploadToken = uploadTokens.current.get(a.localId);
         try {
           const f = fileByLocalId.current.get(a.localId);
-          if (!f) {
+          if (!f || !uploadToken) {
             activeUploads.current.delete(a.localId);
             continue;
           }
@@ -123,13 +140,26 @@ export function useAttachments(sessionId: string | null): UseAttachments {
             sessionId,
             messageId: null,
           });
+          const stillOwned = mounted.current
+            && uploadTokens.current.get(a.localId) === uploadToken
+            && attachmentsRef.current.some((item) => item.localId === a.localId);
+          if (!stillOwned) {
+            deleteAttachmentQuietly(result.id);
+            continue;
+          }
           setAttachments((prev) =>
             prev.map((x) =>
-              x.localId === a.localId ? { ...x, serverId: result.id, status: "ready" } : x
+              x.localId === a.localId
+                ? { ...x, serverId: result.id, dataBase64: a.kind === "image" ? data : undefined, status: "ready" }
+                : x
             )
           );
           fileByLocalId.current.delete(a.localId);
         } catch (e) {
+          if (!mounted.current || !attachmentsRef.current.some((item) => item.localId === a.localId)) {
+            fileByLocalId.current.delete(a.localId);
+            continue;
+          }
           if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
           setAttachments((prev) =>
             prev.map((x) =>
@@ -138,7 +168,6 @@ export function useAttachments(sessionId: string | null): UseAttachments {
                 : x
             )
           );
-          fileByLocalId.current.delete(a.localId);
         }
         activeUploads.current.delete(a.localId);
       }
@@ -150,31 +179,94 @@ export function useAttachments(sessionId: string | null): UseAttachments {
       const found = prev.find((x) => x.localId === localId);
       if (found?.previewUrl) URL.revokeObjectURL(found.previewUrl);
       fileByLocalId.current.delete(localId);
+      uploadTokens.current.delete(localId);
       activeUploads.current.delete(localId);
       // Best-effort delete on the server
-      if (found?.serverId) api.deleteAttachment(found.serverId).catch(() => {});
+       if (found?.serverId) deleteAttachmentQuietly(found.serverId);
       return prev.filter((x) => x.localId !== localId);
     });
   }, []);
 
+  const retry = useCallback((localId: string) => {
+    const file = fileByLocalId.current.get(localId);
+    if (!file) return;
+    uploadTokens.current.set(localId, crypto.randomUUID());
+    activeUploads.current.delete(localId);
+    setAttachments((prev) => prev.map((a) =>
+      a.localId === localId
+        ? {
+          ...a,
+          previewUrl: file.type.startsWith("image/") ? URL.createObjectURL(file) : null,
+          status: "uploading",
+          error: undefined,
+        }
+        : a
+    ));
+  }, []);
+
+  const commit = useCallback((serverIds: string[]) => {
+    const ids = new Set(serverIds);
+    setAttachments((prev) => {
+      for (const attachment of prev) {
+        if (!attachment.serverId || !ids.has(attachment.serverId)) continue;
+        committedServerIds.current.add(attachment.serverId);
+        if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
+        fileByLocalId.current.delete(attachment.localId);
+        uploadTokens.current.delete(attachment.localId);
+        activeUploads.current.delete(attachment.localId);
+      }
+      return prev.filter((attachment) => !attachment.serverId || !ids.has(attachment.serverId));
+    });
+  }, []);
+
+  const releaseCommitted = useCallback((serverIds: string[]) => {
+    for (const id of serverIds) {
+      committedServerIds.current.delete(id);
+      deleteAttachmentQuietly(id);
+    }
+  }, []);
+
   const clear = useCallback(() => {
+    const readyIds = attachmentsRef.current.flatMap((attachment) => attachment.serverId ? [attachment.serverId] : []);
+    commit(readyIds);
     setAttachments((prev) => {
       for (const a of prev) {
         if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
-        if (a.serverId) api.deleteAttachment(a.serverId).catch(() => {});
+        fileByLocalId.current.delete(a.localId);
+        uploadTokens.current.delete(a.localId);
+        activeUploads.current.delete(a.localId);
+      }
+      return [];
+    });
+  }, [commit]);
+
+  const discard = useCallback(() => {
+    setAttachments((prev) => {
+      for (const a of prev) {
+        if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
+        if (a.serverId) deleteAttachmentQuietly(a.serverId);
       }
       fileByLocalId.current.clear();
+      uploadTokens.current.clear();
       activeUploads.current.clear();
       return [];
     });
   }, []);
 
-  useEffect(() => () => {
-    for (const attachment of attachmentsRef.current) {
-      if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
-    }
-    fileByLocalId.current.clear();
-    activeUploads.current.clear();
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      for (const attachment of attachmentsRef.current) {
+        if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
+        if (attachment.serverId && !committedServerIds.current.has(attachment.serverId)) {
+          deleteAttachmentQuietly(attachment.serverId);
+        }
+      }
+      fileByLocalId.current.clear();
+      uploadTokens.current.clear();
+      activeUploads.current.clear();
+    };
   }, []);
 
   const serializeForMessage = useCallback((ids: string[]) => {
@@ -187,6 +279,7 @@ export function useAttachments(sessionId: string | null): UseAttachments {
           mime: a.mime,
           size: a.size,
           kind: a.kind,
+          ...(a.dataBase64 ? { dataBase64: a.dataBase64 } : {}),
         }))
     );
   }, [attachments]);
@@ -238,7 +331,18 @@ export function useAttachments(sessionId: string | null): UseAttachments {
     };
   }, [addFiles]);
 
-  return { attachments, addFiles, remove, clear, serializeForMessage, isDragging };
+  return {
+    attachments,
+    addFiles,
+    remove,
+    retry,
+    commit,
+    releaseCommitted,
+    clear,
+    discard,
+    serializeForMessage,
+    isDragging,
+  };
 }
 
 let lastToastKey = "";

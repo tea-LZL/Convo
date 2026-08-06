@@ -29,7 +29,7 @@ export function StreamingSection({ sessionId, stickToBottomRef, onBumpScroll }: 
   // DOM, owned by this component via a ref. We never touch its
   // children from React; we just call update(fullText) on each
   // streamContent change. The renderer handles its own frozen/tail
-  // split, fence-mode append, and the token-new CSS fade.
+  // split and fence-mode append without per-token DOM animation.
   const contentRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<StreamRenderer | null>(null);
   const lastContentRef = useRef<string>("");

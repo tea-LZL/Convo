@@ -53,6 +53,11 @@ const routes = [
   "/diagnostics",
   "/hardware",
   "/settings/general",
+  "/settings/providers",
+  "/settings/models",
+  "/settings/search",
+  "/settings/theme",
+  "/settings/shortcuts",
   "/about",
   "/not-a-route",
 ];
@@ -81,10 +86,26 @@ describe("route smoke tests", () => {
     window.history.replaceState(null, "", `#${route}`);
     render(<App />);
 
-    expect(await screen.findByRole("main")).toBeInTheDocument();
+    const expectedRoute = route === "/" || route === "/not-a-route" ? "/chat" : route;
+    expect(await screen.findByRole("main")).toHaveAttribute("data-route", expectedRoute);
     await waitFor(() => {
       expect(screen.queryByText("Something went wrong")).not.toBeInTheDocument();
     });
+  });
+
+  it("survives repeated route navigation without a latched boundary", async () => {
+    window.history.replaceState(null, "", "#/hardware");
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Memory" }));
+    await waitFor(() => expect(screen.getByRole("main")).toHaveAttribute("data-route", "/memory"));
+    fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+    await waitFor(() => expect(screen.getByRole("main")).toHaveAttribute("data-route", "/chat"));
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    await waitFor(() => expect(screen.getByRole("main")).toHaveAttribute("data-route", "/settings"));
+    fireEvent.click(screen.getByRole("button", { name: "Hardware scan" }));
+    await waitFor(() => expect(screen.getByRole("main")).toHaveAttribute("data-route", "/hardware"));
+    expect(screen.queryByText("Something went wrong")).not.toBeInTheDocument();
   });
 });
 

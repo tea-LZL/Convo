@@ -10,10 +10,21 @@
  * for components that didn't care about streaming state.
  */
 import { useCallback, useEffect, useMemo, useRef } from "react";
-import { loadSessionMessages, sendMessage, stopStream, clearSessionMessages, SessionState, useChatStreamStore } from "../stores/chatStream";
+import {
+  clearSessionMessages,
+  loadSessionMessages,
+  reloadSessionMessages,
+  retryLastMessage,
+  sendMessage,
+  stopStream,
+  ChatStatus,
+  SessionState,
+  useChatStreamStore,
+} from "../stores/chatStream";
 
 export interface UseChat {
   messages: SessionState["messages"];
+  status: ChatStatus;
   streaming: boolean;
   streamContent: string;
   streamThinking: string;
@@ -23,6 +34,8 @@ export interface UseChat {
   send: (text: string, options?: { systemOverride?: string; attachmentsJson?: string | null }) => Promise<void>;
   stop: () => Promise<void>;
   reload: () => Promise<void>;
+  clear: () => Promise<void>;
+  retryLast: () => Promise<void>;
 }
 
 const EMPTY_MESSAGES: SessionState["messages"] = [];
@@ -39,6 +52,9 @@ export function useChat(
   // re-renders when the array reference changes.
   const streaming = useChatStreamStore(
     (s) => (sessionId ? s.sessions[sessionId]?.streaming ?? false : false)
+  );
+  const status = useChatStreamStore(
+    (s) => (sessionId ? s.sessions[sessionId]?.status ?? "idle" : "idle")
   );
   const streamContent = useChatStreamStore(
     (s) => (sessionId ? s.sessions[sessionId]?.streamContent ?? "" : "")
@@ -99,12 +115,22 @@ export function useChat(
 
   const reload = useCallback(async () => {
     if (!sessionId) return;
-    await clearSessionMessages(sessionId);
-    await loadSessionMessages(sessionId);
+    await reloadSessionMessages(sessionId);
   }, [sessionId]);
+
+  const clear = useCallback(async () => {
+    if (!sessionId) return;
+    await clearSessionMessages(sessionId);
+  }, [sessionId]);
+
+  const retryLast = useCallback(async () => {
+    if (!sessionId) return;
+    await retryLastMessage(sessionId, modelName, { providerId: providerId || undefined });
+  }, [modelName, providerId, sessionId]);
 
   return {
     messages,
+    status,
     streaming,
     streamContent,
     streamThinking,
@@ -114,5 +140,7 @@ export function useChat(
     send,
     stop,
     reload,
+    clear,
+    retryLast,
   };
 }

@@ -112,10 +112,9 @@ export function ChatContextMenu({
           if (contextMenu.msgIndex === null) return;
           setContextMenu(null);
           const idx = contextMenu.msgIndex;
-          const truncated = chatMessages.slice(0, idx).concat(chatMessages.slice(idx + 1));
-          try {
-            await api.saveMessages(sessionId, truncated);
-            await chatReload();
+           try {
+             await api.deleteMessage(sessionId, chatMessages[idx].id);
+             await chatReload();
           } catch (e) { console.error(e); }
         }}
         className="w-full text-left px-3 py-1.5 text-xs text-error hover:bg-surface-2"

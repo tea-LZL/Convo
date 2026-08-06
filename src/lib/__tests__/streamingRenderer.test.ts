@@ -67,4 +67,20 @@ describe("createStreamRenderer", () => {
     renderer.finalize();
     expect(el.innerHTML.length).toBeGreaterThan(0);
   });
+
+  it.each([
+    "A short paragraph with **emphasis** and `inline code`.",
+    "- one\n- two\n\n1. first\n2. second",
+    "| Name | Value |\n| --- | --- |\n| one | two |",
+    "<think>private reasoning</think>\n\nVisible answer.",
+    "```ts\nconst value = 1;\n```",
+    "```ts\nconst value = 1;",
+  ])("keeps final DOM parity for %s", (text) => {
+    const { el, renderer } = makeRenderer();
+    for (let index = 1; index <= text.length; index += 1) {
+      renderer.update(text.slice(0, index));
+    }
+    renderer.finalize();
+    expect(el.innerHTML).toBe(renderMarkdown(text));
+  });
 });

@@ -149,7 +149,7 @@ export function createStreamRenderer(
       pre.appendChild(code);
       contentEl.appendChild(pre);
       appendMode = { codeText: textNode, appendedLen: 0 };
-      tailShownLen = 0; // code is never faded; prose after the fence fades fresh
+       tailShownLen = 0;
     }
     const code = tailText.slice(fence.contentStart);
     if (code.length > appendMode.appendedLen) {

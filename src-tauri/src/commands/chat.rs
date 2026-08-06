@@ -64,6 +64,32 @@ pub fn save_messages(
 }
 
 #[tauri::command]
+pub fn clear_messages(pool: State<'_, Arc<DbPool>>, session_id: String) -> Result<(), String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM messages WHERE session_id = ?1",
+        params![session_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_message(
+    pool: State<'_, Arc<DbPool>>,
+    session_id: String,
+    message_id: String,
+) -> Result<(), String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM messages WHERE id = ?1 AND session_id = ?2",
+        params![message_id, session_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 pub fn upsert_message(pool: State<'_, Arc<DbPool>>, message: MessageInput) -> Result<(), String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
     upsert_message_conn(&conn, &message)
@@ -116,7 +142,10 @@ pub fn append_message(
     Ok(id)
 }
 
-fn upsert_message_conn(conn: &rusqlite::Connection, m: &MessageInput) -> Result<(), String> {
+pub(crate) fn upsert_message_conn(
+    conn: &rusqlite::Connection,
+    m: &MessageInput,
+) -> Result<(), String> {
     let id = if m.id.is_empty() {
         Uuid::new_v4().to_string()
     } else {
@@ -318,10 +347,29 @@ mod tests {
     fn upsert_message_preserves_concurrent_rows() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("CREATE TABLE sessions (id TEXT PRIMARY KEY, updated_at TEXT NOT NULL); CREATE TABLE messages (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, thinking TEXT, attachments_json TEXT, prompt_tokens INTEGER, output_tokens INTEGER, created_at TEXT NOT NULL); INSERT INTO sessions VALUES ('s1', 'old');").unwrap();
-        for (id, role, content, created_at) in [("user-1", "user", "hello", "2026-01-01T00:00:00Z"), ("assistant-1", "assistant", "hi", "2026-01-01T00:00:01Z")] {
-            upsert_message_conn(&conn, &MessageInput { id: id.into(), session_id: "s1".into(), role: role.into(), content: content.into(), thinking: None, attachments_json: None, prompt_tokens: None, output_tokens: None, created_at: Some(created_at.into()) }).unwrap();
+        for (id, role, content, created_at) in [
+            ("user-1", "user", "hello", "2026-01-01T00:00:00Z"),
+            ("assistant-1", "assistant", "hi", "2026-01-01T00:00:01Z"),
+        ] {
+            upsert_message_conn(
+                &conn,
+                &MessageInput {
+                    id: id.into(),
+                    session_id: "s1".into(),
+                    role: role.into(),
+                    content: content.into(),
+                    thinking: None,
+                    attachments_json: None,
+                    prompt_tokens: None,
+                    output_tokens: None,
+                    created_at: Some(created_at.into()),
+                },
+            )
+            .unwrap();
         }
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0)).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(count, 2);
     }
 

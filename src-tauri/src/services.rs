@@ -94,8 +94,18 @@ pub async fn add_provider(
     base_url: Option<String>,
     api_key: Option<String>,
 ) -> Result<Provider, String> {
+    if !matches!(kind.as_str(), "ollama" | "openai_compat") {
+        return Err(format!("Unsupported provider kind: {}", kind));
+    }
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("Provider name cannot be empty".into());
+    }
     let id = uuid::Uuid::new_v4().to_string();
     let conn = pool.get().map_err(|e| e.to_string())?;
+    if provider_url_exists(&conn, &kind, base_url.as_deref(), None)? {
+        return Err("A provider with this kind and URL already exists".into());
+    }
     conn.execute(
         "INSERT INTO providers (id, kind, name, base_url, is_default) VALUES (?1, ?2, ?3, ?4, 0)",
         rusqlite::params![id, kind, name, base_url],
@@ -127,13 +137,31 @@ pub async fn update_provider(
     is_default: Option<bool>,
 ) -> Result<(), String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
+    let existing_kind: String = conn
+        .query_row(
+            "SELECT kind FROM providers WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("Provider lookup: {}", e))?;
+    if let Some(ref b) = base_url {
+        if provider_url_exists(&conn, &existing_kind, Some(b), Some(&id))? {
+            return Err("A provider with this kind and URL already exists".into());
+        }
+    }
     if let Some(n) = name {
-        conn.execute("UPDATE providers SET name = ?1 WHERE id = ?2", rusqlite::params![n, id])
-            .map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE providers SET name = ?1 WHERE id = ?2",
+            rusqlite::params![n, id],
+        )
+        .map_err(|e| e.to_string())?;
     }
     if let Some(b) = base_url {
-        conn.execute("UPDATE providers SET base_url = ?1 WHERE id = ?2", rusqlite::params![b, id])
-            .map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE providers SET base_url = ?1 WHERE id = ?2",
+            rusqlite::params![b, id],
+        )
+        .map_err(|e| e.to_string())?;
     }
     if let Some(k) = api_key {
         if k.is_empty() {
@@ -146,11 +174,40 @@ pub async fn update_provider(
         if d {
             conn.execute("UPDATE providers SET is_default = 0", [])
                 .map_err(|e| e.to_string())?;
-            conn.execute("UPDATE providers SET is_default = 1 WHERE id = ?1", rusqlite::params![id])
-                .map_err(|e| e.to_string())?;
+            conn.execute(
+                "UPDATE providers SET is_default = 1 WHERE id = ?1",
+                rusqlite::params![id],
+            )
+            .map_err(|e| e.to_string())?;
         }
     }
     Ok(())
+}
+
+fn provider_url_exists(
+    conn: &rusqlite::Connection,
+    kind: &str,
+    base_url: Option<&str>,
+    except_id: Option<&str>,
+) -> Result<bool, String> {
+    let Some(base_url) = base_url.map(str::trim).filter(|url| !url.is_empty()) else {
+        return Ok(false);
+    };
+    let count: i64 = if let Some(id) = except_id {
+        conn.query_row(
+            "SELECT COUNT(*) FROM providers WHERE kind = ?1 AND base_url = ?2 AND id <> ?3",
+            rusqlite::params![kind, base_url, id],
+            |row| row.get(0),
+        )
+    } else {
+        conn.query_row(
+            "SELECT COUNT(*) FROM providers WHERE kind = ?1 AND base_url = ?2",
+            rusqlite::params![kind, base_url],
+            |row| row.get(0),
+        )
+    }
+    .map_err(|e| e.to_string())?;
+    Ok(count > 0)
 }
 
 #[tauri::command]
@@ -254,6 +311,42 @@ pub fn ensure_builtin_themes() -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::provider_url_exists;
+    use rusqlite::Connection;
+
+    fn connection() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE providers (id TEXT PRIMARY KEY, kind TEXT NOT NULL, base_url TEXT);",
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn duplicate_provider_urls_are_rejected_per_kind() {
+        let conn = connection();
+        conn.execute(
+            "INSERT INTO providers VALUES ('p1', 'ollama', 'http://localhost:11434')",
+            [],
+        )
+        .unwrap();
+        assert!(
+            provider_url_exists(&conn, "ollama", Some("http://localhost:11434"), None).unwrap()
+        );
+        assert!(
+            !provider_url_exists(&conn, "openai_compat", Some("http://localhost:11434"), None)
+                .unwrap()
+        );
+        assert!(
+            !provider_url_exists(&conn, "ollama", Some("http://localhost:11434"), Some("p1"))
+                .unwrap()
+        );
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

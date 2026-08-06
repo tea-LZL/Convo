@@ -1,8 +1,6 @@
 use super::discovery::DiscoveredModel;
 use super::types::ChatRequest;
-use super::{
-    ChatResponseChunk, ModelInfo, ProbeOutcome, Provider, ProviderError, ProviderResult,
-};
+use super::{ChatResponseChunk, ModelInfo, ProbeOutcome, Provider, ProviderError, ProviderResult};
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use std::pin::Pin;
@@ -15,9 +13,7 @@ pub struct OpenAiCompatProvider {
 
 impl OpenAiCompatProvider {
     pub fn new(base_url: String, api_key: Option<String>) -> Self {
-        let http = reqwest::Client::builder()
-            .build()
-            .expect("reqwest client");
+        let http = reqwest::Client::builder().build().expect("reqwest client");
         Self {
             base_url,
             api_key,
@@ -91,9 +87,7 @@ impl Provider for OpenAiCompatProvider {
         })
     }
 
-    fn probe<'a>(
-        &'a self,
-    ) -> Pin<Box<dyn std::future::Future<Output = ProbeOutcome> + Send + 'a>> {
+    fn probe<'a>(&'a self) -> Pin<Box<dyn std::future::Future<Output = ProbeOutcome> + Send + 'a>> {
         Box::pin(async move {
             match self.list_models().await {
                 Ok(models) => {
@@ -150,13 +144,15 @@ impl Provider for OpenAiCompatProvider {
                 (stream, Vec::<u8>::new()),
                 |(mut stream, mut buf)| async move {
                     loop {
-                        if let Some(idx) = find_sse_boundary(&buf) {
-                            let end = idx + 2;
+                        if let Some((idx, separator_len)) = find_sse_boundary(&buf) {
+                            let end = idx + separator_len;
                             let event: Vec<u8> = buf.drain(..end).collect();
                             let text = String::from_utf8_lossy(&event).to_string();
                             let data_lines: Vec<String> = text
                                 .lines()
-                                .filter_map(|l| l.strip_prefix("data:").map(|s| s.trim().to_string()))
+                                .filter_map(|l| {
+                                    l.strip_prefix("data:").map(|s| s.trim().to_string())
+                                })
                                 .collect();
                             if data_lines.is_empty() {
                                 continue;
@@ -174,16 +170,12 @@ impl Provider for OpenAiCompatProvider {
                                     (stream, buf),
                                 ));
                             }
-                            match serde_json::from_str::<OpenAiChunk>(&joined) {
-                                Ok(c) => {
-                                    let conv = c.into_internal();
-                                    return Some((Ok(conv), (stream, buf)));
-                                }
-                                Err(e) => {
-                                    return Some((
-                                        Err(ProviderError::Parse(e.to_string())),
-                                        (stream, buf),
-                                    ))
+                            match parse_sse_payload(&joined) {
+                                Ok(Some(conv)) => return Some((Ok(conv), (stream, buf))),
+                                Ok(None) => continue,
+                                Err(error) => {
+                                    tracing::warn!(%error, "ignoring malformed OpenAI stream event");
+                                    continue;
                                 }
                             }
                         }
@@ -206,17 +198,34 @@ impl Provider for OpenAiCompatProvider {
             );
             Ok(Box::pin(parsed)
                 as Pin<
-                    Box<
-                        dyn futures_util::Stream<Item = ProviderResult<ChatResponseChunk>> + Send,
-                    >,
+                    Box<dyn futures_util::Stream<Item = ProviderResult<ChatResponseChunk>> + Send>,
                 >)
         })
     }
 }
 
-fn find_sse_boundary(buf: &[u8]) -> Option<usize> {
-    // SSE messages are separated by `\n\n`. Find the earliest occurrence.
-    buf.windows(2).position(|w| w == b"\n\n")
+fn find_sse_boundary(buf: &[u8]) -> Option<(usize, usize)> {
+    if let Some(index) = buf.windows(4).position(|window| window == b"\r\n\r\n") {
+        return Some((index, 4));
+    }
+    buf.windows(2)
+        .position(|window| window == b"\n\n")
+        .map(|index| (index, 2))
+}
+
+pub(crate) fn parse_sse_payload(data: &str) -> ProviderResult<Option<ChatResponseChunk>> {
+    if data.trim() == "[DONE]" {
+        return Ok(Some(ChatResponseChunk {
+            message: None,
+            done: true,
+            done_reason: Some("stop".into()),
+            prompt_eval_count: None,
+            eval_count: None,
+        }));
+    }
+    serde_json::from_str::<OpenAiChunk>(data)
+        .map(|chunk| Some(chunk.into_internal()))
+        .map_err(|e| ProviderError::Parse(e.to_string()))
 }
 
 #[derive(serde::Deserialize)]
@@ -245,7 +254,7 @@ struct OpenAiChatRequest {
 #[derive(serde::Serialize)]
 struct OpenAiMessage {
     role: String,
-    content: String,
+    content: serde_json::Value,
 }
 
 impl From<ChatRequest> for OpenAiChatRequest {
@@ -254,13 +263,33 @@ impl From<ChatRequest> for OpenAiChatRequest {
         if let Some(sys) = r.system.as_ref().filter(|s| !s.is_empty()) {
             messages.push(OpenAiMessage {
                 role: "system".into(),
-                content: sys.clone(),
+                content: serde_json::Value::String(sys.clone()),
             });
         }
         for m in r.messages {
+            let content = if m.images.is_empty() {
+                serde_json::Value::String(m.content)
+            } else {
+                let mut parts = vec![serde_json::json!({
+                    "type": "text",
+                    "text": m.content,
+                })];
+                parts.extend(m.images.into_iter().map(|image| {
+                    let url = if image.starts_with("data:") {
+                        image
+                    } else {
+                        format!("data:image/png;base64,{}", image)
+                    };
+                    serde_json::json!({
+                        "type": "image_url",
+                        "image_url": { "url": url },
+                    })
+                }));
+                serde_json::Value::Array(parts)
+            };
             messages.push(OpenAiMessage {
                 role: m.role,
-                content: m.content,
+                content,
             });
         }
         Self {
@@ -294,6 +323,10 @@ struct OpenAiDelta {
     content: Option<String>,
     #[serde(default)]
     role: Option<String>,
+    #[serde(default)]
+    reasoning_content: Option<String>,
+    #[serde(default)]
+    reasoning: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -306,22 +339,27 @@ struct OpenAiUsage {
 
 impl OpenAiChunk {
     fn into_internal(self) -> ChatResponseChunk {
-        let (content, done, done_reason) = match self.choices.first() {
+        let (content, thinking, done, done_reason) = match self.choices.first() {
             Some(c) => {
                 let content = c.delta.content.clone().unwrap_or_default();
+                let thinking = c
+                    .delta
+                    .reasoning_content
+                    .clone()
+                    .or_else(|| c.delta.reasoning.clone());
                 let done = c.finish_reason.is_some();
-                (content, done, c.finish_reason.clone())
+                (content, thinking, done, c.finish_reason.clone())
             }
-            None => (String::new(), true, Some("stop".into())),
+            None => (String::new(), None, true, Some("stop".into())),
         };
         ChatResponseChunk {
-            message: if content.is_empty() {
+            message: if content.is_empty() && thinking.is_none() {
                 None
             } else {
                 Some(crate::providers::MessageContent {
                     role: "assistant".into(),
                     content,
-                    thinking: None,
+                    thinking,
                     images: vec![],
                 })
             },

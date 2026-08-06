@@ -7,6 +7,17 @@ use crate::db::DbPool;
 use crate::providers::discovery::scan_localhost;
 use crate::providers::ollama::OllamaProvider;
 use crate::providers::Provider;
+use futures_util::StreamExt;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use tauri::{AppHandle, Emitter};
+
+static MODEL_PULLS: OnceLock<Mutex<HashMap<String, tokio::task::AbortHandle>>> = OnceLock::new();
+
+fn model_pulls() -> &'static Mutex<HashMap<String, tokio::task::AbortHandle>> {
+    MODEL_PULLS.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 fn now() -> String {
     chrono::Utc::now().to_rfc3339()
@@ -149,9 +160,11 @@ pub async fn refresh_models(
             conn.execute(
                 "DELETE FROM models WHERE provider_id = ?1",
                 params![provider_id],
-            ).map_err(|e| e.to_string())?;
+            )
+            .map_err(|e| e.to_string())?;
         } else {
-            let placeholders: Vec<String> = (0..names.len()).map(|i| format!("?{}", i + 2)).collect();
+            let placeholders: Vec<String> =
+                (0..names.len()).map(|i| format!("?{}", i + 2)).collect();
             let sql = format!(
                 "DELETE FROM models WHERE provider_id = ?1 AND name NOT IN ({})",
                 placeholders.join(",")
@@ -160,12 +173,283 @@ pub async fn refresh_models(
             for n in &names {
                 owned.push(Box::new(n.clone()));
             }
-            let refs: Vec<&dyn rusqlite::ToSql> = owned.iter().map(|b| b.as_ref() as &dyn rusqlite::ToSql).collect();
+            let refs: Vec<&dyn rusqlite::ToSql> = owned
+                .iter()
+                .map(|b| b.as_ref() as &dyn rusqlite::ToSql)
+                .collect();
             let _ = conn.execute(&sql, refs.as_slice());
         }
     }
 
     list_models_for_provider(pool, provider_id).await
+}
+
+fn ollama_provider(pool: &DbPool, provider_id: &str) -> Result<(String, Option<String>), String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    let (kind, base_url): (String, String) = conn
+        .query_row(
+            "SELECT kind, COALESCE(base_url, '') FROM providers WHERE id = ?1",
+            params![provider_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| format!("Provider lookup: {}", e))?;
+    if kind != "ollama" {
+        return Err("Model mutations are supported only for Ollama providers".into());
+    }
+    let base_url = base_url.trim_end_matches('/').to_string();
+    if base_url.is_empty() {
+        return Err("Ollama provider has no base URL".into());
+    }
+    Ok((base_url, crate::services::get_api_key(provider_id)))
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct ModelPullEvent {
+    operation_id: String,
+    provider_id: String,
+    name: String,
+    status: String,
+    digest: String,
+    total: u64,
+    completed: u64,
+    percent: f64,
+    error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaPullChunk {
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    digest: Option<String>,
+    #[serde(default)]
+    total: Option<u64>,
+    #[serde(default)]
+    completed: Option<u64>,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+fn pull_event(
+    operation_id: &str,
+    provider_id: &str,
+    name: &str,
+    status: &str,
+    digest: Option<String>,
+    total: u64,
+    completed: u64,
+    error: Option<String>,
+) -> ModelPullEvent {
+    ModelPullEvent {
+        operation_id: operation_id.to_string(),
+        provider_id: provider_id.to_string(),
+        name: name.to_string(),
+        status: status.to_string(),
+        digest: digest.unwrap_or_default(),
+        total,
+        completed,
+        percent: if total > 0 {
+            completed as f64 / total as f64 * 100.0
+        } else {
+            0.0
+        },
+        error,
+    }
+}
+
+#[tauri::command]
+pub async fn pull_model_for_provider(
+    app: AppHandle,
+    pool: tauri::State<'_, std::sync::Arc<DbPool>>,
+    provider_id: String,
+    name: String,
+) -> Result<String, String> {
+    let (base_url, api_key) = ollama_provider(pool.inner().as_ref(), &provider_id)?;
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    let operation_for_task = operation_id.clone();
+    let provider_for_task = provider_id.clone();
+    let name_for_task = name.clone();
+    let app_for_task = app.clone();
+    let client = reqwest::Client::new();
+    let handle = tokio::spawn(async move {
+        let result: Result<(), String> = async {
+            let mut request = client
+                .post(format!("{}/api/pull", base_url))
+                .json(&serde_json::json!({ "name": name_for_task, "stream": true }));
+            if let Some(key) = api_key {
+                request = request.bearer_auth(key);
+            }
+            let response = request
+                .send()
+                .await
+                .map_err(|e| format!("Failed to connect to Ollama: {}", e))?;
+            if !response.status().is_success() {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                return Err(format!("Ollama error {}: {}", status, body));
+            }
+            let mut buffer = String::new();
+            let mut stream = response.bytes_stream();
+            while let Some(chunk) = stream.next().await {
+                buffer.push_str(&String::from_utf8_lossy(
+                    &chunk.map_err(|e| format!("Stream error: {}", e))?,
+                ));
+                while let Some(newline) = buffer.find('\n') {
+                    let line = buffer[..newline].trim().to_string();
+                    buffer.drain(..=newline);
+                    if line.is_empty() {
+                        continue;
+                    }
+                    let progress: OllamaPullChunk = serde_json::from_str(&line)
+                        .map_err(|e| format!("Invalid pull response: {}", e))?;
+                    let total = progress.total.unwrap_or(0);
+                    let completed = progress.completed.unwrap_or(0);
+                    if let Some(error) = progress.error {
+                        return Err(error);
+                    }
+                    let status = progress.status.clone();
+                    let _ = app_for_task.emit(
+                        "model-pull-progress",
+                        pull_event(
+                            &operation_for_task,
+                            &provider_for_task,
+                            &name_for_task,
+                            &status,
+                            progress.digest,
+                            total,
+                            completed,
+                            None,
+                        ),
+                    );
+                    if status == "success" {
+                        return Ok(());
+                    }
+                }
+            }
+            Ok(())
+        }
+        .await;
+
+        let event = match result {
+            Ok(()) => pull_event(
+                &operation_for_task,
+                &provider_for_task,
+                &name_for_task,
+                "success",
+                None,
+                0,
+                0,
+                None,
+            ),
+            Err(error) => pull_event(
+                &operation_for_task,
+                &provider_for_task,
+                &name_for_task,
+                "error",
+                None,
+                0,
+                0,
+                Some(error),
+            ),
+        };
+        let event_name = if event.status == "success" {
+            "model-pull-done"
+        } else {
+            "model-pull-error"
+        };
+        let _ = app_for_task.emit(event_name, event);
+        if let Ok(mut pulls) = model_pulls().lock() {
+            pulls.remove(&operation_for_task);
+        }
+    });
+    if let Ok(mut pulls) = model_pulls().lock() {
+        pulls.insert(operation_id.clone(), handle.abort_handle());
+    }
+    Ok(operation_id)
+}
+
+#[tauri::command]
+pub fn cancel_model_pull(app: AppHandle, operation_id: String) -> Result<(), String> {
+    let handle = model_pulls()
+        .lock()
+        .map_err(|e| e.to_string())?
+        .remove(&operation_id);
+    if let Some(handle) = handle {
+        handle.abort();
+        let _ = app.emit(
+            "model-pull-cancelled",
+            pull_event(&operation_id, "", "", "cancelled", None, 0, 0, None),
+        );
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_model_for_provider(
+    pool: tauri::State<'_, std::sync::Arc<DbPool>>,
+    provider_id: String,
+    name: String,
+) -> Result<(), String> {
+    let (base_url, api_key) = ollama_provider(pool.inner().as_ref(), &provider_id)?;
+    let client = reqwest::Client::new();
+    let mut request = client
+        .delete(format!("{}/api/delete", base_url))
+        .json(&serde_json::json!({ "name": name }));
+    if let Some(key) = api_key {
+        request = request.bearer_auth(key);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|e| format!("Failed to connect to Ollama: {}", e))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("Ollama error {}: {}", status, body));
+    }
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM models WHERE provider_id = ?1 AND name = ?2",
+        params![provider_id, name],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn create_custom_model_for_provider(
+    pool: tauri::State<'_, std::sync::Arc<DbPool>>,
+    provider_id: String,
+    name: String,
+    base_model: String,
+    num_ctx: u32,
+) -> Result<(), String> {
+    if name.trim().is_empty() || base_model.trim().is_empty() || num_ctx == 0 {
+        return Err("Model name, base model, and context length are required".into());
+    }
+    let (base_url, api_key) = ollama_provider(pool.inner().as_ref(), &provider_id)?;
+    let client = reqwest::Client::new();
+    let mut request = client
+        .post(format!("{}/api/create", base_url))
+        .json(&serde_json::json!({
+            "name": name,
+            "modelfile": format!("FROM {}\nPARAMETER num_ctx {}\n", base_model, num_ctx),
+            "stream": false,
+        }));
+    if let Some(key) = api_key {
+        request = request.bearer_auth(key);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|e| format!("Failed to connect to Ollama: {}", e))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("Ollama error {}: {}", status, body));
+    }
+    let _ = response.bytes().await;
+    Ok(())
 }
 
 #[tauri::command]

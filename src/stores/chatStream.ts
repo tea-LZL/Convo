@@ -40,6 +40,25 @@ const RECALL_STOP_WORDS = new Set([
   "me", "my", "of", "on", "or", "please", "the", "to", "what", "who",
 ]);
 
+function imageDataForMessage(message: ChatMessage): string[] {
+  if (!message.attachments_json) return [];
+  try {
+    const attachments: unknown = JSON.parse(message.attachments_json);
+    if (!Array.isArray(attachments)) return [];
+    return attachments
+      .filter((attachment): attachment is { kind?: string; mime?: string; dataBase64?: string } =>
+        typeof attachment === "object" && attachment !== null
+      )
+      .filter((attachment) =>
+        (attachment.kind === "image" || attachment.mime?.startsWith("image/"))
+        && typeof attachment.dataBase64 === "string"
+      )
+      .map((attachment) => attachment.dataBase64!);
+  } catch {
+    return [];
+  }
+}
+
 export function composeSystemPrompt(parts: {
   override?: string;
   alwaysOnMemory?: string;
@@ -52,6 +71,7 @@ export function composeSystemPrompt(parts: {
 
 export interface SessionState {
   messages: ChatMessage[];
+  status: ChatStatus;
   streaming: boolean;
   streamContent: string;
   streamThinking: string;
@@ -68,10 +88,21 @@ export interface SessionState {
   _lastModel?: string;
   _lastProviderId?: string;
   _streamId?: string;
+  _assistantMessageId?: string;
 }
+
+export type ChatStatus =
+  | "idle"
+  | "sending"
+  | "streaming"
+  | "stopping"
+  | "failed"
+  | "stopped"
+  | "complete";
 
 const EMPTY: SessionState = {
   messages: [],
+  status: "idle",
   streaming: false,
   streamContent: "",
   streamThinking: "",
@@ -82,15 +113,15 @@ const EMPTY: SessionState = {
 const stateBySession = new Map<string, SessionState>();
 const terminalStreams = new Set<string>();
 
-function eventStreamKey(cid: string, streamId?: string): string {
-  return `${cid}:${streamId ?? "legacy"}`;
+function eventStreamKey(cid: string, streamId: string): string {
+  return `${cid}:${streamId}`;
 }
 
-function isCurrentStream(s: SessionState, streamId?: string): boolean {
-  return !streamId || !s._streamId || s._streamId === streamId;
+function isCurrentStream(s: SessionState, streamId: string): boolean {
+  return streamId.length > 0 && !!s._streamId && s._streamId === streamId;
 }
 
-export function acceptTerminalEvent(cid: string, streamId?: string): boolean {
+export function acceptTerminalEvent(cid: string, streamId: string): boolean {
   const key = eventStreamKey(cid, streamId);
   if (terminalStreams.has(key)) return false;
   terminalStreams.add(key);
@@ -113,16 +144,19 @@ const DEFAULT_TITLES = new Set(["", "New Chat", "Untitled"]);
  * per frame — the browser coalesces paints but the React tree still
  * re-runs.
  *
- * The pattern (borrowed from opencode's global-sdk.tsx frame flusher):
- * the chunk listener writes the latest server-provided full text into
- * a per-session pending map and schedules a single rAF drain. The
- * drain mutates `streamContent` and bumps once per frame, regardless
- * of how many chunks arrived. The terminal events (`chat-done`,
- * `chat-error`, `chat-cancelled`) drain the pending entry for the
- * affected session synchronously before reading `streamContent`, so
- * the final message saved to the DB is not stale by one frame.
+ * The listeners append content and thinking deltas into a stream-keyed
+ * pending map and schedule a single rAF drain. Terminal events drain their
+ * stream synchronously before reading `streamContent`, so the final message
+ * is not stale by one frame.
  */
-const pendingDeltas = new Map<string, string>();
+interface PendingDeltas {
+  cid: string;
+  streamId: string;
+  content: string;
+  thinking: string;
+}
+
+const pendingDeltas = new Map<string, PendingDeltas>();
 let flushRafScheduled = false;
 
 function scheduleFlush() {
@@ -130,20 +164,65 @@ function scheduleFlush() {
   flushRafScheduled = true;
   requestAnimationFrame(() => {
     flushRafScheduled = false;
-    for (const [cid, delta] of pendingDeltas) {
-      pendingDeltas.delete(cid);
-      const s = getOrCreate(cid);
-      s.streamContent += delta;
-      bump(cid);
+    for (const [key, pending] of pendingDeltas) {
+      pendingDeltas.delete(key);
+      const s = getOrCreate(pending.cid);
+      if (!isCurrentStream(s, pending.streamId)) continue;
+      s.streamContent += pending.content;
+      s.streamThinking += pending.thinking;
+      if (pending.content || pending.thinking) bump(pending.cid);
     }
   });
 }
 
-function drainPendingFor(cid: string) {
-  const delta = pendingDeltas.get(cid);
-  if (delta === undefined) return;
-  pendingDeltas.delete(cid);
-  getOrCreate(cid).streamContent += delta;
+function drainPendingFor(cid: string, streamId: string) {
+  const key = eventStreamKey(cid, streamId);
+  const pending = pendingDeltas.get(key);
+  if (!pending) return;
+  pendingDeltas.delete(key);
+  const s = getOrCreate(cid);
+  if (!isCurrentStream(s, streamId)) return;
+  s.streamContent += pending.content;
+  s.streamThinking += pending.thinking;
+}
+
+interface StreamEventBase {
+  conversation_id: string;
+  stream_id: string;
+  assistant_message_id: string;
+}
+
+function isCurrentEvent(s: SessionState, event: StreamEventBase): boolean {
+  return isCurrentStream(s, event.stream_id)
+    && !!s._assistantMessageId
+    && s._assistantMessageId === event.assistant_message_id;
+}
+
+function appendAssistantMessage(
+  s: SessionState,
+  cid: string,
+  assistantMessageId: string,
+  content: string,
+  thinking: string | null,
+  promptTokens: number | null,
+  outputTokens: number | null,
+  createdAt: string,
+) {
+  if (!content || s.messages.some((message) => message.id === assistantMessageId)) return;
+  s.messages = [
+    ...s.messages,
+    {
+      id: assistantMessageId,
+      session_id: cid,
+      role: "assistant",
+      content,
+      thinking,
+      attachments_json: null,
+      prompt_tokens: promptTokens,
+      output_tokens: outputTokens,
+      created_at: createdAt,
+    },
+  ];
 }
 
 async function ensureListeners() {
@@ -152,32 +231,47 @@ async function ensureListeners() {
 
   // chat-thinking
   unlisteners.push(
-    await listen<{ conversation_id: string; stream_id?: string; thinking: string }>(
+    await listen<StreamEventBase & { delta: string }>(
       "chat-thinking",
       (e) => {
         const cid = e.payload.conversation_id;
         const s = getOrCreate(cid);
-        if (!isCurrentStream(s, e.payload.stream_id)) return;
-        s.streamThinking = e.payload.thinking;
-        if (!s.streaming) s.streaming = true;
-        bump(cid);
+        if (!isCurrentEvent(s, e.payload)) return;
+        const key = eventStreamKey(cid, e.payload.stream_id);
+        const pending = pendingDeltas.get(key) ?? {
+          cid,
+          streamId: e.payload.stream_id,
+          content: "",
+          thinking: "",
+        };
+        pending.thinking += e.payload.delta;
+        pendingDeltas.set(key, pending);
+        s.streaming = true;
+        s.status = "streaming";
+        scheduleFlush();
       }
     )
   );
 
   // chat-chunk — frame-batched deltas; avoid resending the accumulated prefix.
   unlisteners.push(
-    await listen<{ conversation_id: string; stream_id?: string; delta: string }>(
+    await listen<StreamEventBase & { delta: string }>(
       "chat-chunk",
       (e) => {
         const cid = e.payload.conversation_id;
         const s = getOrCreate(cid);
-        if (!isCurrentStream(s, e.payload.stream_id)) return;
-        if (!pendingDeltas.has(cid)) {
-          // First chunk for this session: ensure streaming is on.
-          if (!s.streaming) s.streaming = true;
-        }
-        pendingDeltas.set(cid, (pendingDeltas.get(cid) ?? "") + e.payload.delta);
+        if (!isCurrentEvent(s, e.payload)) return;
+        const key = eventStreamKey(cid, e.payload.stream_id);
+        const pending = pendingDeltas.get(key) ?? {
+          cid,
+          streamId: e.payload.stream_id,
+          content: "",
+          thinking: "",
+        };
+        pending.content += e.payload.delta;
+        pendingDeltas.set(key, pending);
+        s.streaming = true;
+        s.status = "streaming";
         scheduleFlush();
       }
     )
@@ -185,61 +279,37 @@ async function ensureListeners() {
 
   // chat-done
   unlisteners.push(
-    await listen<{
-      conversation_id: string;
-      stream_id?: string;
+    await listen<StreamEventBase & {
       prompt_tokens: number | null;
       output_tokens: number | null;
       completed_at: string;
     }>("chat-done", (e) => {
       const cid = e.payload.conversation_id;
       const s = getOrCreate(cid);
-      if (!isCurrentStream(s, e.payload.stream_id)) return;
+      if (!isCurrentEvent(s, e.payload)) return;
       if (!acceptTerminalEvent(cid, e.payload.stream_id)) return;
-      // Drain any pending chunk for this session. The terminal
-      // event may arrive between two rAF drains; we need the
-      // latest server text in the saved message.
-      drainPendingFor(cid);
+      clearStopTimer(cid);
+      drainPendingFor(cid, e.payload.stream_id);
       const thinking = (s.streamThinking || "").trim() || null;
+      appendAssistantMessage(
+        s,
+        cid,
+        e.payload.assistant_message_id,
+        s.streamContent,
+        thinking,
+        e.payload.prompt_tokens,
+        e.payload.output_tokens,
+        e.payload.completed_at,
+      );
+      s.status = "complete";
       s.streaming = false;
-      if (s.streamContent) {
-        s.messages = [
-          ...s.messages,
-          {
-            id: crypto.randomUUID(),
-            session_id: cid,
-            role: "assistant",
-            content: s.streamContent,
-            thinking,
-            attachments_json: null,
-            prompt_tokens: e.payload.prompt_tokens ?? null,
-            output_tokens: e.payload.output_tokens ?? null,
-            created_at: e.payload.completed_at,
-          },
-        ];
-      }
       s.streamContent = "";
       s.streamThinking = "";
-      // Persist to DB unconditionally — the user may have navigated
-      // away and we still need the final state on disk.
-      for (const message of s.messages) {
-        api.upsertMessage(message).catch((e) => console.error("upsertMessage (chat-done):", e));
-      }
 
-      // One-shot auto-title: if the user hasn't renamed the session and
-      // we haven't already kicked off the LLM call for it, ask the LLM
-      // for a short title derived from the first user message.
+      // Rust owns durable assistant persistence. This event only updates
+      // presentation state, so navigation cannot lose a completed turn.
       maybeAutoTitle(cid, s.messages);
 
-      // Auto-evaluate the conversation for durable memory facts
-      // (preferences, project facts, skills). Settings store toggle
-      // `memoryAutoEvaluate` gates this; default on. We require
-      // streamGeneration >= 2: that means the user has sent at
-      // least twice, so we have at least one full Q/A pair beyond
-      // the opener. The very first chat-done fires with gen=1
-      // (the assistant reply to the first user message), which is
-      // too thin to extract from — skip it. Fire-and-forget; the
-      // persisted review queue owns extraction and retry state.
       const gen = s._streamGeneration ?? 0;
       const lastModel = s._lastModel;
       const lastProvider = s._lastProviderId;
@@ -262,20 +332,31 @@ async function ensureListeners() {
 
   // chat-error
   unlisteners.push(
-    await listen<{ conversation_id: string; stream_id?: string; error: string }>(
+    await listen<StreamEventBase & { error: string; completed_at: string }>(
       "chat-error",
       (e) => {
         const cid = e.payload.conversation_id;
         const s = getOrCreate(cid);
-        if (!isCurrentStream(s, e.payload.stream_id)) return;
+        if (!isCurrentEvent(s, e.payload)) return;
         if (!acceptTerminalEvent(cid, e.payload.stream_id)) return;
-        drainPendingFor(cid);
+        clearStopTimer(cid);
+        drainPendingFor(cid, e.payload.stream_id);
+        const thinking = (s.streamThinking || "").trim() || null;
+        appendAssistantMessage(
+          s,
+          cid,
+          e.payload.assistant_message_id,
+          s.streamContent,
+          thinking,
+          null,
+          null,
+          e.payload.completed_at,
+        );
         s.streaming = false;
+        s.status = "failed";
         s.error = e.payload.error;
-        // Persist whatever we have so the user message isn't lost
-        for (const message of s.messages) {
-          api.upsertMessage(message).catch((err) => console.error("upsertMessage (chat-error):", err));
-        }
+        s.streamContent = "";
+        s.streamThinking = "";
         toast.error(e.payload.error, "Chat error");
         bump(cid);
       }
@@ -284,12 +365,10 @@ async function ensureListeners() {
 
   // chat-cancelled
   unlisteners.push(
-    await listen<{ conversation_id: string; stream_id?: string }>("chat-cancelled", (e) => {
+    await listen<StreamEventBase & { completed_at: string }>("chat-cancelled", (e) => {
       const cid = e.payload.conversation_id;
       const s = getOrCreate(cid);
-      if (!isCurrentStream(s, e.payload.stream_id)) return;
-      if (!acceptTerminalEvent(cid, e.payload.stream_id)) return;
-      drainPendingFor(cid);
+      if (!isCurrentEvent(s, e.payload)) return;
       const streamGeneration = s._streamGeneration ?? 0;
       const cancelRequestedGeneration = s._cancelRequestedGeneration ?? -1;
       // Ignore stale chat-cancelled events caused by an old Rust
@@ -299,29 +378,24 @@ async function ensureListeners() {
       if (s.streaming && cancelRequestedGeneration !== streamGeneration) {
         return;
       }
+      if (!acceptTerminalEvent(cid, e.payload.stream_id)) return;
+      clearStopTimer(cid);
+      drainPendingFor(cid, e.payload.stream_id);
       s.streaming = false;
+      s.status = "stopped";
       const thinking = (s.streamThinking || "").trim() || null;
-      if (s.streamContent) {
-        s.messages = [
-          ...s.messages,
-          {
-            id: crypto.randomUUID(),
-            session_id: cid,
-            role: "assistant",
-            content: s.streamContent + " [stopped]",
-            thinking,
-            attachments_json: null,
-            prompt_tokens: null,
-            output_tokens: null,
-            created_at: new Date().toISOString(),
-          },
-        ];
-      }
+      appendAssistantMessage(
+        s,
+        cid,
+        e.payload.assistant_message_id,
+        s.streamContent ? `${s.streamContent} [stopped]` : "",
+        thinking,
+        null,
+        null,
+        e.payload.completed_at,
+      );
       s.streamContent = "";
       s.streamThinking = "";
-      for (const message of s.messages) {
-        api.upsertMessage(message).catch((err) => console.error("upsertMessage (chat-cancelled):", err));
-      }
       bump(cid);
     })
   );
@@ -359,16 +433,47 @@ export const useChatStreamStore = create<ChatStreamStore>(() => ({
   _loaded: {},
 }));
 
+const sessionLoads = new Map<string, Promise<ChatMessage[]>>();
+const stopTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function clearStopTimer(cid: string) {
+  const timer = stopTimers.get(cid);
+  if (timer) clearTimeout(timer);
+  stopTimers.delete(cid);
+}
+
 export async function loadSessionMessages(cid: string): Promise<ChatMessage[]> {
   await ensureListeners();
   const s = getOrCreate(cid);
-  if (s.messages.length > 0 || s.loadingMessages) {
+  if (s.messages.length > 0 && !s.loadingMessages) {
     return s.messages;
   }
+  const existing = sessionLoads.get(cid);
+  if (existing) return existing;
+  const load = (async () => {
+    s.loadingMessages = true;
+    bump(cid);
+    try {
+      const msgs = (await api.listMessages(cid)) ?? [];
+      if (s.messages.length === 0 && !s.streaming) s.messages = msgs;
+      return s.messages;
+    } finally {
+      s.loadingMessages = false;
+      bump(cid);
+      sessionLoads.delete(cid);
+    }
+  })();
+  sessionLoads.set(cid, load);
+  return load;
+}
+
+export async function reloadSessionMessages(cid: string): Promise<ChatMessage[]> {
+  await ensureListeners();
+  const s = getOrCreate(cid);
   s.loadingMessages = true;
   bump(cid);
   try {
-    const msgs = await api.listMessages(cid);
+    const msgs = (await api.listMessages(cid)) ?? [];
     s.messages = msgs;
     return msgs;
   } finally {
@@ -385,13 +490,20 @@ export async function clearSessionMessages(cid: string) {
   await ensureListeners();
   const s = getOrCreate(cid);
   s.messages = [];
+  s.status = "idle";
   s.streaming = false;
   s.streamContent = "";
   s.streamThinking = "";
   s.error = null;
+  s._streamId = undefined;
+  s._assistantMessageId = undefined;
+  pendingDeltas.forEach((pending, key) => {
+    if (pending.cid === cid) pendingDeltas.delete(key);
+  });
+  clearStopTimer(cid);
   bump(cid);
   try {
-    await api.saveMessages(cid, []);
+    await api.clearMessages(cid);
   } catch (e) {
     console.error("clearSessionMessages:", e);
   }
@@ -414,9 +526,11 @@ export async function sendMessage(
   opts: SendOpts = {}
 ): Promise<void> {
   await ensureListeners();
+  await loadSessionMessages(cid);
   const s = getOrCreate(cid);
   if (s.streaming) return;
   s.error = null;
+  s.status = "sending";
   // Single source of truth for the user message: create it here,
   // not in the calling component. This prevents the double-append
   // bug where onSend creates a message, saves to DB, then sendMessage
@@ -441,6 +555,7 @@ export async function sendMessage(
   s._streamGeneration = (s._streamGeneration ?? 0) + 1;
   s._cancelRequestedGeneration = undefined;
   s._streamId = crypto.randomUUID();
+  s._assistantMessageId = crypto.randomUUID();
   terminalStreams.delete(eventStreamKey(cid, s._streamId));
   s._lastModel = model;
   s._lastProviderId = opts.providerId;
@@ -454,6 +569,7 @@ export async function sendMessage(
   } catch (e) {
     s.messages = s.messages.filter((message) => message.id !== userMsg.id);
     s.streaming = false;
+    s.status = "failed";
     bump(cid);
     throw e;
   }
@@ -477,9 +593,12 @@ export async function sendMessage(
     role: m.role,
     content: m.content,
     ...(m.thinking ? { thinking: m.thinking } : {}),
+    ...(imageDataForMessage(m).length > 0 ? { images: imageDataForMessage(m) } : {}),
   }));
 
   try {
+    s.status = "streaming";
+    bump(cid);
     await api.chatStream({
       sessionId: cid,
       model,
@@ -487,9 +606,11 @@ export async function sendMessage(
       system: fullSystem,
       temperature: opts.temperature ?? 0.7,
       streamId: s._streamId,
+      assistantMessageId: s._assistantMessageId,
     });
   } catch (e) {
     s.streaming = false;
+    s.status = "failed";
     s.error = String(e);
     toast.error(String(e), "Send failed");
     bump(cid);
@@ -498,12 +619,58 @@ export async function sendMessage(
 
 export async function stopStream(cid: string) {
   const s = getOrCreate(cid);
+  if (!s.streaming || !s._streamId) return;
   s._cancelRequestedGeneration = s._streamGeneration ?? 0;
+  s.status = "stopping";
+  bump(cid);
   try {
     await api.cancelChat(cid, s._streamId);
+    clearStopTimer(cid);
+    stopTimers.set(cid, setTimeout(() => {
+      const current = getOrCreate(cid);
+      if (current.status !== "stopping") return;
+      const thinking = (current.streamThinking || "").trim() || null;
+      appendAssistantMessage(
+        current,
+        cid,
+        current._assistantMessageId ?? crypto.randomUUID(),
+        current.streamContent ? `${current.streamContent} [stopped]` : "",
+        thinking,
+        null,
+        null,
+        new Date().toISOString(),
+      );
+      current.streaming = false;
+      current.status = "stopped";
+      current.error = "Stop request timed out";
+      current.streamContent = "";
+      current.streamThinking = "";
+      bump(cid);
+      stopTimers.delete(cid);
+    }, 5000));
   } catch (e) {
+    s.status = "failed";
+    s.error = String(e);
+    bump(cid);
     console.error("cancelChat:", e);
   }
+}
+
+export async function retryLastMessage(
+  cid: string,
+  model: string,
+  opts: SendOpts = {},
+): Promise<void> {
+  const s = getOrCreate(cid);
+  if (s.streaming) return;
+  const lastUser = [...s.messages].reverse().find((message) => message.role === "user");
+  if (!lastUser) return;
+  await api.truncateMessages(cid, lastUser.id);
+  await reloadSessionMessages(cid);
+  await sendMessage(cid, lastUser.content, model, {
+    ...opts,
+    attachmentsJson: opts.attachmentsJson ?? lastUser.attachments_json,
+  });
 }
 
 /**
@@ -589,7 +756,7 @@ async function maybeAutoTitle(cid: string, messages: ChatMessage[]) {
   autoTitled.add(cid);
   try {
     // Look up the current title; if user already renamed, skip.
-    const sessions = await api.listSessions();
+    const sessions = (await api.listSessions()) ?? [];
     const session = sessions.find((s) => s.id === cid);
     if (!session) return;
     if (!DEFAULT_TITLES.has(session.title.trim())) return;
