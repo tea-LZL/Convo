@@ -402,6 +402,8 @@ export const api = {
         createdAt: message.created_at,
       },
     }),
+  truncateMessages: (sessionId: string, fromMessageId: string) =>
+    invoke<void>("truncate_messages", { sessionId, fromMessageId }),
   appendMessage: (sessionId: string, role: string, content: string, thinking?: string, attachmentsJson?: string) =>
     invoke<string>("append_message", { sessionId, role, content, thinking: thinking ?? null, attachmentsJson: attachmentsJson ?? null }),
 

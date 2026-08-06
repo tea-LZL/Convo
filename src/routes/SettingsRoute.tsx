@@ -4,6 +4,7 @@ import { useThemeStore } from "../stores/theme";
 import { useSettingsStore } from "../stores/settings";
 import { useShortcutsStore, comboDisplay } from "../stores/shortcuts";
 import { api, Provider, SearchConfig } from "../lib/api";
+import { ModelsSection as ProviderModelsSection } from "./settings/ModelsSection";
 import { Button } from "../components/ui/Button";
 import { Modal } from "../components/ui/Modal";
 import { ConfirmDialog } from "../components/ui/ConfirmDialog";
@@ -293,16 +294,7 @@ function ProvidersSection() {
 }
 
 function ModelsSection() {
-  return (
-    <div>
-      <SectionTitle title="Models" description="Ollama models are auto-discovered. For OpenAI-compatible providers, models are listed after probing." />
-      <Card>
-        <p className="text-sm text-text-muted">
-          Switch between models from the model dropdown in the chat header. Use the Ollama Setup panel (from the welcome screen) to install, delete, or build custom models.
-        </p>
-      </Card>
-    </div>
-  );
+  return <ProviderModelsSection />;
 }
 
 function SearchSection() {

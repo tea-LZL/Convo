@@ -127,6 +127,7 @@ pub fn run() {
             chat_cmd::save_messages,
             chat_cmd::append_message,
             chat_cmd::upsert_message,
+            chat_cmd::truncate_messages,
             chat_stream_cmd::chat_stream_v2,
             chat_stream_cmd::cancel_chat_v2,
             chat_cmd::generate_session_title,
@@ -154,6 +155,7 @@ pub fn run() {
             notes_cmd::list_notes,
             notes_cmd::upsert_note,
             notes_cmd::delete_note,
+            notes_cmd::search_notes,
             // Tasks
             tasks_cmd::list_tasks,
             tasks_cmd::upsert_task,

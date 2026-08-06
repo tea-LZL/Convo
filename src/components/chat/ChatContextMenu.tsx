@@ -65,9 +65,8 @@ export function ChatContextMenu({
               while (userMsgIdx >= 0 && chatMessages[userMsgIdx].role !== "user") userMsgIdx--;
               if (userMsgIdx < 0) return;
               const userText = chatMessages[userMsgIdx].content;
-              const truncated = chatMessages.slice(0, userMsgIdx);
               try {
-                await api.saveMessages(sessionId, truncated);
+                await api.truncateMessages(sessionId, chatMessages[userMsgIdx].id);
                 await chatReload();
                 await chatSend(userText);
               } catch (e) { console.error(e); }

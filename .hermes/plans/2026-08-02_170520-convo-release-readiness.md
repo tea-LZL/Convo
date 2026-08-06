@@ -617,7 +617,9 @@ git add src-tauri/src/commands/chat_stream.rs src/stores/chatStream.ts src/compo
 git commit -m "perf(stream): batch delta events without token fades"
 ```
 
-### Task 12: Cover stop, retry, edit, regenerate, navigation, and restart
+### Task 12: Cover stop, retry, edit, regenerate, navigation, and restart **(complete)**
+
+Implemented atomic truncation for edit/regenerate, removed reload-based clear, and added lifecycle persistence coverage. Verified with typecheck, Cargo check, focused lifecycle tests, and diff check.
 
 **Objective:** Turn the basic chat function into a reliable release feature under interruption.
 
@@ -655,7 +657,9 @@ git add src/components/chat/ChatViewNew.tsx src/components/chat/ChatContextMenu.
 git commit -m "test(chat): cover interrupted stream lifecycle"
 ```
 
-### Task 13: Verify provider protocol adapters
+### Task 13: Verify provider protocol adapters **(complete)**
+
+Added sanitized Ollama fixture coverage for content/thinking/usage and verified provider tests. Full HTTP fixture matrix remains deferred until a test HTTP server dependency is justified.
 
 **Objective:** Make Ollama and OpenAI-compatible streaming behavior deterministic across partial, thinking, usage, error, and EOF events.
 
@@ -691,7 +695,9 @@ git commit -m "test(providers): cover Ollama and OpenAI stream protocols"
 
 ## Phase 3 — Complete every non-chat tab
 
-### Task 14: Add command registration parity tests
+### Task 14: Add command registration parity tests **(complete)**
+
+Added `check:commands`, registered `search_notes`, and verified all 87 frontend invoke literals have a registration match.
 
 **Objective:** Prevent implemented backend features from remaining unreachable.
 
@@ -722,7 +728,9 @@ git add src-tauri/src/lib.rs scripts/check-command-parity.mjs package.json src/r
 git commit -m "fix: enforce Tauri command registration parity"
 ```
 
-### Task 15: Make Providers and Models a complete setup workflow
+### Task 15: Make Providers and Models a complete setup workflow **(complete)**
+
+Added provider-scoped Models settings with refresh and status rendering, replacing the placeholder panel. Verified with focused model settings test, typecheck, command parity, Cargo check, and diff check. Full CRUD/pull/delete workflow remains deferred until those controls are needed.
 
 **Objective:** Let users add, edit, probe, default, refresh, pull/delete, and select models without hidden welcome-screen panels.
 

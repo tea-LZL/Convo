@@ -70,6 +70,28 @@ pub fn upsert_message(pool: State<'_, Arc<DbPool>>, message: MessageInput) -> Re
 }
 
 #[tauri::command]
+pub fn truncate_messages(
+    pool: State<'_, Arc<DbPool>>,
+    session_id: String,
+    from_message_id: String,
+) -> Result<(), String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    let created_at: String = conn
+        .query_row(
+            "SELECT created_at FROM messages WHERE id = ?1 AND session_id = ?2",
+            params![from_message_id, session_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM messages WHERE session_id = ?1 AND created_at >= ?2",
+        params![session_id, created_at],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 pub fn append_message(
     pool: State<'_, Arc<DbPool>>,
     session_id: String,

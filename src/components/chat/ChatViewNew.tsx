@@ -218,7 +218,7 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
     },
     clearAll: async () => {
       await api.saveMessages(sessionId, []);
-      window.location.reload();
+      await chat.reload();
     },
     newSession: async () => {
       navigate("/chat");

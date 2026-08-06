@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest",
     "test:run": "vitest run",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "check:commands": "node scripts/check-command-parity.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
