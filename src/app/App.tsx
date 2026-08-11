@@ -40,7 +40,7 @@ function AppShell() {
   const initTheme = useThemeStore((s) => s.init);
   const registerMany = useShortcutsStore((s) => s.registerMany);
   const togglePalette = usePaletteStore((s) => s.toggle);
-  const isNarrow = useMediaQuery("(max-width: 700px)");
+  const isNarrow = useMediaQuery("(max-width: 760px)");
   const [userCollapsed, setUserCollapsed] = useState(false);
   const [narrowOverride, setNarrowOverride] = useState(false);
   const tourInit = useTourStore((s) => s.init);
@@ -83,7 +83,10 @@ function AppShell() {
   }, [initTheme]);
 
   return (
-    <div className="h-full flex bg-bg text-text relative overflow-hidden">
+    <div
+      className="h-full flex bg-bg text-text relative overflow-hidden"
+      data-sidebar-collapsed={sidebarCollapsed ? "true" : "false"}
+    >
       <Sidebar
         collapsed={sidebarCollapsed}
         onToggle={() => {

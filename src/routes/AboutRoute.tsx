@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { api, AppInfo } from "../lib/api";
 import { Button } from "../components/ui/Button";
+import { RouteShell } from "../components/ui/RouteShell";
+import { errorClass, recordLog } from "../lib/logger";
 import { ExternalLink, Folder } from "lucide-react";
 import { useThemeStore } from "../stores/theme";
 
@@ -9,16 +11,17 @@ export function AboutRoute() {
   const restart = useTourStoreRestart();
 
   useEffect(() => {
-    api.appInfo().then(setInfo).catch(console.error);
+    api.appInfo().then(setInfo).catch((error) => {
+      recordLog({ operation: "app_info", status: "failed", route: "/about", errorClass: errorClass(error) });
+    });
   }, []);
 
   return (
-    <div className="flex-1 overflow-y-auto p-8 max-w-2xl mx-auto">
-      <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-accent to-accent-muted flex items-center justify-center mb-4 shadow-modal">
+    <RouteShell title="About Convo" description={`v${info?.version ?? "?"} · local-first AI workspace`}>
+      <div className="max-w-2xl mx-auto p-4 sm:p-8">
+      <div className="w-12 h-12 rounded-xl bg-accent flex items-center justify-center mb-4">
         <span className="text-xl">✦</span>
       </div>
-      <h1 className="text-2xl font-semibold text-text">Convo</h1>
-      <p className="text-text-muted text-sm mt-1">v{info?.version ?? "?"} · local-first AI workspace</p>
 
       <div className="mt-8 space-y-4 text-sm text-text-muted leading-relaxed">
         <p>
@@ -54,7 +57,8 @@ export function AboutRoute() {
         </Button>
         <Button variant="ghost" onClick={restart}>Replay tour</Button>
       </div>
-    </div>
+      </div>
+    </RouteShell>
   );
 }
 

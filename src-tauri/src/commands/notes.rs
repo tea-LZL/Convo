@@ -35,8 +35,12 @@ pub fn list_notes(pool: State<'_, Arc<DbPool>>) -> Result<Vec<Note>, String> {
 
 #[tauri::command]
 pub fn upsert_note(pool: State<'_, Arc<DbPool>>, note: NoteInput) -> Result<String, String> {
+    validate_note(&note)?;
     let is_update = note.id.is_some();
-    let id = note.id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
+    let id = note
+        .id
+        .clone()
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
     let conn = pool.get().map_err(|e| e.to_string())?;
     if is_update {
         conn.execute(
@@ -53,6 +57,19 @@ pub fn upsert_note(pool: State<'_, Arc<DbPool>>, note: NoteInput) -> Result<Stri
         .map_err(|e| e.to_string())?;
     }
     Ok(id)
+}
+
+fn validate_note(note: &NoteInput) -> Result<(), String> {
+    if note.body.len() > 2_000_000 {
+        return Err("Note body is too large".into());
+    }
+    if note.title.as_deref().map(str::len).unwrap_or(0) > 500 {
+        return Err("Note title is too long".into());
+    }
+    if note.tags.as_deref().map(str::len).unwrap_or(0) > 1_000 {
+        return Err("Note tags are too long".into());
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -107,4 +124,31 @@ pub struct NoteInput {
     pub tags: Option<String>,
     pub source_session_id: Option<String>,
     pub source_message_id: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{validate_note, NoteInput};
+
+    #[test]
+    fn validates_note_sizes_without_rejecting_empty_drafts() {
+        assert!(validate_note(&NoteInput {
+            id: None,
+            title: None,
+            body: String::new(),
+            tags: None,
+            source_session_id: None,
+            source_message_id: None,
+        })
+        .is_ok());
+        assert!(validate_note(&NoteInput {
+            id: None,
+            title: Some("x".repeat(501)),
+            body: String::new(),
+            tags: None,
+            source_session_id: None,
+            source_message_id: None,
+        })
+        .is_err());
+    }
 }

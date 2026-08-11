@@ -60,9 +60,9 @@ export function SessionSearch() {
       className="fixed inset-0 z-[140] flex items-start justify-center pt-[10vh] px-4 animate-fade-in"
       onClick={() => setOpen(false)}
     >
-      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
+       <div className="absolute inset-0 overlay-backdrop" />
       <div
-        className="relative w-full max-w-2xl glass border border-border rounded-2xl shadow-modal overflow-hidden animate-scale-in"
+        className="relative w-full max-w-2xl bg-surface-1 border border-border rounded-2xl shadow-modal overflow-hidden animate-scale-in"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-2.5 px-4 py-3 border-b border-border/50">

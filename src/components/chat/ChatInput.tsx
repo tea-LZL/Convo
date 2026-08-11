@@ -147,7 +147,7 @@ export function ChatInput({
   };
 
   return (
-    <div className="rounded-2xl border border-border bg-surface-1/60 backdrop-blur shadow-modal">
+    <div className="rounded-lg border border-border bg-surface-1 shadow-panel">
       <textarea
         ref={ref}
         data-chat-input

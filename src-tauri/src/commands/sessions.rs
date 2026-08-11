@@ -61,7 +61,7 @@ pub fn list_sessions(
     include_archived: Option<bool>,
 ) -> Result<Vec<Session>, String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
-    let q = if let Some(ref g) = group_id {
+    let q = if group_id.is_some() {
         format!(
             "SELECT id, title, model_id, provider_id, group_id, is_pinned, is_archived, created_at, updated_at
              FROM sessions WHERE group_id = ?1 {} ORDER BY is_pinned DESC, updated_at DESC",
@@ -244,16 +244,13 @@ pub struct SessionSearchResult {
 }
 
 #[tauri::command]
-pub fn export_session_markdown(
-    pool: State<'_, Arc<DbPool>>,
-    id: String,
-) -> Result<String, String> {
+pub fn export_session_markdown(pool: State<'_, Arc<DbPool>>, id: String) -> Result<String, String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
-    let (title, model_id, created_at, updated_at): (String, Option<String>, String, String) = conn
+    let (title, model_id, updated_at): (String, Option<String>, String) = conn
         .query_row(
-            "SELECT title, model_id, created_at, updated_at FROM sessions WHERE id = ?1",
+            "SELECT title, model_id, updated_at FROM sessions WHERE id = ?1",
             params![id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .map_err(|e| format!("Session lookup: {}", e))?;
     let mut stmt = conn
@@ -271,9 +268,8 @@ pub fn export_session_markdown(
             ))
         })
         .map_err(|e| e.to_string())?;
-    let messages: Vec<(String, String, Option<String>, String)> = rows
-        .collect::<Result<_, _>>()
-        .map_err(|e| e.to_string())?;
+    let messages: Vec<(String, String, Option<String>, String)> =
+        rows.collect::<Result<_, _>>().map_err(|e| e.to_string())?;
 
     let mut md = String::new();
     md.push_str(&format!("# {}\n\n", title));
@@ -292,7 +288,10 @@ pub fn export_session_markdown(
         md.push_str(&format!("### {} · {}\n\n", label, ts));
         if let Some(t) = thinking {
             if !t.is_empty() {
-                md.push_str(&format!("<details><summary>Thinking</summary>\n\n{}\n\n</details>\n\n", t));
+                md.push_str(&format!(
+                    "<details><summary>Thinking</summary>\n\n{}\n\n</details>\n\n",
+                    t
+                ));
             }
         }
         md.push_str(&content);

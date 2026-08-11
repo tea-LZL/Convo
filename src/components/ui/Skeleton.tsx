@@ -6,7 +6,7 @@ interface SkeletonProps {
 }
 
 /**
- * Skeleton — a shimmering placeholder for loading states.
+ * Skeleton — a pulsing placeholder for loading states.
  * Uses the `.skeleton` CSS class from globals.css.
  */
 export function Skeleton({ width = "100%", height = "1rem", rounded = "rounded-md", className = "" }: SkeletonProps) {

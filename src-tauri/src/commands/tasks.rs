@@ -38,6 +38,7 @@ pub fn list_tasks(pool: State<'_, Arc<DbPool>>) -> Result<Vec<Task>, String> {
 
 #[tauri::command]
 pub fn upsert_task(pool: State<'_, Arc<DbPool>>, task: TaskInput) -> Result<String, String> {
+    validate_task(&task)?;
     let is_update = task.id.is_some();
     let id = task.id.unwrap_or_else(|| Uuid::new_v4().to_string());
     let conn = pool.get().map_err(|e| e.to_string())?;
@@ -58,6 +59,22 @@ pub fn upsert_task(pool: State<'_, Arc<DbPool>>, task: TaskInput) -> Result<Stri
     Ok(id)
 }
 
+fn validate_task(task: &TaskInput) -> Result<(), String> {
+    if task.title.trim().is_empty() {
+        return Err("Task title cannot be empty".into());
+    }
+    if task.title.len() > 500 {
+        return Err("Task title is too long".into());
+    }
+    if task.body.as_deref().map(str::len).unwrap_or(0) > 2_000_000 {
+        return Err("Task body is too large".into());
+    }
+    if !(0..=3).contains(&task.priority) {
+        return Err("Task priority must be between 0 and 3".into());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn delete_task(pool: State<'_, Arc<DbPool>>, id: String) -> Result<(), String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
@@ -67,7 +84,11 @@ pub fn delete_task(pool: State<'_, Arc<DbPool>>, id: String) -> Result<(), Strin
 }
 
 #[tauri::command]
-pub fn complete_task(pool: State<'_, Arc<DbPool>>, id: String, completed: bool) -> Result<(), String> {
+pub fn complete_task(
+    pool: State<'_, Arc<DbPool>>,
+    id: String,
+    completed: bool,
+) -> Result<(), String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
     let val = if completed { Some(now()) } else { None };
     conn.execute(
@@ -88,4 +109,32 @@ pub struct TaskInput {
     pub completed_at: Option<String>,
     pub priority: i64,
     pub session_id: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{validate_task, TaskInput};
+
+    fn task() -> TaskInput {
+        TaskInput {
+            id: None,
+            title: "Task".into(),
+            body: Some("Details".into()),
+            due_at: Some("2026-08-10".into()),
+            completed_at: None,
+            priority: 2,
+            session_id: None,
+        }
+    }
+
+    #[test]
+    fn validates_task_fields() {
+        assert!(validate_task(&task()).is_ok());
+        let mut empty = task();
+        empty.title = " ".into();
+        assert!(validate_task(&empty).is_err());
+        let mut bad_priority = task();
+        bad_priority.priority = 4;
+        assert!(validate_task(&bad_priority).is_err());
+    }
 }

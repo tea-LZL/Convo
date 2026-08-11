@@ -1,4 +1,4 @@
-import { ReactNode, useEffect } from "react";
+import { ReactNode, useEffect, useId, useRef } from "react";
 import { X } from "lucide-react";
 import { AnimatedUnmount } from "./AnimatedUnmount";
 
@@ -32,14 +32,46 @@ export function Modal({
   closeOnEscape = true,
   closeOnBackdrop = true,
 }: ModalProps) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const previousFocus = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  const titleId = useId();
+  const descriptionId = useId();
+  onCloseRef.current = onClose;
+
   useEffect(() => {
     if (!open) return;
+    previousFocus.current = document.activeElement as HTMLElement | null;
+    const focusable = () => Array.from(dialogRef.current?.querySelectorAll<HTMLElement>(
+      "button:not([disabled]), [href], input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex='-1'])",
+    ) ?? []);
+    window.setTimeout(() => (focusable()[0] ?? dialogRef.current)?.focus(), 0);
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && closeOnEscape) onClose();
+      if (e.key === "Escape" && closeOnEscape) {
+        e.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+      if (e.key !== "Tab") return;
+      const items = focusable();
+      if (items.length === 0) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
     };
     document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [open, closeOnEscape, onClose]);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      if (previousFocus.current?.isConnected) previousFocus.current.focus();
+      previousFocus.current = null;
+    };
+  }, [open, closeOnEscape]);
 
   useEffect(() => {
     if (!open) return;
@@ -57,20 +89,25 @@ export function Modal({
       className="fixed inset-0 z-[100] flex items-center justify-center p-4 animate-fade-in"
       role="dialog"
       aria-modal="true"
+      aria-labelledby={title ? titleId : undefined}
+      aria-describedby={description ? descriptionId : undefined}
     >
       <div
-        className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+        className="absolute inset-0 overlay-backdrop"
+        aria-hidden="true"
         onClick={() => closeOnBackdrop && onClose()}
       />
       <div
-        className={`relative w-full ${SIZES[size]} glass border border-border rounded-2xl shadow-modal animate-scale-in max-h-[85vh] flex flex-col`}
+        ref={dialogRef}
+        tabIndex={-1}
+        className={`relative w-full ${SIZES[size]} bg-surface-1 border border-border rounded-2xl shadow-modal animate-scale-in max-h-[85vh] flex flex-col`}
         onClick={(e) => e.stopPropagation()}
       >
         {(title || description) && (
           <div className="px-5 pt-5 pb-3 flex items-start justify-between border-b border-border/40">
             <div>
-              {title && <h2 className="text-base font-semibold text-text">{title}</h2>}
-              {description && <p className="text-xs text-text-muted mt-0.5">{description}</p>}
+              {title && <h2 id={titleId} className="text-base font-semibold text-text">{title}</h2>}
+              {description && <p id={descriptionId} className="text-xs text-text-muted mt-0.5">{description}</p>}
             </div>
             <button
               onClick={onClose}

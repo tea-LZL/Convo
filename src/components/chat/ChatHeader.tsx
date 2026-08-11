@@ -37,7 +37,7 @@ export function ChatHeader({
   const [confirmClear, setConfirmClear] = useState(false);
   const [showMemory, setShowMemory] = useState(false);
   return (
-    <div className="flex items-center gap-2 px-3 sm:px-4 h-12 border-b border-border bg-surface-1/40 backdrop-blur">
+    <div className="flex items-center gap-2 px-3 sm:px-4 h-12 border-b border-border bg-surface-1">
       <Dropdown
         align="left"
         menuClassName="min-w-[280px]"

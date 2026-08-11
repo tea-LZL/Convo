@@ -31,4 +31,35 @@ describe("NotesRoute command contract", () => {
     fireEvent.change(screen.getByPlaceholderText("Search…"), { target: { value: "release" } });
     await waitFor(() => expect(api.searchNotes).toHaveBeenCalledWith("release"));
   });
+
+  it("preserves the draft when saving fails and supports tag filtering", async () => {
+    vi.spyOn(api, "listNotes").mockResolvedValue([note]);
+    vi.spyOn(api, "upsertNote").mockRejectedValue(new Error("disk full"));
+
+    render(
+      <MemoryRouter>
+        <NotesRoute />
+      </MemoryRouter>,
+    );
+    expect(await screen.findByDisplayValue("Provider setup")).toBeInTheDocument();
+    fireEvent.change(screen.getByDisplayValue("Provider setup"), { target: { value: "Draft retained" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.getByDisplayValue("Draft retained")).toBeInTheDocument());
+    expect(screen.getByRole("alert")).toHaveTextContent("disk full");
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Filter notes by tag" }), { target: { value: "missing" } });
+    expect(screen.getByText("No matches")).toBeInTheDocument();
+  });
+
+  it("shows an explicit retryable load error", async () => {
+    vi.spyOn(api, "listNotes").mockRejectedValue(new Error("notes offline"));
+    render(
+      <MemoryRouter>
+        <NotesRoute />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("notes offline");
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+  });
 });

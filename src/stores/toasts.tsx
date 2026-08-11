@@ -75,7 +75,7 @@ export function ToastViewport() {
       {toasts.map((t) => (
         <div
           key={t.id}
-          className="pointer-events-auto glass border border-border rounded-lg shadow-modal min-w-[280px] max-w-[420px] px-3 py-2.5 flex items-start gap-2.5 animate-slide-up"
+          className="pointer-events-auto bg-surface-1 border border-border rounded-lg shadow-modal min-w-[280px] max-w-[420px] px-3 py-2.5 flex items-start gap-2.5 animate-slide-up"
         >
           <div style={{ color: COLORS[t.variant] }} className="shrink-0 mt-0.5">
             {ICONS[t.variant]}

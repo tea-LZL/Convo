@@ -1,9 +1,11 @@
 use super::discovery::DiscoveredModel;
 use super::types::ChatRequest;
-use super::{ChatResponseChunk, ModelInfo, ProbeOutcome, Provider, ProviderError, ProviderResult};
+use super::{
+    ChatResponseChunk, ModelInfo, ProbeFuture, ProbeOutcome, Provider, ProviderError,
+    ProviderFuture, ProviderResult, ProviderStream,
+};
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use std::pin::Pin;
 
 pub struct OpenAiCompatProvider {
     base_url: String,
@@ -40,20 +42,7 @@ impl OpenAiCompatProvider {
 
 #[async_trait]
 impl Provider for OpenAiCompatProvider {
-    fn kind(&self) -> &'static str {
-        "openai_compat"
-    }
-    fn base_url(&self) -> &str {
-        &self.base_url
-    }
-    fn api_key(&self) -> Option<&str> {
-        self.api_key.as_deref()
-    }
-
-    fn list_models<'a>(
-        &'a self,
-    ) -> Pin<Box<dyn std::future::Future<Output = ProviderResult<Vec<ModelInfo>>> + Send + 'a>>
-    {
+    fn list_models<'a>(&'a self) -> ProviderFuture<'a, Vec<ModelInfo>> {
         Box::pin(async move {
             let resp = self
                 .auth(self.http.get(self.url("v1/models")))
@@ -87,7 +76,7 @@ impl Provider for OpenAiCompatProvider {
         })
     }
 
-    fn probe<'a>(&'a self) -> Pin<Box<dyn std::future::Future<Output = ProbeOutcome> + Send + 'a>> {
+    fn probe<'a>(&'a self) -> ProbeFuture<'a> {
         Box::pin(async move {
             match self.list_models().await {
                 Ok(models) => {
@@ -106,24 +95,7 @@ impl Provider for OpenAiCompatProvider {
         })
     }
 
-    fn chat_stream<'a>(
-        &'a self,
-        mut request: ChatRequest,
-    ) -> Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = ProviderResult<
-                        Pin<
-                            Box<
-                                dyn futures_util::Stream<Item = ProviderResult<ChatResponseChunk>>
-                                    + Send,
-                            >,
-                        >,
-                    >,
-                > + Send
-                + 'a,
-        >,
-    > {
+    fn chat_stream<'a>(&'a self, mut request: ChatRequest) -> ProviderFuture<'a, ProviderStream> {
         Box::pin(async move {
             request.stream = true;
             let openai_req = OpenAiChatRequest::from(request);
@@ -196,10 +168,7 @@ impl Provider for OpenAiCompatProvider {
                     }
                 },
             );
-            Ok(Box::pin(parsed)
-                as Pin<
-                    Box<dyn futures_util::Stream<Item = ProviderResult<ChatResponseChunk>> + Send>,
-                >)
+            Ok(Box::pin(parsed) as ProviderStream)
         })
     }
 }
@@ -321,8 +290,6 @@ struct OpenAiChoice {
 struct OpenAiDelta {
     #[serde(default)]
     content: Option<String>,
-    #[serde(default)]
-    role: Option<String>,
     #[serde(default)]
     reasoning_content: Option<String>,
     #[serde(default)]

@@ -16,33 +16,57 @@ interface ShortcutState {
   register: (b: ShortcutBinding) => void;
   registerMany: (bs: ShortcutBinding[]) => void;
   unregister: (id: string) => void;
-  setCombo: (id: string, combo: string) => void;
+  setCombo: (id: string, combo: string) => boolean;
   isMac: boolean;
 }
 
 const isMacFn = () => typeof navigator !== "undefined" && /mac/i.test(navigator.platform);
 
-export const useShortcutsStore = create<ShortcutState>((set) => ({
-  bindings: [],
-  isMac: isMacFn(),
-  register: (b) =>
-    set((s) => {
-      const i = s.bindings.findIndex((x) => x.id === b.id);
-      const next = s.bindings.slice();
-      if (i >= 0) next[i] = b;
-      else next.push(b);
-      return { bindings: next };
-    }),
-  registerMany: (bs) =>
-    set((s) => {
-      const map = new Map(s.bindings.map((b) => [b.id, b]));
-      for (const b of bs) map.set(b.id, b);
-      return { bindings: Array.from(map.values()) };
-    }),
-  unregister: (id) => set((s) => ({ bindings: s.bindings.filter((b) => b.id !== id) })),
-  setCombo: (id, combo) =>
-    set((s) => ({ bindings: s.bindings.map((b) => (b.id === id ? { ...b, combo } : b)) })),
-}));
+export const useShortcutsStore = create<ShortcutState>()(
+  persist(
+    (set, get) => {
+      const canUseCombo = (id: string, combo: string) =>
+        !combo || !get().bindings.some((binding) => binding.id !== id && binding.combo === combo);
+      return {
+        bindings: [],
+        isMac: isMacFn(),
+        register: (b) => {
+          if (!canUseCombo(b.id, b.combo)) return;
+          set((s) => {
+            const i = s.bindings.findIndex((x) => x.id === b.id);
+            const next = s.bindings.slice();
+            if (i >= 0) next[i] = b;
+            else next.push(b);
+            return { bindings: next };
+          });
+        },
+        registerMany: (bs) => {
+          set((s) => {
+            const map = new Map(s.bindings.map((b) => [b.id, b]));
+            for (const binding of bs) {
+              if (!binding.combo || !Array.from(map.values()).some((item) => item.id !== binding.id && item.combo === binding.combo)) {
+                map.set(binding.id, binding);
+              }
+            }
+            return { bindings: Array.from(map.values()) };
+          });
+        },
+        unregister: (id) => set((s) => ({ bindings: s.bindings.filter((b) => b.id !== id) })),
+        setCombo: (id, combo) => {
+          if (!canUseCombo(id, combo)) return false;
+          set((s) => ({ bindings: s.bindings.map((b) => (b.id === id ? { ...b, combo } : b)) }));
+          return true;
+        },
+      };
+    },
+    {
+      name: "convo-shortcuts",
+      partialize: (state) => ({
+        bindings: state.bindings.map(({ id, combo, description }) => ({ id, combo, description, action: () => {} })),
+      }),
+    },
+  ),
+);
 
 export function parseEvent(e: KeyboardEvent, isMac = isMacFn()): string {
   const parts: string[] = [];
@@ -102,7 +126,7 @@ export function handleKeyDown(e: KeyboardEvent) {
   for (const b of bindings) {
     if (matchesCombo(eventCombo, b.combo)) {
       e.preventDefault();
-      b.action();
+      if (typeof b.action === "function") b.action();
       return;
     }
   }

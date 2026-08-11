@@ -20,6 +20,42 @@ pub struct GpuInfo {
     pub vram_bytes: Option<u64>,
 }
 
+pub(crate) fn parse_nvidia_csv(text: &str) -> Vec<GpuInfo> {
+    text.lines()
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.split(',').map(str::trim).collect();
+            let total_mb = parts.get(1)?.parse::<u64>().ok()?;
+            Some(GpuInfo {
+                name: parts.first()?.to_string(),
+                vendor: "NVIDIA".into(),
+                vram_bytes: Some(total_mb * 1024 * 1024),
+            })
+        })
+        .collect()
+}
+
+pub(crate) fn parse_rocm_smi_csv(text: &str) -> Vec<GpuInfo> {
+    text.lines()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            if index == 0 {
+                return None;
+            }
+            let parts: Vec<&str> = line.split(',').collect();
+            let vram_bytes = parts.get(1)?.trim().parse::<u64>().ok()?;
+            Some(GpuInfo {
+                name: parts
+                    .first()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or_else(|| "AMD GPU".into()),
+                vendor: "AMD".into(),
+                vram_bytes: Some(vram_bytes),
+            })
+        })
+        .collect()
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelFit {
@@ -49,18 +85,7 @@ pub fn get_hardware() -> HardwareReport {
     {
         if out.status.success() {
             let text = String::from_utf8_lossy(&out.stdout);
-            for line in text.lines() {
-                let parts: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
-                if parts.len() >= 2 {
-                    let name = parts[0].to_string();
-                    let total_mb: Option<u64> = parts.get(1).and_then(|s| s.parse().ok());
-                    gpus.push(GpuInfo {
-                        name,
-                        vendor: "NVIDIA".to_string(),
-                        vram_bytes: total_mb.map(|mb| mb * 1024 * 1024),
-                    });
-                }
-            }
+            gpus.extend(parse_nvidia_csv(&text));
         }
     }
     // Apple GPU detection
@@ -118,33 +143,7 @@ pub fn get_hardware() -> HardwareReport {
     {
         if out.status.success() {
             let text = String::from_utf8_lossy(&out.stdout);
-            for (idx, line) in text.lines().enumerate() {
-                if idx == 0 {
-                    // Skip the CSV header.
-                    continue;
-                }
-                let parts: Vec<&str> = line.split(',').collect();
-                if parts.len() < 2 {
-                    continue;
-                }
-                // parts[0] = "card0"; parts[1] = VRAM total in bytes.
-                // parts[2] (if present) = VRAM used in bytes.
-                // parts[3] (older builds) = VRAM free in bytes.
-                let vram_bytes: Option<u64> =
-                    parts.get(1).and_then(|s| s.trim().parse::<u64>().ok());
-                if vram_bytes.is_none() {
-                    continue;
-                }
-                gpus.push(GpuInfo {
-                    name: parts
-                        .get(0)
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .unwrap_or_else(|| "AMD GPU".to_string()),
-                    vendor: "AMD".to_string(),
-                    vram_bytes,
-                });
-            }
+            gpus.extend(parse_rocm_smi_csv(&text));
         }
     }
 
@@ -299,5 +298,20 @@ mod tests {
         assert_eq!(value["vramBytes"], 2);
         assert!(value.get("tooBig").is_some());
         assert!(value.get("too_big").is_none());
+    }
+
+    #[test]
+    fn parses_current_and_legacy_gpu_csv_shapes() {
+        let nvidia = parse_nvidia_csv("RTX 4090,24576,12000\nRX 7900,16384,8000");
+        assert_eq!(nvidia.len(), 2);
+        assert_eq!(nvidia[0].vram_bytes, Some(24576 * 1024 * 1024));
+
+        let rocm = parse_rocm_smi_csv(
+            "device,VRAM Total Memory (B),VRAM Total Used Memory (B)\ncard0,17179869184,1024\n",
+        );
+        assert_eq!(rocm.len(), 1);
+        assert_eq!(rocm[0].name, "card0");
+        assert_eq!(rocm[0].vram_bytes, Some(17179869184));
+        assert!(parse_rocm_smi_csv("header\ncard0,not-a-number,0").is_empty());
     }
 }

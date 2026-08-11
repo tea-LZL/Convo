@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { api, Model, Provider } from "../../lib/api";
+import { errorClass, recordLog } from "../../lib/logger";
 import { Button } from "../../components/ui/Button";
 import { Badge, Select, TextInput } from "../../components/ui/Form";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
@@ -89,7 +90,9 @@ export function ModelsSection() {
           if (!active) return;
           setPull((current) => current?.operationId === event.payload.operation_id ? null : current);
           if (event.payload.operation_id) {
-            void api.refreshModels(event.payload.provider_id).then(setModels).catch(() => {});
+             void api.refreshModels(event.payload.provider_id).then(setModels).catch((error) => {
+               recordLog({ operation: "refresh_models_after_pull", status: "failed", route: "/settings/models", errorClass: errorClass(error) });
+             });
             toast.success(`Pulled ${event.payload.name}`);
           }
         }),

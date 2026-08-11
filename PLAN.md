@@ -1,5 +1,7 @@
 # Convo Polish & Completion Plan
 
+> Status note (2026-08-09): this is the historical v0.7 implementation plan. Current verified status and remaining release work live in `.hermes/plans/2026-08-02_170520-convo-release-readiness.md` and `docs/RELEASE_CHECKLIST.md`.
+
 **Target**: v0.7 release
 **Executors**: GLM 5.2 / Deepseek V4 Pro (agentic)
 **Starting state**: v0.6.8 git history, package.json still at v0.4.0, 107/107 tests failing, monolithic ChatViewNew (1218 lines), no error boundaries, no responsive breakpoints, native browser dialogs leftover, broken attachment picker, animation layer incomplete.
@@ -118,11 +120,11 @@ Move these out of `ChatViewNew.tsx` into their own files under `src/components/c
 **Goal**: Convo should be usable from 320px (narrowest Tauri window is 800px but the sidebar + content should still work on half-screen) to 2560px. The current layout breaks below 800px because the sidebar and content rail are fixed-width.
 
 ### 4.1 Sidebar responsive collapse
-- [ ] `src/styles/globals.css` — add a `@media (max-width: 700px)` rule that hides the expanded sidebar and forces collapsed mode. The `collapsed` prop in Sidebar.tsx is driven by `App.tsx` state — add a `useMediaQuery` hook:
-  - [ ] Create `src/hooks/useMediaQuery.ts` — `useMediaQuery('(max-width: 700px)')` returns boolean. Use `matchMedia` (already polyfilled in test setup).
+- [ ] `src/styles/globals.css` — add a `@media (max-width: 760px)` rule that hides the expanded sidebar and forces collapsed mode. The `collapsed` prop in Sidebar.tsx is driven by `App.tsx` state — add a `useMediaQuery` hook:
+  - [ ] Create `src/hooks/useMediaQuery.ts` — `useMediaQuery('(max-width: 760px)')` returns boolean. Use `matchMedia` (already polyfilled in test setup).
   - [ ] In `App.tsx`, replace `const [sidebarCollapsed, setSidebarCollapsed] = useState(false)` with:
     ```ts
-    const isNarrow = useMediaQuery('(max-width: 700px)');
+    const isNarrow = useMediaQuery('(max-width: 760px)');
     const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
     const effectiveCollapsed = sidebarCollapsed || isNarrow;
     ```
@@ -151,7 +153,7 @@ Move these out of `ChatViewNew.tsx` into their own files under `src/components/c
 - [ ] `TasksRoute.tsx` — `max-w-2xl mx-auto` → add `px-3 sm:px-4`.
 - [ ] `MemoryRoute.tsx` — `max-w-2xl mx-auto p-8` → `p-4 sm:p-8`.
 
-**Verify**: `npm run typecheck && npm run build` pass. Manually resize Tauri window from 800px to 2560px — no layout breakage, sidebar auto-collapses below 700px, all content padding scales.
+**Verify**: `npm run typecheck && npm run build` pass. Manually resize Tauri window from 800px to 2560px — no layout breakage, sidebar auto-collapses below 760px, all content padding scales.
 
 ---
 

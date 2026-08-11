@@ -334,7 +334,7 @@ fn clean_title(s: &str) -> String {
         s
     };
     // Drop trailing punctuation
-    let out = out.trim_end_matches(|c: char| matches!(c, '.' | ',' | ';' | ':' | '!' | '?'));
+    let out = out.trim_end_matches(['.', ',', ';', ':', '!', '?']);
     out.to_string()
 }
 

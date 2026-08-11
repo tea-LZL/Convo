@@ -34,6 +34,29 @@ pub fn delete_api_key(provider_id: &str) -> Result<(), String> {
     Ok(())
 }
 
+pub fn migrate_search_api_key(pool: &DbPool) -> Result<(), String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    let legacy: Option<String> = conn
+        .query_row(
+            "SELECT api_key FROM search_config WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+    let Some(key) = legacy.filter(|value| !value.is_empty()) else {
+        return Ok(());
+    };
+    store_api_key("search", &key)?;
+    conn.execute("UPDATE search_config SET api_key = NULL WHERE id = 1", [])
+        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT OR REPLACE INTO search_keyring_migration (id, migrated_at) VALUES (1, ?1)",
+        rusqlite::params![chrono::Utc::now().to_rfc3339()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Provider {
     pub id: String,

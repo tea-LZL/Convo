@@ -99,7 +99,7 @@ export const MessageRow = React.memo(function MessageRow({
             <span className="flex-1 text-left font-medium">Thinking</span>
             <ChevronDown size={12} className={`transition-transform ${thinkingOpen ? "" : "-rotate-90"}`} />
           </button>
-          <div className={`transition-all duration-200 overflow-hidden ${thinkingOpen ? "max-h-[500px] opacity-100" : "max-h-0 opacity-0"}`}>
+          <div className={`transition-[max-height,opacity] duration-200 overflow-hidden ${thinkingOpen ? "max-h-[500px] opacity-100" : "max-h-0 opacity-0"}`}>
             <div className="px-3 pb-2.5 pt-1 text-xs text-text-muted leading-relaxed whitespace-pre-wrap">
               {msg.thinking}
             </div>

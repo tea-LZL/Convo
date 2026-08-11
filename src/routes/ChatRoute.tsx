@@ -9,6 +9,7 @@ import { ErrorBoundary } from "../components/ui/ErrorBoundary";
 import { ChatSkeleton } from "../components/ui/Skeleton";
 import { useSessionsStore } from "../stores/sessions";
 import { api } from "../lib/api";
+import { errorClass, recordLog } from "../lib/logger";
 
 export function ChatRoute() {
   const { sessionId } = useParams();
@@ -28,7 +29,8 @@ export function ChatRoute() {
       try {
         const ps = await api.listProviders();
         setHasProviders(ps.length > 0);
-      } catch {
+      } catch (error) {
+        recordLog({ operation: "list_providers", status: "failed", route: "/chat", errorClass: errorClass(error) });
         setHasProviders(true); // optimistic
       }
       setLoading(false);
@@ -64,7 +66,9 @@ export function ChatRoute() {
   // Poll for provider changes (e.g. after Settings → Providers add)
   useEffect(() => {
     const onFocus = () => {
-      api.listProviders().then((ps) => setHasProviders(ps.length > 0)).catch(() => {});
+      api.listProviders().then((ps) => setHasProviders(ps.length > 0)).catch((error) => {
+        recordLog({ operation: "refresh_chat_providers", status: "failed", route: "/chat", errorClass: errorClass(error) });
+      });
     };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
@@ -96,7 +100,7 @@ function EmptyChat({ hasProviders }: { hasProviders: boolean | null }) {
   if (hasProviders === false) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center p-4 sm:p-8 max-w-2xl mx-auto">
-        <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-accent to-accent-muted flex items-center justify-center mb-6 shadow-modal">
+        <div className="w-16 h-16 rounded-2xl bg-accent flex items-center justify-center mb-6">
           <span className="text-3xl">✦</span>
         </div>
         <h1 className="text-2xl font-semibold text-text mb-2">Welcome to Convo</h1>
@@ -106,7 +110,7 @@ function EmptyChat({ hasProviders }: { hasProviders: boolean | null }) {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full max-w-xl mb-8">
           <button
             onClick={() => navigate("/settings/providers")}
-            className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/50 rounded-xl p-4 text-left transition-all hover:-translate-y-0.5 hover:shadow-panel"
+            className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/50 rounded-lg p-4 text-left transition-colors"
           >
             <KeyRound size={18} className="text-accent mb-2" />
             <div className="text-sm font-medium text-text">Add Ollama</div>
@@ -114,7 +118,7 @@ function EmptyChat({ hasProviders }: { hasProviders: boolean | null }) {
           </button>
           <button
             onClick={() => navigate("/settings/providers")}
-            className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/50 rounded-xl p-4 text-left transition-all hover:-translate-y-0.5 hover:shadow-panel"
+            className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/50 rounded-lg p-4 text-left transition-colors"
           >
             <Settings size={18} className="text-accent mb-2" />
             <div className="text-sm font-medium text-text">Add OpenAI-compatible</div>
@@ -122,7 +126,7 @@ function EmptyChat({ hasProviders }: { hasProviders: boolean | null }) {
           </button>
           <button
             onClick={() => navigate("/hardware")}
-            className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/50 rounded-xl p-4 text-left transition-all hover:-translate-y-0.5 hover:shadow-panel"
+            className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/50 rounded-lg p-4 text-left transition-colors"
           >
             <Cpu size={18} className="text-accent mb-2" />
             <div className="text-sm font-medium text-text">Hardware scan</div>
@@ -130,7 +134,7 @@ function EmptyChat({ hasProviders }: { hasProviders: boolean | null }) {
           </button>
           <button
             onClick={() => navigate("/about")}
-            className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/50 rounded-xl p-4 text-left transition-all hover:-translate-y-0.5 hover:shadow-panel"
+            className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/50 rounded-lg p-4 text-left transition-colors"
           >
             <BookOpen size={18} className="text-accent mb-2" />
             <div className="text-sm font-medium text-text">About Convo</div>
@@ -150,7 +154,7 @@ function EmptyChat({ hasProviders }: { hasProviders: boolean | null }) {
 
   return (
     <div className="flex-1 flex flex-col items-center justify-center p-4 sm:p-8">
-      <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-accent to-accent-muted flex items-center justify-center mb-6 shadow-modal">
+      <div className="w-16 h-16 rounded-2xl bg-accent flex items-center justify-center mb-6">
         <span className="text-3xl">✦</span>
       </div>
       <h1 className="text-2xl font-semibold text-text mb-2">Convo</h1>
@@ -159,7 +163,7 @@ function EmptyChat({ hasProviders }: { hasProviders: boolean | null }) {
       </p>
       <button
         onClick={handleNew}
-        className="inline-flex items-center gap-2 bg-accent hover:bg-accent-hover text-white rounded-xl px-6 py-3 text-sm font-medium transition-all hover:scale-105 active:scale-95 mb-8"
+        className="inline-flex items-center gap-2 bg-accent hover:bg-accent-hover text-white rounded-lg px-6 py-3 text-sm font-medium transition-colors mb-8"
       >
         <Plus size={16} />
         New conversation
@@ -182,7 +186,7 @@ function EmptyChat({ hasProviders }: { hasProviders: boolean | null }) {
                 }
               }, 200);
             }}
-            className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/50 rounded-lg p-3 text-left text-xs text-text-muted hover:text-text transition-all hover:-translate-y-0.5"
+            className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/50 rounded-lg p-3 text-left text-xs text-text-muted hover:text-text transition-colors"
           >
             {s}
           </button>

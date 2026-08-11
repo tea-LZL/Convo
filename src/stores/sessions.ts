@@ -2,7 +2,7 @@
  * Sessions (chat threads) store.
  */
 import { create } from "zustand";
-import { invoke } from "@tauri-apps/api/core";
+import { api } from "../lib/api";
 
 export interface Session {
   id: string;
@@ -20,6 +20,7 @@ interface SessionsState {
   sessions: Session[];
   activeId: string | null;
   loading: boolean;
+  error: string | null;
   refresh: () => Promise<void>;
   create: (opts?: { title?: string; providerId?: string; modelId?: string }) => Promise<Session>;
   rename: (id: string, title: string) => Promise<void>;
@@ -34,56 +35,46 @@ export const useSessionsStore = create<SessionsState>((set, get) => ({
   sessions: [],
   activeId: null,
   loading: false,
+  error: null,
 
   refresh: async () => {
     set({ loading: true });
     try {
-      // Always fetch both active AND archived rows. The sidebar does
-      // the active/archived split client-side (filter on
-      // s.is_archived). Filtering at the DB layer broke the Archived
-      // tab: the row was archived in the DB, but the in-memory list
-      // never contained it, so the Archived tab was always empty and
-      // archiving a session made it look like it disappeared.
-      const sessions = await invoke<Session[]>("list_sessions", {
-        groupId: null,
-        includeArchived: true,
-      });
-      set({ sessions, loading: false });
+      const sessions = await api.listSessions(null, true);
+      set({ sessions, loading: false, error: null });
     } catch (e) {
-      console.error("Failed to load sessions:", e);
-      set({ loading: false });
+      set({ loading: false, error: String(e) });
     }
   },
 
   create: async (opts) => {
-    const session = await invoke<Session>("create_session", {
-      title: opts?.title ?? "New Chat",
-      modelId: opts?.modelId ?? null,
-      providerId: opts?.providerId ?? null,
-      groupId: null,
+    const session = await api.createSession({
+      title: opts?.title,
+      modelId: opts?.modelId,
+      providerId: opts?.providerId,
     });
     await get().refresh();
     return session;
   },
 
   rename: async (id, title) => {
-    await invoke("rename_session", { id, title });
+    await api.renameSession(id, title);
     await get().refresh();
   },
 
   remove: async (id) => {
-    await invoke("delete_session", { id });
+    await api.deleteSession(id);
     if (get().activeId === id) set({ activeId: null });
     await get().refresh();
   },
 
   pin: async (id, pinned) => {
-    await invoke("set_session_pinned", { id, pinned });
+    await api.setSessionPinned(id, pinned);
     await get().refresh();
   },
 
   archive: async (id, archived) => {
-    await invoke("set_session_archived", { id, archived });
+    await api.setSessionArchived(id, archived);
     if (get().activeId === id && archived) set({ activeId: null });
     await get().refresh();
   },
@@ -92,6 +83,6 @@ export const useSessionsStore = create<SessionsState>((set, get) => ({
 
   search: async (q) => {
     if (!q.trim()) return [];
-    return await invoke<Array<Session & { snippet: string }>>("search_sessions", { query: q });
+    return await api.searchSessions(q);
   },
 }));

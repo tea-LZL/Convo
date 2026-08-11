@@ -27,19 +27,19 @@
 - [x] Task 13 — Test provider stream adapters — Ollama/OpenAI content, reasoning, usage, malformed lines, HTTP failures, SSE, DONE, and EOF fixtures
 - [x] Task 14 — Enforce Tauri command registration parity — exhaustive frontend/Rust command scan, registered `search_notes`, and Notes command-contract coverage
 - [x] Task 15 — Complete Providers and Models setup — provider edit/validation/probe/default/delete plus provider-scoped refresh, pull/cancel/delete/custom-create, model selection, and Start chat
-- [ ] Task 16 — Finish Notes and Tasks
-- [ ] Task 17 — Harden Documents
-- [ ] Task 18 — Finish Compare
-- [ ] Task 19 — Make Web Search functional and secure
-- [ ] Task 20 — Complete Hardware and Diagnostics recovery
-- [ ] Task 21 — Finish shell features
-- [ ] Task 22 — Establish restrained design system
-- [ ] Task 23 — Unify route layouts
-- [ ] Task 24 — Add responsive and keyboard accessibility
-- [ ] Task 25 — Add privacy-safe observability
-- [ ] Task 26 — Add CI and release gates
-- [ ] Task 27 — Run full release checklist
-- [ ] Task 28 — Package smoke test before RC tag
+- [x] Task 16 — Finish Notes and Tasks — camelCase command contracts, full task fields/filters, tag filtering, draft-safe errors, and CRUD/retry coverage
+- [x] Task 17 — Harden Documents — DB/disk persistence labels, dirty-save protection, external-change handling, AI fence parsing, and retryable route errors
+- [x] Task 18 — Finish Compare — per-column failures, EOF/cancellation terminal states, stale run filtering, reproducibility metadata, and history/result validation
+- [x] Task 19 — Make Web Search functional and secure — keyring migration, redacted config, provider validation/status errors, adapter fixtures, and Test search UI
+- [x] Task 20 — Complete Hardware and Diagnostics recovery — tested NVIDIA/ROCm parser fixtures, retryable diagnostics, integrity reporting, and safe staged backup import with rollback copy
+- [x] Task 21 — Finish shell features — API-backed session store, persisted/conflict-safe shortcuts, router-safe settings navigation, narrowed theme claims, replay tour, and command-palette semantics
+- [ ] Task 22 — Establish restrained design system — shared RouteShell/opaque surfaces/focus-safe primitives added; legacy glass/gradient styling removed; snapshot coverage remains
+- [ ] Task 23 — Unify route layouts — RouteShell now covers Hardware, Diagnostics, Memory, Notes, Tasks, Documents, Compare, Settings, and About; Chat-specific chrome and state standardization remain
+- [ ] Task 24 — Add responsive and keyboard accessibility — 560px packaged minimum, 760px shell band, stacked split panes, tab/menu semantics, focus trap, viewport tests, and shared modal/shell axe checks added; broader route coverage remains
+- [x] Task 25 — Add privacy-safe observability — sanitized frontend events persist through `append_log_event`, Diagnostics reads the log bundle, swallowed cleanup/fallback catches report metadata, and logger/Rust safety tests pass
+- [x] Task 26 — Add CI and release gates — workflows, version gate, Tauri CLI dependency, strict Rust gates, and Debian/AppImage targets pass locally; GitHub workflow execution remains pending
+- [ ] Task 27 — Run full release checklist — checklist and known-limitations documents added; manual evidence remains
+- [ ] Task 28 — Package smoke test before RC tag — Debian and AppImage bundles produced; installed-artifact smoke testing remains
 
 ---
 
@@ -697,7 +697,7 @@ git commit -m "test(providers): cover Ollama and OpenAI stream protocols"
 
 ### Task 14: Add command registration parity tests **(complete)**
 
-Added exhaustive `check:commands` coverage across all frontend source files and Rust command declarations, registered `search_notes`, and verified 94 frontend commands and 98 Rust commands have registration parity.
+Added exhaustive `check:commands` coverage across all frontend source files and Rust command declarations, registered `search_notes`, and verified 95 frontend commands and 99 Rust commands have registration parity.
 
 **Objective:** Prevent implemented backend features from remaining unreachable.
 
@@ -771,6 +771,8 @@ git commit -m "feat(settings): complete provider and model management"
 
 **Objective:** Make Notes and Tasks reliable data tools rather than optimistic forms.
 
+Implemented camelCase note/task boundaries, explicit loading/error/retry states, tag and completion/overdue filters, complete task editing fields, draft-preserving saves, and validation in both Rust commands. Verified with route/API tests and full Rust tests.
+
 **Files:**
 - Modify: `src/routes/NotesRoute.tsx`
 - Modify: `src/routes/TasksRoute.tsx`
@@ -804,6 +806,8 @@ git commit -m "fix(workspace): complete notes and tasks workflows"
 
 **Objective:** Prevent data loss and make every document action explicit and testable.
 
+Implemented DB-backed versus disk-backed labels, dirty-save protection, partial Save all failure handling, external disk-change prompts, before-unload protection, retryable load errors, document validation, and extracted AI fence parsing tests. Verified with route, parser, and Rust document tests.
+
 **Files:**
 - Modify: `src/routes/DocumentsRoute.tsx`
 - Modify: `src-tauri/src/commands/documents.rs`
@@ -835,6 +839,8 @@ git commit -m "fix(documents): protect dirty and disk-backed edits"
 
 **Objective:** Make side-by-side model evaluation survive partial provider failures and remain reproducible.
 
+Implemented backend per-column failure isolation, EOF terminal events, run-scoped cleanup, cancellation state updates, stale run filtering, winner/result validation, and reproducible timing/usage/error metadata. Verified with Compare route tests and Rust compare tests.
+
 **Files:**
 - Modify: `src/routes/CompareRoute.tsx`
 - Modify: `src-tauri/src/commands/compare.rs`
@@ -865,6 +871,8 @@ git commit -m "fix(compare): make runs cancellable and reproducible"
 ### Task 19: Make Web Search functional and secure
 
 **Objective:** Validate configured search providers and stop storing Brave credentials in plaintext SQLite.
+
+Implemented keyring migration for legacy search credentials, redacted search config responses, provider/max-result validation, HTTP/malformed-response errors, adapter fixtures, and an explicit Test search panel with result previews. Verified with Search route and Rust search tests.
 
 **Files:**
 - Modify: `src-tauri/src/commands/search.rs`
@@ -899,6 +907,8 @@ git commit -m "fix(search): validate providers and secure credentials"
 
 **Objective:** Make system inspection useful when commands, parsers, providers, or the database fail.
 
+Implemented NVIDIA/ROCm parser helpers and fixtures, retryable Diagnostics loading/error states, SQLite integrity reporting, safe archive path validation, staged backup import, and rollback-copy creation. Verified with Hardware/Diagnostics route tests and full Rust tests.
+
 **Files:**
 - Modify: `src/routes/HardwareRoute.tsx`
 - Modify: `src/routes/DiagnosticsRoute.tsx`
@@ -931,6 +941,8 @@ git commit -m "fix(diagnostics): harden hardware and recovery workflows"
 ### Task 21: Finish sessions, command palette, shortcuts, themes, and tour
 
 **Objective:** Remove navigation dead ends and make shell-level features consistent.
+
+Implemented API-backed session actions, persisted conflict-safe shortcuts, router-aware Settings navigation, command palette dialog/menu semantics, a replay-tour action, and accurate built-in-theme copy. Verified with shell interaction tests and command parity.
 
 **Files:**
 - Modify: `src/app/App.tsx`
@@ -1110,6 +1122,8 @@ git commit -m "fix(ui): support narrow windows and keyboard navigation"
 
 **Objective:** Make runtime failures diagnosable while preserving local-first privacy.
 
+Implemented a structured privacy-safe frontend logger, validated `append_log_event` persistence through the existing Diagnostics log bundle, and replaced swallowed cleanup/fallback catches with metadata-only failure records. Prompts, message content, keys, and attachment bytes are never sent to the logger.
+
 **Files:**
 - Create: `src/lib/logger.ts`
 - Modify: frontend catch/error paths
@@ -1140,6 +1154,8 @@ git commit -m "feat: add privacy-safe diagnostics logging"
 
 **Objective:** Ensure a passing local tree also builds from nothing.
 
+Added CI/release workflow scaffolding, Tauri CLI dependency, version consistency script, Debian/AppImage targets, pinned linuxdeploy setup, and clean local strict gates. GitHub workflow execution remains pending.
+
 **Files:**
 - Create: `.github/workflows/ci.yml`
 - Create: `.github/workflows/release.yml`
@@ -1168,6 +1184,8 @@ git commit -m "ci: gate clean builds and Linux release artifacts"
 ### Task 27: Run a real end-to-end release checklist
 
 **Objective:** Produce evidence from the packaged application, not only unit tests.
+
+Added `docs/RELEASE_CHECKLIST.md` and `docs/KNOWN_LIMITATIONS.md`; fresh/upgrade/adverse-condition manual evidence remains outstanding.
 
 **Files:**
 - Create: `docs/RELEASE_CHECKLIST.md`
@@ -1217,6 +1235,8 @@ git commit -m "docs: publish verified release checklist and limitations"
 ### Task 28: Tag only after package smoke testing
 
 **Objective:** Create the release only when the installed artifact behaves like the development build.
+
+The Debian and AppImage artifacts build successfully with the pinned linuxdeploy tool. No RC tag is appropriate until the installed-artifact, fresh-install, upgrade, and adverse-condition checks are recorded and CI is green.
 
 **Step 1: Install the generated package in a disposable/test context**
 
@@ -1274,7 +1294,7 @@ Expected before tagging: clean worktree and green CI. Do not publish a final `v1
 - [ ] `search_notes` and every frontend invoke command are registered.
 - [ ] Settings → Models is functional or removed from release navigation.
 - [ ] All route CRUD actions expose loading, success, failure, and retry.
-- [ ] No routine glass/blur/glow styling or token flicker remains.
+- [x] No routine glass/blur/glow styling or token flicker remains.
 - [ ] Keyboard navigation, focus management, reduced motion, and narrow windows pass.
 - [ ] Full frontend/Rust/build/package gate passes from `npm ci` and clean checkout.
 - [ ] Fresh-install and upgrade-install manual checklists pass against the packaged app.

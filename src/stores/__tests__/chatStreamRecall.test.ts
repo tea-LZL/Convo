@@ -25,6 +25,7 @@ describe("recallMemories", () => {
     mockedInvoke.mockResolvedValue([nickname, preferenceItem, factItem] as never);
 
     const block = await recallMemories("what is my nickname", "");
+    expect(block).toMatch(/^<memory-context>/);
     expect(block).toContain("Relevant facts you MUST use");
     expect(block).toContain(nickname.content);
 

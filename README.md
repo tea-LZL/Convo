@@ -52,7 +52,7 @@ A self-hosted AI workspace for Linux — multi-provider chat, model comparison, 
 - **Keyboard shortcuts** — rebindable per-shortcut with Mac/PC display.
 - **Onboarding tour** — 6 steps with target anchoring; replayable from About.
 - **Themes** — 6 built-in (Default Dark, Default Light, Solar, Forest, Mono, High Contrast) + user-defined. Light/dark/system. CSS-variable driven, no flash on reload.
-- **Responsive layout** — auto-collapsing sidebar below 700px, responsive content padding, stacked compare columns on narrow screens.
+- **Responsive layout** — auto-collapsing sidebar below 760px, responsive content padding, stacked compare columns on narrow screens.
 - **Error boundaries** — route-level and streaming-level boundaries prevent single-component crashes from taking down the app.
 - **Animation polish** — message entrance, sidebar transitions, skeleton loading states, thinking-section collapse/expand, all respecting `prefers-reduced-motion`.
 

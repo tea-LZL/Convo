@@ -51,7 +51,7 @@ export function AttachmentStripItem({
         <X size={9} />
       </button>
       {a.status === "uploading" && (
-        <div className="absolute inset-0 bg-black/30 rounded-md flex items-center justify-center">
+        <div className="absolute inset-0 overlay-backdrop rounded-md flex items-center justify-center">
           <Spinner size={12} />
         </div>
       )}

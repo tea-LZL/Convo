@@ -77,6 +77,11 @@ Object.defineProperties(globalThis.URL, {
   },
 });
 
+Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
+  configurable: true,
+  value: vi.fn(() => null),
+});
+
 let uuidCounter = 0;
 Object.defineProperty(globalThis.crypto, "randomUUID", {
   writable: true,

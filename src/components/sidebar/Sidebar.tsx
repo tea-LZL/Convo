@@ -13,6 +13,8 @@ import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { Modal } from "../ui/Modal";
 import { TextInput } from "../ui/Form";
 import { Button } from "../ui/Button";
+import { api } from "../../lib/api";
+import { errorClass, recordLog } from "../../lib/logger";
 
 interface NavItem {
   id: string;
@@ -54,10 +56,14 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
   const [deleteTarget, setDeleteTarget] = useState<Session | null>(null);
   const [renameTarget, setRenameTarget] = useState<Session | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const [appVersion, setAppVersion] = useState<string | null>(null);
   const ctxMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     refresh();
+    api.appInfo().then((info) => setAppVersion(info.version)).catch((error) => {
+      recordLog({ operation: "app_info", status: "failed", route: "sidebar", errorClass: errorClass(error) });
+    });
   }, [refresh]);
 
   // Close the right-click context menu on left-click outside, Esc, scroll.
@@ -165,12 +171,14 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
 
   if (collapsed) {
     return (
-      <aside className="w-12 h-full bg-surface-1 border-r border-border flex flex-col items-center py-2 gap-1 shrink-0 transition-all duration-200 ease-out">
+      <aside className="w-12 h-full bg-surface-1 border-r border-border flex flex-col items-center py-2 gap-1 shrink-0">
         {NAV.map((n) => {
           const active = location.pathname.startsWith(n.path);
           return (
             <Tooltip key={n.id} content={n.label} side="right">
               <button
+                type="button"
+                aria-label={n.label}
                 onClick={() => navigate(n.path)}
                 className={`w-8 h-8 rounded-md flex items-center justify-center transition-colors ${
                   active ? "bg-accent/15 text-accent" : "text-text-muted hover:text-text hover:bg-surface-2"
@@ -184,6 +192,8 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
         <div className="flex-1" />
         <Tooltip content="New chat" side="right">
           <button
+            type="button"
+            aria-label="New chat"
             onClick={handleNewChat}
             className="w-8 h-8 rounded-md flex items-center justify-center bg-accent hover:bg-accent-hover text-white transition-colors"
           >
@@ -205,14 +215,14 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
   const visibleSessions = (showArchived ? archivedSessions : activeSessions).slice(0, 30);
 
   return (
-    <aside className="w-60 h-full bg-surface-1 border-r border-border flex flex-col shrink-0 transition-all duration-200 ease-out">
+    <aside className="w-60 h-full bg-surface-1 border-r border-border flex flex-col shrink-0">
       <div className="p-3 flex items-center gap-2 border-b border-border">
-        <div className="w-7 h-7 rounded-md bg-gradient-to-br from-accent to-accent-muted flex items-center justify-center text-white font-semibold text-sm">
+        <div className="w-7 h-7 rounded-md bg-accent flex items-center justify-center text-white font-semibold text-sm">
           C
         </div>
         <div className="flex-1 min-w-0">
           <div className="text-sm font-semibold text-text">Convo</div>
-          <div className="text-[10px] text-text-subtle -mt-0.5">v0.7 · local-first</div>
+           <div className="text-[10px] text-text-subtle -mt-0.5">v{appVersion ?? "?"} · local-first</div>
         </div>
         <IconButton icon={<ChevronLeft size={14} />} label="Collapse" onClick={onToggle} size="sm" />
       </div>
@@ -392,7 +402,7 @@ function SessionRow({
 }) {
   return (
     <div
-      className={`group w-full rounded-md text-xs flex items-center gap-1 transition-all animate-message-in ${
+      className={`group w-full rounded-md text-xs flex items-center gap-1 transition-colors animate-message-in ${
         active ? "bg-surface-3 text-text" : "text-text-muted hover:bg-surface-2 hover:text-text"
       }`}
     >
@@ -445,7 +455,7 @@ const SessionContextMenuView = forwardRef<HTMLDivElement, {
   return (
     <div
       ref={ref}
-      className="fixed z-[100] min-w-[180px] glass border border-border rounded-lg shadow-modal py-1 animate-scale-in"
+      className="fixed z-[100] min-w-[180px] bg-surface-1 border border-border rounded-lg shadow-modal py-1 animate-scale-in"
       style={{ left: cx, top: cy }}
       onClick={(e) => e.stopPropagation()}
     >

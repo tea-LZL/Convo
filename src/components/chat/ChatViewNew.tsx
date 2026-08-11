@@ -305,10 +305,10 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
       )}
 
       {/* Input */}
-      <div className="border-t border-border bg-surface-1/40 backdrop-blur px-3 sm:px-4 py-3 relative">
+      <div className="border-t border-border bg-surface-1 px-3 sm:px-4 py-3 relative">
         {/* Slash menu */}
         {showSlashMenu && (
-          <div className="absolute bottom-full left-3 right-3 mb-1 max-w-3xl mx-auto glass border border-border rounded-lg shadow-modal max-h-64 overflow-y-auto animate-scale-in">
+          <div className="absolute bottom-full left-3 right-3 mb-1 max-w-3xl mx-auto bg-surface-1 border border-border rounded-lg shadow-modal max-h-64 overflow-y-auto animate-scale-in">
             {filterCommands(slashQuery).map((c) => (
               <button
                 key={c.name}

@@ -2,9 +2,10 @@
  * Hardware scan + model-fit recommendations.
  */
 import { useEffect, useState } from "react";
-import { Cpu, Monitor, CpuIcon as GpuIcon, Check, AlertTriangle, X, Download } from "lucide-react";
+import { Monitor, CpuIcon as GpuIcon, Check, AlertTriangle, X, Download } from "lucide-react";
 import { api, FitReport, HardwareReport, ModelFit } from "../lib/api";
 import { Button } from "../components/ui/Button";
+import { RouteShell } from "../components/ui/RouteShell";
 import { useNavigate } from "react-router-dom";
 import { toast } from "../stores/toasts";
 
@@ -43,36 +44,36 @@ export function HardwareRoute() {
 
   if (loading) {
     return (
-      <div className="flex-1 flex items-center justify-center text-text-subtle">
+      <RouteShell title="Hardware scan" description="Check available CPU, RAM, and GPU resources.">
+        <div role="status" className="flex h-full items-center justify-center text-text-subtle">
         Scanning hardware…
-      </div>
+        </div>
+      </RouteShell>
     );
   }
 
   if (failed || !hw || !fit) {
     return (
-      <div role="alert" className="flex-1 flex flex-col items-center justify-center gap-3 text-text-muted">
-        <AlertTriangle size={20} className="text-error" />
-        <div>Hardware scan failed</div>
-        <Button size="sm" variant="secondary" onClick={scan}>Re-scan</Button>
-      </div>
+      <RouteShell
+        title="Hardware scan"
+        description="Check available CPU, RAM, and GPU resources."
+        actions={<Button size="sm" variant="secondary" onClick={() => void scan()}>Re-scan</Button>}
+      >
+        <div role="alert" className="flex h-full flex-col items-center justify-center gap-3 text-text-muted">
+          <AlertTriangle size={20} className="text-error" />
+          <div>Hardware scan failed</div>
+        </div>
+      </RouteShell>
     );
   }
 
   return (
-    <div className="flex-1 overflow-y-auto">
-      <div className="max-w-4xl mx-auto p-8">
-        <div className="flex items-center gap-2 mb-2">
-          <Cpu size={18} className="text-accent" />
-          <h1 className="text-xl font-semibold text-text">Hardware scan</h1>
-          <div className="flex-1" />
-          <Button size="sm" variant="secondary" onClick={scan}>Re-scan</Button>
-        </div>
-        <p className="text-sm text-text-muted mb-6">
-          Convo scans your machine to suggest models that fit. Numbers are best-effort — actual
-          VRAM/RAM needs depend on the quant and context size.
-        </p>
-
+    <RouteShell
+      title="Hardware scan"
+      description="Convo scans your machine to suggest models that fit. Numbers are best-effort; actual VRAM/RAM needs depend on the quant and context size."
+      actions={<Button size="sm" variant="secondary" onClick={() => void scan()}>Re-scan</Button>}
+    >
+      <div className="max-w-4xl mx-auto p-4 sm:p-8">
         <div className="space-y-4">
           <Section title="System" icon={<Monitor size={14} className="text-accent" />}>
             <div className="grid grid-cols-2 gap-3">
@@ -119,7 +120,7 @@ export function HardwareRoute() {
           </div>
         </div>
       </div>
-    </div>
+    </RouteShell>
   );
 }
 

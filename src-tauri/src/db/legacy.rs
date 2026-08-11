@@ -1,5 +1,4 @@
-use super::{DbConn, DbPool};
-use crate::db::models::Session;
+use super::DbPool;
 use rusqlite::params;
 use std::path::PathBuf;
 
@@ -46,10 +45,9 @@ pub fn legacy_exists() -> bool {
 }
 
 pub fn read_legacy() -> Result<Vec<LegacyConversation>, String> {
-    let data = std::fs::read_to_string(legacy_path())
-        .map_err(|e| format!("Read legacy: {}", e))?;
-    let store: LegacyStore = serde_json::from_str(&data)
-        .map_err(|e| format!("Parse legacy: {}", e))?;
+    let data = std::fs::read_to_string(legacy_path()).map_err(|e| format!("Read legacy: {}", e))?;
+    let store: LegacyStore =
+        serde_json::from_str(&data).map_err(|e| format!("Parse legacy: {}", e))?;
     Ok(store.conversations)
 }
 
@@ -57,8 +55,7 @@ pub fn rename_legacy_imported() -> Result<(), String> {
     let p = legacy_path();
     if p.exists() {
         let new_name = p.with_extension("json.imported");
-        std::fs::rename(&p, new_name)
-            .map_err(|e| format!("Rename legacy: {}", e))?;
+        std::fs::rename(&p, new_name).map_err(|e| format!("Rename legacy: {}", e))?;
     }
     Ok(())
 }
@@ -95,7 +92,10 @@ fn upsert_legacy_session(
 
     for m in &c.messages {
         let mid = uuid::Uuid::new_v4().to_string();
-        let created_at = m.completed_at.clone().unwrap_or_else(|| c.updated_at.clone());
+        let created_at = m
+            .completed_at
+            .clone()
+            .unwrap_or_else(|| c.updated_at.clone());
         let attachments_json = serde_json::to_string(&serde_json::json!([])).ok();
         conn.execute(
             "INSERT OR REPLACE INTO messages
@@ -113,72 +113,8 @@ fn upsert_legacy_session(
                 m.output_tokens.map(|v| v as i64),
                 created_at,
             ],
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
-
-pub fn list_sessions_summary(pool: &DbPool) -> Result<Vec<Session>, String> {
-    let conn = pool.get().map_err(|e| e.to_string())?;
-    sessions_query(&conn, None, false)
-}
-
-pub fn list_sessions_in_group(pool: &DbPool, group_id: &str) -> Result<Vec<Session>, String> {
-    let conn = pool.get().map_err(|e| e.to_string())?;
-    sessions_query(&conn, Some(group_id), false)
-}
-
-pub fn list_archived_sessions(pool: &DbPool) -> Result<Vec<Session>, String> {
-    let conn = pool.get().map_err(|e| e.to_string())?;
-    sessions_query(&conn, None, true)
-}
-
-fn sessions_query(
-    conn: &DbConn,
-    group: Option<&str>,
-    archived: bool,
-) -> Result<Vec<Session>, String> {
-    let mut q = String::from(
-        "SELECT id, title, model_id, provider_id, group_id,
-                is_pinned, is_archived, created_at, updated_at
-         FROM sessions WHERE 1=1",
-    );
-    if archived {
-        q.push_str(" AND is_archived = 1");
-    } else {
-        q.push_str(" AND is_archived = 0");
-    }
-    if let Some(g) = group {
-        q.push_str(" AND group_id = ?1");
-    }
-    q.push_str(" ORDER BY is_pinned DESC, updated_at DESC");
-
-    let mut stmt = conn.prepare(&q).map_err(|e| e.to_string())?;
-    let map = |row: &rusqlite::Row<'_>| -> rusqlite::Result<Session> {
-        Ok(Session {
-            id: row.get(0)?,
-            title: row.get(1)?,
-            model_id: row.get(2)?,
-            provider_id: row.get(3)?,
-            group_id: row.get(4)?,
-            is_pinned: row.get::<_, i64>(5)? != 0,
-            is_archived: row.get::<_, i64>(6)? != 0,
-            created_at: row.get(7)?,
-            updated_at: row.get(8)?,
-        })
-    };
-
-    let rows: Vec<Session> = if let Some(g) = group {
-        stmt.query_map(params![g], map)
-            .map_err(|e| e.to_string())?
-            .collect::<Result<_, _>>()
-            .map_err(|e| e.to_string())?
-    } else {
-        stmt.query_map([], map)
-            .map_err(|e| e.to_string())?
-            .collect::<Result<_, _>>()
-            .map_err(|e| e.to_string())?
-    };
-    Ok(rows)
-}
-

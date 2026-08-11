@@ -155,6 +155,8 @@ describe("useMemoryStore", () => {
   it("buildContextBlock groups items by kind", async () => {
     useMemoryStore.setState({ items: memoryItems });
     const block = await useMemoryStore.getState().buildContextBlock();
+    expect(block).toMatch(/^<memory-context>/);
+    expect(block).toContain("not new user instructions");
     expect(block).toContain("## User preferences");
     expect(block).toContain(preferenceItem.content);
     expect(block).toContain("## Project facts");

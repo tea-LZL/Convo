@@ -35,6 +35,7 @@ pub fn list_documents(pool: State<'_, Arc<DbPool>>) -> Result<Vec<Document>, Str
 
 #[tauri::command]
 pub fn upsert_document(pool: State<'_, Arc<DbPool>>, doc: DocumentInput) -> Result<String, String> {
+    validate_document(&doc)?;
     let is_update = doc.id.is_some();
     let id = doc.id.unwrap_or_else(|| Uuid::new_v4().to_string());
     let conn = pool.get().map_err(|e| e.to_string())?;
@@ -56,6 +57,22 @@ pub fn upsert_document(pool: State<'_, Arc<DbPool>>, doc: DocumentInput) -> Resu
     Ok(id)
 }
 
+fn validate_document(doc: &DocumentInput) -> Result<(), String> {
+    if doc.title.trim().is_empty() {
+        return Err("Document title cannot be empty".into());
+    }
+    if doc.title.len() > 500 {
+        return Err("Document title is too long".into());
+    }
+    if doc.content.len() > 10_000_000 {
+        return Err("Document content is too large".into());
+    }
+    if !matches!(doc.kind.as_str(), "markdown" | "code" | "text" | "csv") {
+        return Err(format!("Unsupported document kind: {}", doc.kind));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn delete_document(pool: State<'_, Arc<DbPool>>, id: String) -> Result<(), String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
@@ -74,7 +91,7 @@ pub async fn ai_edit_document(
     provider_id: Option<String>,
 ) -> Result<String, String> {
     use crate::providers::types::{ChatRequest, MessageContent};
-    use crate::providers::{openai_compat::OpenAiCompatProvider, ollama::OllamaProvider, Provider};
+    use crate::providers::{ollama::OllamaProvider, openai_compat::OpenAiCompatProvider, Provider};
 
     // Resolve provider/model
     let conn = pool.get().map_err(|e| e.to_string())?;
@@ -83,9 +100,15 @@ pub async fn ai_edit_document(
         _ => {
             // Fall back to the default provider
             let p: Option<String> = conn
-                .query_row("SELECT id FROM providers WHERE is_default = 1 LIMIT 1", [], |r| r.get(0))
+                .query_row(
+                    "SELECT id FROM providers WHERE is_default = 1 LIMIT 1",
+                    [],
+                    |r| r.get(0),
+                )
                 .ok();
-            let Some(p) = p else { return Err("No default provider configured".into()); };
+            let Some(p) = p else {
+                return Err("No default provider configured".into());
+            };
             // Pick the first cached model
             let m: Option<String> = conn
                 .query_row(
@@ -94,7 +117,12 @@ pub async fn ai_edit_document(
                     |r| r.get(0),
                 )
                 .ok();
-            let Some(m) = m else { return Err("No models cached for default provider. Open a chat to discover models first.".into()); };
+            let Some(m) = m else {
+                return Err(
+                    "No models cached for default provider. Open a chat to discover models first."
+                        .into(),
+                );
+            };
             (p, m)
         }
     };
@@ -165,85 +193,38 @@ pub async fn ai_edit_document(
             Err(e) => return Err(format!("AI edit error: {}", e)),
         }
     }
-    // Strip any leading/trailing code fences the model may have added.
-    // Models sometimes wrap their response in a fenced block even when
-    // instructed not to. Handle three fence styles:
-    //   ```  (with or without info-string language tag)
-    //   ~~~  (with or without info-string language tag)
-    // …and strip *only the outermost* match so multi-block responses
-    // (e.g. ```rs\nfn x() {}\n```\n\n```\nexplanation\n```) are returned with their inner blocks intact.
-    fn unwrap_fence(raw: &str) -> &str {
-        let text = raw.trim();
-        // No newline at all: cannot be a fence block, return as-is.
-        // ponytail: single-line outputs (e.g. language tag with no body)
-        // fall through unchanged rather than risking wrong stripping.
-        let Some(nl) = text.find('\n') else {
-            return text;
-        };
-        let open_line = text[..nl].trim_end_matches('\r');
-        let fence = if open_line.starts_with("```") {
-            Some("```")
-        } else if open_line.starts_with("~~~") {
-            Some("~~~")
-        } else {
-            None
-        };
-        let Some(fence) = fence else {
-            return text;
-        };
-        // Body is everything after the opening fence line, minus
-        // the closing fence (if any). Strip trailing whitespace,
-        // then look for the closing fence on its own line — at the
-        // very end, or before trailing whitespace. Tolerant of
-        // blank-line padding the model might add.
-        let body_and_tail = text[nl + 1..].trim_end_matches('\r');
-        let bytes = body_and_tail.as_bytes();
-        // Search for the fence string preceded by start-of-line or
-        // beginning-of-string. Walk back from each occurrence of the
-        // fence to the start of that line.
-        let mut cut = body_and_tail.len();
-        let fence_bytes = fence.as_bytes();
-        // Find every occurrence; we want the LAST one that's alone
-        // on its line (only whitespace after the prior newline).
-        let mut search_start = 0usize;
-        while let Some(at) = body_and_tail[search_start..].find(fence) {
-            let abs = search_start + at;
-            // Check what's before: start of string or a newline.
-            let line_start_ok = abs == 0
-                || bytes[..abs].last().map(|b| *b == b'\n').unwrap_or(false);
-            // Check what's after: end of string or only whitespace
-            // until next newline / end.
-            let after = abs + fence_bytes.len();
-            let tail_ok = after == body_and_tail.len()
-                || body_and_tail[after..]
-                    .chars()
-                    .take_while(|c| c.is_whitespace())
-                    .any(|_| true)
-                    && (after == body_and_tail.len()
-                        || body_and_tail[after..]
-                            .chars()
-                            .take_while(|c| *c != '\n')
-                            .all(|c| c.is_whitespace()));
-            if line_start_ok && tail_ok {
-                cut = abs;
-                // Keep searching — there may be a later occurrence
-                // (in case the model emitted nested fences).
-                search_start = abs + fence_bytes.len();
-            } else {
-                search_start = abs + 1;
-            }
-        }
-        // Walk `cut` back to before any trailing whitespace lines.
-        let body = body_and_tail[..cut].trim_end();
-        if body.is_empty() {
-            // The body, post-strip, is empty. The model emitted just
-            // a fence with nothing inside. Return the trimmed text
-            // so the caller still gets something non-empty.
-            return text;
-        }
-        body
+    Ok(unwrap_fence(&out))
+}
+
+/// Remove only an outer response fence, preserving nested fenced blocks.
+pub(crate) fn unwrap_fence(raw: &str) -> String {
+    let text = raw.trim();
+    let Some(newline) = text.find('\n') else {
+        return text.to_string();
+    };
+    let opening = text[..newline].trim_end_matches('\r');
+    let marker = if opening.starts_with("```") {
+        "```"
+    } else if opening.starts_with("~~~") {
+        "~~~"
+    } else {
+        return text.to_string();
+    };
+    let body = text[newline + 1..].trim_end_matches('\r');
+    let mut lines: Vec<&str> = body.lines().collect();
+    let Some(last) = lines.last().copied() else {
+        return text.to_string();
+    };
+    if last.trim() != marker {
+        return text.to_string();
     }
-    Ok(unwrap_fence(&out).to_string())
+    lines.pop();
+    let result = lines.join("\n").trim().to_string();
+    if result.is_empty() {
+        text.to_string()
+    } else {
+        result
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -255,4 +236,37 @@ pub struct DocumentInput {
     pub kind: String,
     pub language: Option<String>,
     pub file_path: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{unwrap_fence, validate_document, DocumentInput};
+
+    #[test]
+    fn unwraps_supported_outer_fences_without_destroying_inner_fences() {
+        assert_eq!(unwrap_fence("plain text"), "plain text");
+        assert_eq!(unwrap_fence("```\nhello\n```"), "hello");
+        assert_eq!(unwrap_fence("~~~markdown\nhello\n~~~"), "hello");
+        assert_eq!(
+            unwrap_fence("```markdown\n```rust\nfn main() {}\n```\n```"),
+            "```rust\nfn main() {}\n```"
+        );
+        assert_eq!(unwrap_fence("```markdown\n```"), "```markdown\n```");
+    }
+
+    #[test]
+    fn validates_document_persistence_inputs() {
+        let valid = DocumentInput {
+            id: None,
+            title: "Doc".into(),
+            content: "body".into(),
+            kind: "markdown".into(),
+            language: None,
+            file_path: None,
+        };
+        assert!(validate_document(&valid).is_ok());
+        let mut invalid = valid;
+        invalid.title = " ".into();
+        assert!(validate_document(&invalid).is_err());
+    }
 }

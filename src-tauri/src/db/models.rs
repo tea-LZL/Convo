@@ -1,17 +1,6 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Provider {
-    pub id: String,
-    pub kind: String,
-    pub name: String,
-    pub base_url: Option<String>,
-    pub api_key: Option<String>,
-    pub is_default: bool,
-    pub created_at: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Model {
     pub id: String,
     pub provider_id: String,
@@ -24,14 +13,6 @@ pub struct Model {
     pub supports_thinking: bool,
     pub supports_vision: bool,
     pub last_seen: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct SessionGroup {
-    pub id: String,
-    pub name: String,
-    pub sort_order: i64,
-    pub created_at: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

@@ -8,12 +8,12 @@ pub mod legacy;
 pub mod models;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
-pub type DbConn = r2d2::PooledConnection<SqliteConnectionManager>;
 
 const MIGRATION_V001: &str = include_str!("../../migrations/V001__initial_schema.sql");
 const MIGRATION_V002: &str = include_str!("../../migrations/V002__fts_and_skills.sql");
 const MIGRATION_V003: &str = include_str!("../../migrations/V003__drop_presets.sql");
 const MIGRATION_V004: &str = include_str!("../../migrations/V004__memory_reviews.sql");
+const MIGRATION_V005: &str = include_str!("../../migrations/V005__search_keyring.sql");
 
 fn migrations() -> Migrations<'static> {
     Migrations::new(vec![
@@ -21,6 +21,7 @@ fn migrations() -> Migrations<'static> {
         M::up(MIGRATION_V002),
         M::up(MIGRATION_V003),
         M::up(MIGRATION_V004),
+        M::up(MIGRATION_V005),
     ])
 }
 
@@ -40,16 +41,15 @@ pub fn db_path() -> PathBuf {
 }
 
 pub fn init_pool() -> Result<Arc<DbPool>, String> {
-    let manager = SqliteConnectionManager::file(db_path())
-        .with_init(|c| {
-            c.execute_batch(
-                "PRAGMA journal_mode = WAL;
+    let manager = SqliteConnectionManager::file(db_path()).with_init(|c| {
+        c.execute_batch(
+            "PRAGMA journal_mode = WAL;
                  PRAGMA synchronous = NORMAL;
                  PRAGMA foreign_keys = ON;
                  PRAGMA busy_timeout = 5000;
                  PRAGMA temp_store = MEMORY;",
-            )
-        });
+        )
+    });
     let pool = Pool::builder()
         .max_size(8)
         .build(manager)

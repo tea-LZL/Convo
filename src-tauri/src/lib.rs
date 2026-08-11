@@ -44,6 +44,9 @@ pub fn run() {
     if let Err(e) = services_mod::ensure_default_ollama_provider(&pool) {
         eprintln!("WARN: default provider init: {}", e);
     }
+    if let Err(e) = services_mod::migrate_search_api_key(&pool) {
+        eprintln!("WARN: search key migration: {}", e);
+    }
 
     // Migrate legacy JSON on first run
     if db::legacy::legacy_exists() {
@@ -75,25 +78,26 @@ pub fn run() {
             // Register global shortcut: Ctrl+Shift+Space toggles main window.
             // Best-effort: if the platform doesn't allow it (e.g. unsupported
             // by the desktop env), we just log and continue.
-            use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
-            let shortcut = Shortcut::new(
-                Some(Modifiers::CONTROL | Modifiers::SHIFT),
-                Code::Space,
-            );
+            use tauri_plugin_global_shortcut::{
+                Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState,
+            };
+            let shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space);
             let app_for_gs = handle.clone();
-            match app.global_shortcut().on_shortcut(shortcut, move |_app, _sc, event| {
-                if event.state() == ShortcutState::Pressed {
-                    if let Some(win) = app_for_gs.get_webview_window("main") {
-                        let visible = win.is_visible().unwrap_or(false);
-                        if visible {
-                            let _ = win.hide();
-                        } else {
-                            let _ = win.show();
-                            let _ = win.set_focus();
+            match app
+                .global_shortcut()
+                .on_shortcut(shortcut, move |_app, _sc, event| {
+                    if event.state() == ShortcutState::Pressed {
+                        if let Some(win) = app_for_gs.get_webview_window("main") {
+                            let visible = win.is_visible().unwrap_or(false);
+                            if visible {
+                                let _ = win.hide();
+                            } else {
+                                let _ = win.show();
+                                let _ = win.set_focus();
+                            }
                         }
                     }
-                }
-            }) {
+                }) {
                 Ok(_) => tracing::info!("Global shortcut Ctrl+Shift+Space registered"),
                 Err(e) => tracing::warn!("Could not register global shortcut: {}", e),
             }
@@ -101,9 +105,10 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             // Settings + app info
+            settings_cmd::append_log_event,
+            settings_cmd::get_all_settings,
             settings_cmd::get_setting,
             settings_cmd::set_setting,
-            settings_cmd::get_all_settings,
             services_mod::app_info,
             services_mod::open_data_dir,
             // Sessions

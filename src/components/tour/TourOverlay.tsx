@@ -43,7 +43,7 @@ export function TourOverlay() {
 
   return (
     <div className="fixed inset-0 z-[180] pointer-events-none">
-      <div className="absolute inset-0 bg-black/50 pointer-events-auto" onClick={skip} />
+      <div className="absolute inset-0 overlay-backdrop pointer-events-auto" onClick={skip} />
       {rect && (
         <div
           className="absolute border-2 border-accent rounded-lg pointer-events-none"
@@ -52,12 +52,12 @@ export function TourOverlay() {
             top: rect.y - 4,
             width: rect.w + 8,
             height: rect.h + 8,
-            boxShadow: "0 0 0 9999px rgba(0,0,0,0.4)",
+            boxShadow: "0 0 0 9999px color-mix(in srgb, var(--color-bg) 40%, transparent)",
           }}
         />
       )}
       <div
-        className={`absolute pointer-events-auto max-w-sm glass border border-border rounded-xl shadow-modal p-4 animate-scale-in ${
+        className={`absolute pointer-events-auto max-w-sm bg-surface-1 border border-border rounded-xl shadow-modal p-4 animate-scale-in ${
           rect ? "" : "left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
         }`}
         style={

@@ -15,6 +15,7 @@ import { EmptyState } from "../components/ui/EmptyState";
 import { Modal } from "../components/ui/Modal";
 import { TextArea, TextInput } from "../components/ui/Form";
 import { ConfirmDialog } from "../components/ui/ConfirmDialog";
+import { RouteShell } from "../components/ui/RouteShell";
 import { diffLines, diffStats } from "../lib/diff";
 import { escapeThinkTags } from "../components/chat/MessageRow";
 import { toast } from "../stores/toasts";
@@ -40,66 +41,51 @@ export function DocumentsRoute() {
   const [pendingDiff, setPendingDiff] = useState<{ original: string; proposed: string; instruction: string } | null>(null);
   const [selection, setSelection] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<Tab | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [savingAll, setSavingAll] = useState(false);
+  const [externalChange, setExternalChange] = useState<{ id: string; content: string } | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const refresh = useCallback(async () => {
-    const d = await api.listDocuments();
-    setTabs((prevTabs) => {
-      // Keep open tabs in sync with the DB
-      const known = new Map(d.map((x) => [x.id, x]));
-      const next: Tab[] = [];
-      for (const t of prevTabs) {
-        if (!t.diskPath) {
-          // DB-backed tab — refresh from server
-          const fresh = known.get(t.id);
-          if (fresh) {
-            if (!t.dirty) {
-              next.push({ ...t, content: fresh.content, title: fresh.title, savedToDb: true });
-            } else {
+    setLoading(true);
+    setError(null);
+    try {
+      const d = await api.listDocuments();
+      setTabs((prevTabs) => {
+        // Keep open tabs in sync with the DB without overwriting drafts.
+        const known = new Map(d.map((x) => [x.id, x]));
+        const next: Tab[] = [];
+        for (const t of prevTabs) {
+          if (!t.diskPath) {
+            const fresh = known.get(t.id);
+            if (fresh) {
+              next.push(t.dirty ? t : { ...t, content: fresh.content, title: fresh.title, savedToDb: true });
+              known.delete(t.id);
+            } else if (t.dirty) {
               next.push(t);
             }
-            known.delete(t.id);
-          } else if (!t.dirty) {
-            // Tab was deleted from DB, drop it
-            continue;
           } else {
             next.push(t);
           }
-        } else {
-          next.push(t);
         }
-      }
-      // Add new docs from DB that aren't open
-      for (const [id, doc] of known) {
-        next.push({
-          id,
-          title: doc.title,
-          content: doc.content,
-          dirty: false,
-          diskPath: null,
-          savedToDb: true,
-        });
-      }
-      return next;
-    });
+        for (const [id, doc] of known) {
+          next.push({ id, title: doc.title, content: doc.content, dirty: false, diskPath: null, savedToDb: true });
+        }
+        return next;
+      });
+      setActiveId((current) => current ?? d[0]?.id ?? null);
+    } catch (e) {
+      setError(String(e));
+      toast.error(String(e), "Documents could not be loaded");
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => {
-    (async () => {
-      const d = await api.listDocuments();
-      if (d.length > 0) {
-        setTabs(d.map((doc) => ({
-          id: doc.id,
-          title: doc.title,
-          content: doc.content,
-          dirty: false,
-          diskPath: null,
-          savedToDb: true,
-        })));
-        setActiveId(d[0].id);
-      }
-    })();
-  }, []);
+    void refresh();
+  }, [refresh]);
 
   const active = tabs.find((t) => t.id === activeId);
 
@@ -108,13 +94,20 @@ export function DocumentsRoute() {
       const id = await api.upsertDocument({ title: "Untitled", content: "", kind: "markdown" });
       await refresh();
       setActiveId(id);
-    } catch (e) { toast.error(String(e)); }
+    } catch (e) {
+      setError(String(e));
+      toast.error(String(e), "Document could not be created");
+    }
   }, [refresh]);
 
   const updateActive = (patch: Partial<Tab>) => {
     if (!activeId) return;
     setTabs((prev) =>
-      prev.map((t) => (t.id === activeId ? { ...t, ...patch, dirty: !patch.savedToDb ? true : t.dirty } : t))
+      prev.map((t) => {
+        if (t.id !== activeId) return t;
+        const next = { ...t, ...patch };
+        return { ...next, dirty: patch.dirty ?? (!patch.savedToDb ? true : t.dirty) };
+      })
     );
   };
 
@@ -133,12 +126,16 @@ export function DocumentsRoute() {
         toast.success("Saved");
       }
     } catch (e) {
+      setError(String(e));
       toast.error(String(e));
     }
   }, [tabs, activeId]);
 
   const saveAll = useCallback(async () => {
     const dirty = tabs.filter((t) => t.dirty);
+    const savedIds: string[] = [];
+    const failures: string[] = [];
+    setSavingAll(true);
     for (const t of dirty) {
       try {
         if (t.diskPath) {
@@ -147,20 +144,36 @@ export function DocumentsRoute() {
         } else {
           await api.upsertDocument({ id: t.id, title: t.title, content: t.content, kind: "markdown" });
         }
-      } catch (e) { console.error(e); }
+        savedIds.push(t.id);
+      } catch (e) {
+        failures.push(`${t.title || "Untitled"}: ${String(e)}`);
+      }
     }
-    setTabs((prev) => prev.map((t) => ({ ...t, dirty: false, savedToDb: true })));
+    setTabs((prev) => prev.map((t) => savedIds.includes(t.id) ? { ...t, dirty: false, savedToDb: true } : t));
     await refresh();
-    toast.success(`Saved ${dirty.length} document(s)`);
+    setSavingAll(false);
+    if (failures.length > 0) {
+      setError(failures.join("\n"));
+      toast.error(`${failures.length} document(s) could not be saved`);
+    } else {
+      toast.success(`Saved ${dirty.length} document(s)`);
+    }
   }, [tabs, refresh]);
 
   const performDelete = async (t: Tab) => {
     if (!t.diskPath) {
-      try { await api.deleteDocument(t.id); } catch (e) { console.error(e); }
+      try {
+        await api.deleteDocument(t.id);
+      } catch (e) {
+        setError(String(e));
+        toast.error(String(e), "Document could not be deleted");
+        return false;
+      }
     }
     setTabs((prev) => prev.filter((x) => x.id !== t.id));
     if (activeId === t.id) setActiveId(null);
     await refresh();
+    return true;
   };
 
   const remove = async (id: string) => {
@@ -202,7 +215,10 @@ export function DocumentsRoute() {
         ];
       });
       setActiveId(id);
-    } catch (e) { toast.error(String(e)); }
+    } catch (e) {
+      setError(String(e));
+      toast.error(String(e), "File could not be opened");
+    }
   };
 
   const saveToDisk = async () => {
@@ -212,8 +228,45 @@ export function DocumentsRoute() {
       await writeTextFile(active.diskPath, active.content);
       setTabs((prev) => prev.map((t) => (t.id === active.id ? { ...t, dirty: false, savedToDb: true } : t)));
       toast.success("Saved to disk");
-    } catch (e) { toast.error(String(e)); }
+    } catch (e) {
+      setError(String(e));
+      toast.error(String(e), "File could not be saved");
+    }
   };
+
+  useEffect(() => {
+    if (!active?.diskPath) return;
+    let cancelled = false;
+    const checkExternalChange = async () => {
+      try {
+        const { readTextFile } = await import("@tauri-apps/plugin-fs");
+        const content = await readTextFile(active.diskPath!);
+        if (cancelled || content === active.content) return;
+        if (active.dirty) {
+          setExternalChange({ id: active.id, content });
+        } else {
+          setTabs((prev) => prev.map((tab) => tab.id === active.id ? { ...tab, content, savedToDb: true } : tab));
+        }
+      } catch {
+        // File watching is best effort; explicit save reports write errors.
+      }
+    };
+    const timer = setInterval(() => { void checkExternalChange(); }, 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [active?.id, active?.diskPath, active?.content, active?.dirty]);
+
+  useEffect(() => {
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!tabs.some((tab) => tab.dirty)) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [tabs]);
 
   const exportDoc = async () => {
     if (!active) return;
@@ -238,7 +291,8 @@ export function DocumentsRoute() {
       setPendingDiff({ original: active.content, proposed, instruction: aiInstruction });
       setShowAiEdit(false);
     } catch (e) {
-      toast.error(String(e));
+      setError(String(e));
+      toast.error(String(e), "AI edit failed");
     }
     setAiBusy(false);
   };
@@ -300,43 +354,77 @@ export function DocumentsRoute() {
     return () => clearTimeout(timer);
   }, [active?.content, active?.dirty, active?.diskPath, active?.id, save]);
 
+  if (loading && tabs.length === 0) {
+    return (
+      <RouteShell title="Documents" description="Edit Markdown documents locally and safely.">
+        <div role="status" className="flex h-full items-center justify-center text-sm text-text-muted">Loading documents…</div>
+      </RouteShell>
+    );
+  }
+
   if (tabs.length === 0) {
     return (
-      <div className="flex-1 flex h-full">
-        <aside className="w-60 bg-surface-1 border-r border-border flex flex-col shrink-0">
-          <div className="p-3 border-b border-border flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-text">Documents</h2>
-            <Button size="xs" variant="primary" onClick={createNew} icon={<Plus size={12} />}>New</Button>
-          </div>
-          <div className="flex-1 flex items-center justify-center text-xs text-text-subtle p-4 text-center">
-            No documents yet
-          </div>
-        </aside>
-        <div className="flex-1 flex flex-col min-w-0">
+      <RouteShell
+        title="Documents"
+        description="Edit Markdown documents locally and safely."
+        contentClassName="overflow-hidden"
+        actions={
+          <>
+            <Button size="sm" variant="primary" onClick={() => void createNew()} icon={<Plus size={12} />}>New</Button>
+            <Button size="sm" variant="secondary" onClick={() => void openFromDisk()} icon={<Upload size={12} />}>Open from disk</Button>
+          </>
+        }
+      >
+        <div className="h-full flex flex-col items-center justify-center p-4">
+          {error && (
+            <div role="alert" className="mb-4 rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
+              {error}
+              <button type="button" className="ml-2 underline" onClick={() => void refresh()}>Retry</button>
+            </div>
+          )}
           <EmptyState
             icon={<FileText size={32} />}
             title="No document open"
             description="Create a new document or open one from disk."
-            action={
-              <div className="flex gap-2">
-                <Button onClick={createNew} variant="primary" icon={<Plus size={14} />}>New</Button>
-                <Button onClick={openFromDisk} variant="secondary" icon={<Upload size={14} />}>Open from disk</Button>
-              </div>
-            }
           />
         </div>
-      </div>
+      </RouteShell>
     );
   }
 
   return (
-    <div className="flex-1 flex flex-col h-full min-h-0">
+    <RouteShell
+      title="Documents"
+      description="Edit Markdown documents locally and safely."
+      contentClassName="overflow-hidden"
+      actions={
+        <>
+          <Button size="sm" variant="primary" onClick={() => void createNew()} icon={<Plus size={12} />}>New</Button>
+          <Button size="sm" variant="secondary" onClick={() => void openFromDisk()} icon={<Upload size={12} />}>Open from disk</Button>
+          {tabs.some((t) => t.dirty) && (
+            <Button size="sm" variant="ghost" onClick={() => void saveAll()} loading={savingAll} icon={<Save size={11} />}>
+              Save all
+            </Button>
+          )}
+        </>
+      }
+    >
+    <div className="flex flex-col h-full min-h-0">
       {/* Tab bar */}
-      <div className="flex items-center gap-1 px-2 h-10 border-b border-border bg-surface-1/40 backdrop-blur overflow-x-auto">
+      <div role="tablist" aria-label="Open documents" className="flex items-center gap-1 px-2 h-10 border-b border-border bg-surface-1 overflow-x-auto">
         {tabs.map((t) => (
-          <button
+          <div
             key={t.id}
+            role="tab"
+            aria-selected={t.id === activeId}
+            tabIndex={t.id === activeId ? 0 : -1}
             onClick={() => setActiveId(t.id)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                setActiveId(t.id);
+              }
+            }}
             className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-t-md border-b-2 transition-colors shrink-0 ${
               t.id === activeId
                 ? "bg-surface-2 text-text border-b-accent"
@@ -346,50 +434,21 @@ export function DocumentsRoute() {
             <FileText size={11} className="text-text-subtle shrink-0" />
             <span className="truncate max-w-[140px]">{t.title || "Untitled"}</span>
             {t.dirty && <span className="w-1.5 h-1.5 rounded-full bg-warn" />}
-            {!t.diskPath && (
-              <span
+            <button
+                type="button"
                 onClick={(e) => { e.stopPropagation(); remove(t.id); }}
-                className="text-text-subtle hover:text-error ml-1 px-0.5"
-                title="Close"
+                className="text-text-subtle hover:text-error ml-1 px-0.5 rounded"
+                aria-label={`Close ${t.title || "Untitled"}`}
               >
                 ×
-              </span>
-            )}
-            {t.diskPath && (
-              <span
-                onClick={(e) => { e.stopPropagation(); remove(t.id); }}
-                className="text-text-subtle hover:text-error ml-1 px-0.5"
-                title="Close (unsaved will be lost)"
-              >
-                ×
-              </span>
-            )}
-          </button>
+              </button>
+          </div>
         ))}
-        <button
-          onClick={createNew}
-          className="text-text-subtle hover:text-text p-1.5 rounded-md hover:bg-surface-2 shrink-0"
-          title="New document"
-        >
-          <Plus size={12} />
-        </button>
-        <button
-          onClick={openFromDisk}
-          className="text-text-subtle hover:text-text p-1.5 rounded-md hover:bg-surface-2 shrink-0"
-          title="Open from disk"
-        >
-          <Upload size={12} />
-        </button>
         <div className="flex-1" />
-        {tabs.some((t) => t.dirty) && (
-          <Button size="xs" variant="ghost" onClick={saveAll} icon={<Save size={11} />}>
-            Save all
-          </Button>
-        )}
       </div>
       {active && (
         <div className="flex-1 flex flex-col min-h-0">
-          <div className="flex items-center gap-2 px-4 h-10 border-b border-border bg-surface-1/40 backdrop-blur">
+          <div className="flex items-center gap-2 px-4 h-10 border-b border-border bg-surface-1">
             <input
               value={active.title}
               onChange={(e) => updateActive({ title: e.target.value, savedToDb: false })}
@@ -399,6 +458,7 @@ export function DocumentsRoute() {
             {active.diskPath && (
               <span className="text-[10px] text-text-subtle font-mono truncate max-w-[280px]">{active.diskPath}</span>
             )}
+            <span className="text-[10px] text-text-subtle">{active.diskPath ? "Disk file" : "DB-backed"}</span>
             {active.dirty && <span className="text-[10px] text-warn">● unsaved</span>}
             <span className="text-[10px] text-text-subtle tabular-nums">
               {active.content.length} chars · {active.content.split(/\s+/).filter(Boolean).length} words
@@ -464,8 +524,23 @@ export function DocumentsRoute() {
                   </button>
                 </div>
               )}
-            </Dropdown>
-          </div>
+             </Dropdown>
+           </div>
+          {error && (
+            <div role="alert" className="px-4 py-1.5 border-b border-error/30 bg-error/10 text-xs text-error flex items-center justify-between gap-2">
+              <span className="whitespace-pre-wrap">{error}</span>
+              <button type="button" className="underline shrink-0" onClick={() => void refresh()}>Retry</button>
+            </div>
+          )}
+          {externalChange?.id === active.id && (
+            <div role="alert" className="px-4 py-1.5 border-b border-warn/30 bg-warn/10 text-xs text-warn flex items-center justify-between gap-2">
+              <span>The disk file changed while you had unsaved edits.</span>
+              <span className="flex gap-2 shrink-0">
+                <button type="button" className="underline" onClick={() => { updateActive({ content: externalChange.content, savedToDb: true, dirty: false }); setExternalChange(null); }}>Reload disk</button>
+                <button type="button" className="underline" onClick={() => setExternalChange(null)}>Keep edits</button>
+              </span>
+            </div>
+          )}
           {showPreview ? (
             <div className="flex-1 overflow-y-auto p-6 prose prose-invert prose-sm max-w-3xl mx-auto w-full">
               <MarkdownPreview content={active.content} />
@@ -545,6 +620,7 @@ export function DocumentsRoute() {
         confirmVariant="danger"
       />
     </div>
+    </RouteShell>
   );
 }
 

@@ -163,6 +163,29 @@ describe("api", () => {
     });
   });
 
+  it("normalizes workspace inputs to Rust camelCase contracts", async () => {
+    await api.upsertNote({
+      body: "body",
+      source_session_id: "session-1",
+      source_message_id: "message-1",
+    });
+    expect(mockedInvoke).toHaveBeenCalledWith("upsert_note", {
+      note: expect.objectContaining({ sourceSessionId: "session-1", sourceMessageId: "message-1" }),
+    });
+
+    mockedInvoke.mockClear();
+    await api.upsertTask({
+      title: "task",
+      body: "details",
+      due_at: "2026-08-10",
+      priority: 2,
+      session_id: "session-1",
+    });
+    expect(mockedInvoke).toHaveBeenCalledWith("upsert_task", {
+      task: expect.objectContaining({ dueAt: "2026-08-10", priority: 2, sessionId: "session-1" }),
+    });
+  });
+
   describe("edge cases", () => {
     it("rejects when invoke rejects", async () => {
       mockedInvoke.mockRejectedValueOnce(new Error("backend error") as never);

@@ -88,10 +88,7 @@ pub fn add_attachment(
 }
 
 #[tauri::command]
-pub fn get_attachment_data(
-    pool: State<'_, Arc<DbPool>>,
-    id: String,
-) -> Result<String, String> {
+pub fn get_attachment_data(pool: State<'_, Arc<DbPool>>, id: String) -> Result<String, String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
     let blob_path: Option<String> = conn
         .query_row(
@@ -112,7 +109,11 @@ pub fn get_attachment_data(
 pub fn delete_attachment(pool: State<'_, Arc<DbPool>>, id: String) -> Result<(), String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
     let blob_path: Option<String> = conn
-        .query_row("SELECT blob_path FROM attachments WHERE id = ?1", params![id], |r| r.get(0))
+        .query_row(
+            "SELECT blob_path FROM attachments WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
         .ok();
     conn.execute("DELETE FROM attachments WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
@@ -148,7 +149,8 @@ fn image_dimensions(data: &[u8]) -> Option<(Option<i64>, Option<i64>)> {
             }
             let marker = data[i];
             i += 1;
-            if (0xc0..=0xcf).contains(&marker) && marker != 0xc4 && marker != 0xc8 && marker != 0xcc {
+            if (0xc0..=0xcf).contains(&marker) && marker != 0xc4 && marker != 0xc8 && marker != 0xcc
+            {
                 if i + 5 < data.len() {
                     let h = u16::from_be_bytes([data[i + 3], data[i + 4]]) as i64;
                     let w = u16::from_be_bytes([data[i + 5], data[i + 6]]) as i64;

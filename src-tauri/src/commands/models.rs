@@ -236,10 +236,10 @@ fn pull_event(
     name: &str,
     status: &str,
     digest: Option<String>,
-    total: u64,
-    completed: u64,
+    progress: (u64, u64),
     error: Option<String>,
 ) -> ModelPullEvent {
+    let (total, completed) = progress;
     ModelPullEvent {
         operation_id: operation_id.to_string(),
         provider_id: provider_id.to_string(),
@@ -316,8 +316,7 @@ pub async fn pull_model_for_provider(
                             &name_for_task,
                             &status,
                             progress.digest,
-                            total,
-                            completed,
+                            (total, completed),
                             None,
                         ),
                     );
@@ -337,8 +336,7 @@ pub async fn pull_model_for_provider(
                 &name_for_task,
                 "success",
                 None,
-                0,
-                0,
+                (0, 0),
                 None,
             ),
             Err(error) => pull_event(
@@ -347,8 +345,7 @@ pub async fn pull_model_for_provider(
                 &name_for_task,
                 "error",
                 None,
-                0,
-                0,
+                (0, 0),
                 Some(error),
             ),
         };
@@ -378,7 +375,7 @@ pub fn cancel_model_pull(app: AppHandle, operation_id: String) -> Result<(), Str
         handle.abort();
         let _ = app.emit(
             "model-pull-cancelled",
-            pull_event(&operation_id, "", "", "cancelled", None, 0, 0, None),
+            pull_event(&operation_id, "", "", "cancelled", None, (0, 0), None),
         );
     }
     Ok(())

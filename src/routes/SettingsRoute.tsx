@@ -3,9 +3,12 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useThemeStore } from "../stores/theme";
 import { useSettingsStore } from "../stores/settings";
 import { useShortcutsStore, comboDisplay } from "../stores/shortcuts";
+import { useTourStore } from "../stores/tour";
 import { api, Provider, SearchConfig } from "../lib/api";
+import { errorClass, recordLog } from "../lib/logger";
 import { ModelsSection as ProviderModelsSection } from "./settings/ModelsSection";
 import { Button } from "../components/ui/Button";
+import { RouteShell } from "../components/ui/RouteShell";
 import { Modal } from "../components/ui/Modal";
 import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { Switch, Tabs, TextInput, TextArea, Select, Badge } from "../components/ui/Form";
@@ -23,10 +26,11 @@ export function SettingsRoute() {
   }, [path]);
 
   return (
-    <div className="flex-1 flex h-full">
-      <aside className="w-48 sm:w-56 bg-surface-1 border-r border-border p-2 shrink-0">
+    <RouteShell title="Settings" description="Configure providers, models, search, themes, and shortcuts." contentClassName="overflow-hidden">
+    <div className="flex h-full min-h-0 flex-col sm:flex-row">
+      <aside className="w-full sm:w-56 bg-surface-1 border-b sm:border-b-0 sm:border-r border-border p-2 shrink-0">
         <h2 className="text-sm font-semibold text-text px-2 py-2">Settings</h2>
-        <nav className="flex flex-col gap-0.5">
+        <nav className="flex flex-row sm:flex-col gap-0.5 overflow-x-auto">
           <SettingsLink to="/settings/general" icon={<Info size={14} />} label="General" active={section === "general"} />
           <SettingsLink to="/settings/providers" icon={<KeyRound size={14} />} label="Providers" active={section === "providers"} />
           <SettingsLink to="/settings/models" icon={<Cpu size={14} />} label="Models" active={section === "models"} />
@@ -35,7 +39,7 @@ export function SettingsRoute() {
           <SettingsLink to="/settings/shortcuts" icon={<Keyboard size={14} />} label="Shortcuts" active={section === "shortcuts"} />
         </nav>
       </aside>
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 min-h-0 overflow-y-auto">
         <div className="max-w-2xl mx-auto p-4 sm:p-8">
           {section === "general" && <GeneralSection />}
           {section === "providers" && <ProvidersSection />}
@@ -46,6 +50,7 @@ export function SettingsRoute() {
         </div>
       </div>
     </div>
+    </RouteShell>
   );
 }
 
@@ -67,7 +72,7 @@ function SectionTitle({ title, description, action }: { title: string; descripti
   return (
     <div className="mb-6 flex items-start justify-between gap-4">
       <div>
-        <h1 className="text-xl font-semibold text-text">{title}</h1>
+        <h2 className="text-xl font-semibold text-text">{title}</h2>
         {description && <p className="text-sm text-text-muted mt-1">{description}</p>}
       </div>
       {action}
@@ -77,6 +82,7 @@ function SectionTitle({ title, description, action }: { title: string; descripti
 
 function GeneralSection() {
   const settings = useSettingsStore();
+  const restartTour = useTourStore((s) => s.restart);
   return (
     <div>
       <SectionTitle title="General" description="App-wide preferences." />
@@ -115,6 +121,13 @@ function GeneralSection() {
               onChange={(v) => settings.update("memoryAutoEvaluate", v)}
             />
           }
+        />
+      </Card>
+      <Card className="mt-4">
+        <SettingRow
+          label="Onboarding tour"
+          description="Replay the introduction and feature overview."
+          control={<Button size="xs" variant="secondary" onClick={restartTour}>Replay tour</Button>}
         />
       </Card>
     </div>
@@ -161,7 +174,9 @@ export function ProvidersSection() {
       setEditingProvider(null);
       setName(""); setApiKey(""); setProbeMsg(null);
       await refresh();
-      await api.refreshModels(providerId).catch(() => {});
+       await api.refreshModels(providerId).catch((error) => {
+         recordLog({ operation: "refresh_models", status: "failed", route: "/settings/providers", errorClass: errorClass(error) });
+       });
       toast.success(editingProvider ? "Provider updated" : "Provider added");
     } catch (e) { toast.error(String(e)); }
   };
@@ -273,7 +288,7 @@ export function ProvidersSection() {
         )}
       </Card>
       {adding && (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm animate-fade-in" onClick={() => setAdding(false)}>
+         <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 overlay-backdrop animate-fade-in" onClick={() => setAdding(false)}>
           <div className="bg-surface-1 border border-border rounded-2xl shadow-modal w-full max-w-md p-5 animate-scale-in" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
                <h3 className="text-base font-semibold text-text">{editingProvider ? "Edit provider" : "Add provider"}</h3>
@@ -337,18 +352,48 @@ function ModelsSection() {
   return <ProviderModelsSection />;
 }
 
-function SearchSection() {
+export function SearchSection() {
   const [cfg, setCfg] = useState<SearchConfig>({ provider: "duckduckgo", base_url: null, api_key: null, max_results: 5 });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testQuery, setTestQuery] = useState("Convo local-first AI");
+  const [testResults, setTestResults] = useState<Array<{ title: string; url: string; snippet: string }>>([]);
+  const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    api.getSearchConfig().then((c) => { if (c) setCfg(c); });
+    api.getSearchConfig().then((c) => { if (c) setCfg(c); }).catch((e) => setError(String(e))).finally(() => setLoading(false));
   }, []);
   const save = async () => {
-    await api.setSearchConfig(cfg);
-    toast.success("Saved");
+    setSaving(true);
+    setError(null);
+    try {
+      await api.setSearchConfig(cfg);
+      toast.success("Search settings saved");
+    } catch (e) {
+      setError(String(e));
+      toast.error(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+  const testSearch = async () => {
+    if (!testQuery.trim()) return;
+    setTesting(true);
+    setError(null);
+    try {
+      setTestResults(await api.webSearch(testQuery.trim(), cfg));
+    } catch (e) {
+      setError(String(e));
+      toast.error(String(e), "Search test failed");
+    } finally {
+      setTesting(false);
+    }
   };
   return (
     <div>
       <SectionTitle title="Web search" description="Convo can run web searches via SearXNG, DuckDuckGo, or Brave and cite results inline." />
+      {loading && <div className="text-sm text-text-muted mb-4">Loading search settings…</div>}
+      {error && <div role="alert" className="mb-4 rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">{error}</div>}
       <Card>
         <div className="space-y-3">
           <div>
@@ -368,7 +413,8 @@ function SearchSection() {
           {cfg.provider === "brave" && (
             <div>
               <label className="text-xs text-text-muted block mb-1">Brave API key</label>
-              <TextInput value={cfg.api_key ?? ""} onChange={(v) => setCfg({ ...cfg, api_key: v })} type="password" />
+              <TextInput value={cfg.api_key ?? ""} onChange={(v) => setCfg({ ...cfg, api_key: v })} type="password" placeholder={cfg.has_api_key ? "Leave blank to keep saved key" : "BSA..."} />
+              {cfg.has_api_key && !cfg.api_key && <p className="text-[10px] text-success mt-1">A key is saved in the OS keyring.</p>}
             </div>
           )}
           <div>
@@ -376,9 +422,26 @@ function SearchSection() {
             <Select value={String(cfg.max_results)} onChange={(v) => setCfg({ ...cfg, max_results: Number(v) })} options={["3","5","8","10"].map((v) => ({ value: v, label: v }))} />
           </div>
           <div className="flex justify-end pt-2">
-            <Button variant="primary" onClick={save}>Save</Button>
+            <Button variant="primary" onClick={save} loading={saving}>Save</Button>
           </div>
         </div>
+      </Card>
+      <Card className="mt-4">
+        <h2 className="text-sm font-medium text-text mb-2">Test search</h2>
+        <div className="flex gap-2">
+          <TextInput value={testQuery} onChange={setTestQuery} placeholder="Search query" />
+          <Button variant="secondary" onClick={() => void testSearch()} loading={testing}>Test</Button>
+        </div>
+        {testResults.length > 0 && (
+          <ul className="mt-3 space-y-2">
+            {testResults.slice(0, 3).map((result) => (
+              <li key={result.url} className="border-t border-border pt-2">
+                <a href={result.url} target="_blank" rel="noreferrer" className="text-xs text-accent hover:underline">{result.title}</a>
+                <p className="text-[10px] text-text-muted mt-0.5">{result.snippet}</p>
+              </li>
+            ))}
+          </ul>
+        )}
       </Card>
     </div>
   );
@@ -394,7 +457,7 @@ function ThemeSection() {
 
   return (
     <div>
-      <SectionTitle title="Theme" description="Switch between built-in themes or create your own." />
+      <SectionTitle title="Theme" description="Choose a built-in theme and color mode." />
       <Card className="mb-4">
         <SettingRow
           label="Mode"
@@ -414,7 +477,7 @@ function ThemeSection() {
           <button
             key={t.id}
             onClick={() => { setActive(t.id); init(); window.dispatchEvent(new CustomEvent("convo:theme-changed")); }}
-            className={`text-left p-3 rounded-xl border transition-all ${
+             className={`text-left p-3 rounded-xl border transition-colors ${
               t.id === activeThemeId ? "border-accent bg-accent/10" : "border-border bg-surface-1 hover:border-border-strong"
             }`}
           >
@@ -437,7 +500,7 @@ function ThemeSwatch({ tokensJson }: { tokensJson: string }) {
   return (
     <div className="flex gap-0.5">
       {["color-bg", "color-surface-2", "color-accent", "color-text"].map((k) => (
-        <span key={k} className="w-3 h-3 rounded-sm border border-border" style={{ background: tokens[k] || "#000" }} />
+               <span key={k} className="w-3 h-3 rounded-sm border border-border" style={{ background: tokens[k] || "var(--color-bg)" }} />
       ))}
     </div>
   );
@@ -469,7 +532,9 @@ function ShortcutsSection() {
       if (key === "arrowright") key = "right";
       if (key === "control" || key === "meta" || key === "alt" || key === "shift") return;
       parts.push(key);
-      setCombo(recording, parts.join("+"));
+       if (!setCombo(recording, parts.join("+"))) {
+         toast.error("That shortcut is already in use", "Shortcut conflict");
+       }
       setRecording(null);
     };
     document.addEventListener("keydown", onKey);

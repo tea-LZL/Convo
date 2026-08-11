@@ -33,7 +33,7 @@ export function ChatContextMenu({
   return (
     <div
       ref={contextMenuRef}
-      className="fixed z-[100] min-w-[180px] glass border border-border rounded-lg shadow-modal py-1 animate-scale-in"
+      className="fixed z-[100] min-w-[180px] bg-surface-1 border border-border rounded-lg shadow-modal py-1 animate-scale-in"
       style={{ left: contextMenu.x, top: contextMenu.y }}
       onClick={() => setContextMenu(null)}
     >

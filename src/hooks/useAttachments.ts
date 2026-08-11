@@ -7,6 +7,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ChatMessage } from "../lib/api";
+import { errorClass, recordLog } from "../lib/logger";
 import { listen } from "@tauri-apps/api/event";
 
 export interface PendingAttachment {
@@ -52,7 +53,9 @@ function readAsBase64(file: File): Promise<string> {
 }
 
 function deleteAttachmentQuietly(id: string): void {
-  void Promise.resolve(api.deleteAttachment(id)).catch(() => {});
+  void Promise.resolve(api.deleteAttachment(id)).catch((error) => {
+    recordLog({ operation: "delete_attachment_cleanup", status: "failed", errorClass: errorClass(error) });
+  });
 }
 
 export interface UseAttachments {

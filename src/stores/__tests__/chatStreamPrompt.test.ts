@@ -52,6 +52,7 @@ describe("sendMessage persistence", () => {
     expect(call).toBeDefined();
     const system = (call?.[1] as { args: { system: string } }).args.system;
     expect(system).toContain("You are a helpful, concise assistant.");
+    expect(system).toContain("<memory-context>");
     expect(system).toContain("User's nickname");
     expect(system).toContain("Kevin");
   });

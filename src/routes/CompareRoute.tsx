@@ -10,6 +10,7 @@ import { Dropdown } from "../components/ui/Dropdown";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Modal } from "../components/ui/Modal";
 import { ErrorBoundary } from "../components/ui/ErrorBoundary";
+import { RouteShell } from "../components/ui/RouteShell";
 import { MarkdownRenderer } from "../components/chat/MarkdownRenderer";
 import { escapeThinkTags } from "../components/chat/MessageRow";
 import { GitCompareArrows, Play, Square, Trophy, Eye, EyeOff, History, Save, ExternalLink, Sparkles } from "lucide-react";
@@ -17,6 +18,7 @@ import { diffLines, diffStats } from "../lib/diff";
 import { listen } from "@tauri-apps/api/event";
 import { useSessionsStore } from "../stores/sessions";
 import { toast } from "../stores/toasts";
+import { errorClass, recordLog } from "../lib/logger";
 
 interface ColumnState {
   startedAt: number;
@@ -35,6 +37,7 @@ export function CompareRoute() {
   const [prompt, setPrompt] = useState("");
   const [selected, setSelected] = useState<Array<{ provider_id: string; model: string }>>([]);
   const [runId, setRunId] = useState<string | null>(null);
+  const [running, setRunning] = useState(false);
   const [columns, setColumns] = useState<ColumnState[]>([]);
   const [blind, setBlind] = useState(true);
   const [winner, setWinner] = useState<number | null>(null);
@@ -52,18 +55,23 @@ export function CompareRoute() {
         if (p.kind === "ollama") {
           api.listModelsForProvider(p.id).then((ms) => {
             setModelsByProvider((prev) => ({ ...prev, [p.id]: ms.map((m) => m.name) }));
-          }).catch(() => {});
+          }).catch((error) => {
+            recordLog({ operation: "list_compare_models", status: "failed", route: "/compare", providerKind: p.kind, errorClass: errorClass(error) });
+          });
         } else if (p.base_url) {
           api.probeProvider(p.kind, p.base_url, p.api_key ?? undefined).then((r) => {
             if (r.ok) setModelsByProvider((prev) => ({ ...prev, [p.id]: r.models.map((m) => m.name) }));
-          }).catch(() => {});
+          }).catch((error) => {
+            recordLog({ operation: "probe_compare_provider", status: "failed", route: "/compare", providerKind: p.kind, errorClass: errorClass(error) });
+          });
         }
       });
-    }).catch(console.error);
+    }).catch((e) => toast.error(String(e), "Compare providers could not be loaded"));
   }, []);
 
   useEffect(() => {
     if (!runId) return;
+    let active = true;
     const unlisteners: Array<() => void> = [];
     (async () => {
       const u1 = await listen<{ run_id: string; index: number; content: string; full_content: string }>("compare-chunk", (e) => {
@@ -125,9 +133,16 @@ export function CompareRoute() {
           return next;
         });
       });
-      unlisteners.push(u1, u2, u3, u4, u5);
-    })();
-    return () => unlisteners.forEach((u) => u());
+      const listeners = [u1, u2, u3, u4, u5];
+      if (!active) listeners.forEach((unlisten) => unlisten());
+      else unlisteners.push(...listeners);
+    })().catch((e) => {
+      if (active) toast.error(String(e), "Compare event listeners failed");
+    });
+    return () => {
+      active = false;
+      unlisteners.forEach((unlisten) => unlisten());
+    };
   }, [runId]);
 
   const addModel = () => {
@@ -152,6 +167,7 @@ export function CompareRoute() {
       selected.map(() => ({ startedAt: Date.now(), content: "", thinking: "", done: false }))
     );
     setRunId(null);
+    setRunning(true);
     setWinner(null);
     setRevealed(false);
     try {
@@ -159,30 +175,44 @@ export function CompareRoute() {
       const id = await api.runCompare(cfg);
       setRunId(id);
     } catch (e) {
-      console.error("compare start:", e);
+      setRunning(false);
       toast.error(String(e));
     }
   };
 
   const cancelAll = async () => {
     if (!runId) return;
-    try { await api.cancelCompare(runId); } catch (e) { console.error(e); }
-    setRunId(null);
+    try {
+      await api.cancelCompare(runId);
+      setColumns((prev) => prev.map((column) => ({ ...column, done: true, cancelled: true })));
+      setRunning(false);
+    } catch (e) {
+      toast.error(String(e), "Compare could not be stopped");
+    }
   };
 
   const cancelOne = async (i: number) => {
     if (!runId) return;
-    try { await api.cancelCompareColumn(runId, i); } catch (e) { console.error(e); }
+    try {
+      await api.cancelCompareColumn(runId, i);
+      setColumns((prev) => prev.map((column, index) => index === i ? { ...column, done: true, cancelled: true } : column));
+    } catch (e) {
+      toast.error(String(e), "Column could not be stopped");
+    }
   };
 
   const allDone = columns.length > 0 && columns.every((c) => c.done);
   const anyStreaming = columns.some((c) => !c.done);
 
+  useEffect(() => {
+    if (allDone) setRunning(false);
+  }, [allDone]);
+
   const pickWinner = async (i: number) => {
     setWinner(i);
     setRevealed(true);
     if (runId) {
-      try { await api.saveCompareWinner(runId, i); } catch (e) { console.error(e); }
+      try { await api.saveCompareWinner(runId, i); } catch (e) { toast.error(String(e), "Winner could not be saved"); }
     }
   };
 
@@ -203,7 +233,7 @@ export function CompareRoute() {
       const list = await api.listCompareRuns(50);
       setHistory(list);
       setShowHistory(true);
-    } catch (e) { toast.error(String(e)); }
+      } catch (e) { toast.error(String(e)); }
   };
 
   const loadRun = async (id: string) => {
@@ -211,51 +241,60 @@ export function CompareRoute() {
       const r = await api.getCompareRun(id);
       setShowHistory(false);
       setPrompt(r.prompt);
-      try {
-        const cfg = JSON.parse(r.config_json);
-        setSelected(cfg.models || []);
-      } catch { setSelected([]); }
       // Replay results into columns
       let results: CompareRunResult[] = [];
+      let configModels: Array<{ provider_id: string; model: string }> = [];
       if (r.results_json) {
         try { results = JSON.parse(r.results_json); } catch {}
       }
+      try {
+        const cfg = JSON.parse(r.config_json);
+        configModels = cfg.models || [];
+        setSelected(configModels);
+      } catch {
+        setSelected([]);
+      }
       setColumns(
-        (results.length ? results : Array(4).fill({ content: "", thinking: "" })).map((res) => ({
+        (results.length ? results : configModels.map((): CompareRunResult => ({ content: "", thinking: "" }))).map((res) => ({
           startedAt: Date.now(),
           content: res.content || "",
           thinking: res.thinking || "",
           done: true,
-          cancelled: res.cancelled,
-          error: res.error,
+          cancelled: res.cancelled ?? undefined,
+          error: res.error ?? undefined,
           promptTokens: res.prompt_tokens,
           outputTokens: res.output_tokens,
         }))
       );
       setRunId(r.id);
+      setRunning(false);
       setWinner(r.winner_index);
       setRevealed(r.winner_index !== null);
     } catch (e) { toast.error(String(e)); }
   };
 
   return (
-    <div className="flex-1 flex flex-col h-full">
-      <div className="border-b border-border bg-surface-1/40 backdrop-blur px-4 py-3">
-        <div className="flex items-center gap-2 mb-2">
-          <GitCompareArrows size={16} className="text-accent" />
-          <h1 className="text-sm font-semibold text-text">Compare models</h1>
-          <div className="flex-1" />
-          <Button size="xs" variant="ghost" icon={<History size={12} />} onClick={loadHistory}>
+    <RouteShell
+      title="Compare models"
+      description="Run the same prompt against two to four models."
+      actions={
+        <>
+          <Button size="xs" variant="ghost" icon={<History size={12} />} onClick={() => void loadHistory()}>
             History
           </Button>
           <button
+            type="button"
+            aria-pressed={!blind}
             onClick={() => setBlind(!blind)}
             className="text-xs text-text-muted hover:text-text flex items-center gap-1 px-2 py-1 rounded-md hover:bg-surface-2"
           >
             {blind ? <EyeOff size={12} /> : <Eye size={12} />}
             {blind ? "Blind" : "Labeled"}
           </button>
-        </div>
+        </>
+      }
+    >
+      <div className="border-b border-border bg-surface-1 px-4 py-3">
         <textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
@@ -316,7 +355,7 @@ export function CompareRoute() {
                   </div>
                 )}
               </Dropdown>
-              <button onClick={() => removeModel(i)} className="text-text-subtle hover:text-error ml-1 px-1" title="Remove">×</button>
+               <button type="button" onClick={() => removeModel(i)} className="text-text-subtle hover:text-error ml-1 px-1" aria-label={`Remove model ${i + 1}`}>×</button>
             </div>
           ))}
           {selected.length < 4 && (
@@ -325,7 +364,7 @@ export function CompareRoute() {
             </Button>
           )}
           <div className="flex-1" />
-          {runId ? (
+          {running ? (
             <Button size="sm" variant="danger" onClick={cancelAll} icon={<Square size={12} fill="currentColor" />}>
               Stop all
             </Button>
@@ -336,7 +375,7 @@ export function CompareRoute() {
           )}
         </div>
       </div>
-      <div className="flex-1 overflow-y-auto p-4">
+      <div className="p-4">
         {columns.length === 0 ? (
           <EmptyState
             icon={<GitCompareArrows size={32} />}
@@ -345,7 +384,7 @@ export function CompareRoute() {
             action={<Button variant="primary" onClick={loadHistory} icon={<History size={14} />}>View past runs</Button>}
           />
         ) : (
-          <div className={`grid gap-3 ${columns.length === 2 ? "grid-cols-2" : columns.length === 3 ? "grid-cols-3" : "grid-cols-2 lg:grid-cols-4"}`}>
+          <div className={`grid gap-3 ${columns.length === 2 ? "grid-cols-1 sm:grid-cols-2" : columns.length === 3 ? "grid-cols-1 sm:grid-cols-3" : "grid-cols-1 sm:grid-cols-2 lg:grid-cols-4"}`}>
             {columns.map((col, i) => {
               const elapsed = Date.now() - col.startedAt;
               const label = blind && !revealed ? String.fromCharCode(65 + i) : selected[i]?.model || "—";
@@ -364,9 +403,11 @@ export function CompareRoute() {
                         <>
                           <span className="text-[10px] text-accent tabular-nums">{(elapsed / 1000).toFixed(1)}s</span>
                           <button
+                            type="button"
                             onClick={() => cancelOne(i)}
                             className="text-[10px] text-error/80 hover:text-error px-1"
-                            title="Stop this column"
+                             title="Stop this column"
+                             aria-label={`Stop model ${i + 1}`}
                           >
                             <Square size={9} fill="currentColor" />
                           </button>
@@ -444,7 +485,7 @@ export function CompareRoute() {
           onClose={() => setShowDiff(false)}
         />
       )}
-    </div>
+    </RouteShell>
   );
 }
 

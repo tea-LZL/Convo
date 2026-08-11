@@ -2,10 +2,11 @@
  * Diagnostics page — health, DB stats, provider status, recent log lines.
  */
 import { useEffect, useState } from "react";
-import { Activity, Database, Cpu, Folder, RefreshCw, CheckCircle2, AlertCircle, Wifi, WifiOff, Clock, Download, Upload } from "lucide-react";
+import { Database, Folder, RefreshCw, CheckCircle2, AlertCircle, Wifi, WifiOff, Clock, Download, Upload } from "lucide-react";
 import { api, DiagnosticsReport } from "../lib/api";
 import { Button } from "../components/ui/Button";
 import { ConfirmDialog } from "../components/ui/ConfirmDialog";
+import { RouteShell } from "../components/ui/RouteShell";
 import { toast } from "../stores/toasts";
 
 function formatBytes(n: number): string {
@@ -22,18 +23,22 @@ export function DiagnosticsRoute() {
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
   const [confirmImport, setConfirmImport] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const refresh = async (silent = false) => {
     if (!silent) setRefreshing(true);
+    setError(null);
     try {
       const r = await api.getDiagnostics();
       setReport(r);
       setLoading(false);
     } catch (e) {
-      console.error(e);
+      setError(String(e));
       toast.error(String(e));
+      setLoading(false);
+    } finally {
+      setRefreshing(false);
     }
-    setRefreshing(false);
   };
 
   useEffect(() => { refresh(); }, []);
@@ -51,8 +56,9 @@ export function DiagnosticsRoute() {
       toast.success(`Exported to ${finalPath}`);
     } catch (e) {
       toast.error(String(e));
+    } finally {
+      setExporting(false);
     }
-    setExporting(false);
   };
 
   const performImport = async () => {
@@ -70,41 +76,58 @@ export function DiagnosticsRoute() {
       toast.success(msg);
     } catch (e) {
       toast.error(String(e));
+    } finally {
+      setImporting(false);
     }
-    setImporting(false);
   };
 
-  if (loading || !report) {
+  if (loading) {
     return (
-      <div className="flex-1 flex items-center justify-center text-text-subtle">
-        Loading diagnostics…
-      </div>
+      <RouteShell title="Diagnostics" description="Health, database stats, provider reachability, and recent log lines.">
+        <div role="status" className="flex h-full items-center justify-center text-text-subtle">
+          Loading diagnostics…
+        </div>
+      </RouteShell>
+    );
+  }
+
+  if (error || !report) {
+    return (
+      <RouteShell
+        title="Diagnostics"
+        description="Health, database stats, provider reachability, and recent log lines."
+        actions={<Button size="sm" variant="secondary" onClick={() => void refresh()}>Retry</Button>}
+      >
+        <div role="alert" className="flex h-full flex-col items-center justify-center gap-3 text-text-muted">
+          <AlertCircle size={20} className="text-error" />
+          <div>Diagnostics could not be loaded</div>
+          <div className="text-xs text-error max-w-md text-center">{error}</div>
+        </div>
+      </RouteShell>
     );
   }
 
   const allOk = report.providers.every((p) => p.reachable !== false);
 
   return (
-    <div className="flex-1 overflow-y-auto">
-      <div className="max-w-4xl mx-auto p-8">
-        <div className="flex items-center gap-2 mb-2">
-          <Activity size={18} className="text-accent" />
-          <h1 className="text-xl font-semibold text-text">Diagnostics</h1>
-          <div className="flex-1" />
-          <Button size="sm" variant="secondary" onClick={() => refresh()} loading={refreshing} icon={<RefreshCw size={12} />}>
+    <RouteShell
+      title="Diagnostics"
+      description="Health, database stats, provider reachability, and recent log lines."
+      actions={
+        <>
+          <Button size="sm" variant="secondary" onClick={() => void refresh()} loading={refreshing} icon={<RefreshCw size={12} />}>
             Refresh
           </Button>
-          <Button size="sm" variant="secondary" onClick={exportBackup} loading={exporting} icon={<Download size={12} />}>
+          <Button size="sm" variant="secondary" onClick={() => void exportBackup()} loading={exporting} icon={<Download size={12} />}>
             Export backup
           </Button>
           <Button size="sm" variant="secondary" onClick={() => setConfirmImport(true)} loading={importing} icon={<Upload size={12} />}>
             Import backup
           </Button>
-        </div>
-        <p className="text-sm text-text-muted mb-6">
-          Health, database stats, provider reachability, and recent log lines.
-        </p>
-
+        </>
+      }
+    >
+      <div className="max-w-4xl mx-auto p-4 sm:p-8">
         <div className="space-y-4">
           <Section title="Status" icon={allOk ? <CheckCircle2 size={14} className="text-success" /> : <AlertCircle size={14} className="text-warn" />}>
             <div className="grid grid-cols-2 gap-3">
@@ -200,7 +223,7 @@ export function DiagnosticsRoute() {
         confirmLabel="Import"
         confirmVariant="danger"
       />
-    </div>
+    </RouteShell>
   );
 }
 

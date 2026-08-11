@@ -1,5 +1,7 @@
 # Plan — Polish non-Chat features for Convo v0.8
 
+> Status note (2026-08-09): this is a historical v0.8 backlog. Compare, Documents, Memory, and route-level tests have since received implementation work; use the release-readiness tracker for current verification status.
+
 Audited 2026-07-05. Three features (Compare, Documents, Memory) are wired end-to-end but have
 correctness bugs, missing polish, and zero tests. Below is a prioritized breakdown.
 

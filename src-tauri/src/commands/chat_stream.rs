@@ -84,8 +84,7 @@ fn persist_assistant(
     message_id: &str,
     content: &str,
     thinking: &str,
-    prompt_tokens: Option<u32>,
-    output_tokens: Option<u32>,
+    usage: (Option<u32>, Option<u32>),
     created_at: &str,
 ) {
     if content.is_empty() && thinking.is_empty() {
@@ -101,8 +100,8 @@ fn persist_assistant(
                 content: content.to_string(),
                 thinking: (!thinking.is_empty()).then(|| thinking.to_string()),
                 attachments_json: None,
-                prompt_tokens: prompt_tokens.map(|v| v as i64),
-                output_tokens: output_tokens.map(|v| v as i64),
+                prompt_tokens: usage.0.map(|v| v as i64),
+                output_tokens: usage.1.map(|v| v as i64),
                 created_at: Some(created_at.to_string()),
             },
         )
@@ -244,8 +243,7 @@ pub async fn chat_stream_v2(
                                     &assistant_message_id_for_events,
                                     &full_content,
                                     &full_thinking,
-                                    prompt_tokens,
-                                    output_tokens,
+                                    (prompt_tokens, output_tokens),
                                     &completed_at,
                                 );
                                 let _ = app_clone.emit(
@@ -295,11 +293,10 @@ pub async fn chat_stream_v2(
                                 &pool_clone,
                                 &session_id,
                                 &assistant_message_id_for_events,
-                                &full_content,
-                                &full_thinking,
-                                None,
-                                None,
-                                &completed_at,
+                                    &full_content,
+                                    &full_thinking,
+                                    (None, None),
+                                    &completed_at,
                             );
                             let _ = app_clone.emit(
                                 "chat-error",
@@ -342,8 +339,7 @@ pub async fn chat_stream_v2(
                 &assistant_message_id_for_events,
                 &content,
                 &full_thinking,
-                None,
-                None,
+                (None, None),
                 &completed_at,
             );
             let _ = app_clone.emit(
@@ -367,8 +363,7 @@ pub async fn chat_stream_v2(
                 &assistant_message_id_for_events,
                 &full_content,
                 &full_thinking,
-                None,
-                None,
+                (None, None),
                 &completed_at,
             );
             let _ = app_clone.emit(

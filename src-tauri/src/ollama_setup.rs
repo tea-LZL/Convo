@@ -391,7 +391,9 @@ pub async fn pull_model(app: AppHandle, name: String) -> Result<(), String> {
                             digest: chunk.digest.clone().unwrap_or_default(),
                             total: chunk.total.unwrap_or(0),
                             completed: chunk.completed.unwrap_or(0),
-                            percent: if let (Some(total), Some(completed)) = (chunk.total, chunk.completed) {
+                            percent: if let (Some(total), Some(completed)) =
+                                (chunk.total, chunk.completed)
+                            {
                                 if total > 0 {
                                     (completed as f64 / total as f64) * 100.0
                                 } else {
@@ -405,7 +407,11 @@ pub async fn pull_model(app: AppHandle, name: String) -> Result<(), String> {
                         let _ = app_clone.emit("pull-progress", &progress);
                     }
                     Err(e) => {
-                        let err = format!("Failed to parse: {} (line: {})", e, &line[..line.len().min(100)]);
+                        let err = format!(
+                            "Failed to parse: {} (line: {})",
+                            e,
+                            &line[..line.len().min(100)]
+                        );
                         let _ = app_clone.emit("pull-error", &err);
                         return;
                     }
@@ -448,7 +454,7 @@ pub async fn create_custom_model(
 ) -> Result<(), String> {
     let modelfile = format!("FROM {}\nPARAMETER num_ctx {}\n", base_model, num_ctx);
 
-    let safe_name = name.replace(':', "_").replace('/', "_").replace('\\', "_");
+    let safe_name = name.replace([':', '/', '\\'], "_");
     let modelfile_path = std::env::temp_dir().join(format!("convo_mf_{}.txt", safe_name));
 
     std::fs::write(&modelfile_path, &modelfile)

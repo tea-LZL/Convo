@@ -1,8 +1,10 @@
 use super::types::ChatRequest;
-use super::{ChatResponseChunk, ModelInfo, ProbeOutcome, Provider, ProviderError, ProviderResult};
+use super::{
+    ChatResponseChunk, ModelInfo, ProbeFuture, ProbeOutcome, Provider, ProviderError,
+    ProviderFuture, ProviderResult, ProviderStream,
+};
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use std::pin::Pin;
 use tokio::io::AsyncBufReadExt;
 use tokio_stream::wrappers::LinesStream;
 
@@ -10,18 +12,13 @@ use super::discovery::DiscoveredModel;
 
 pub struct OllamaProvider {
     base_url: String,
-    api_key: Option<String>,
     http: reqwest::Client,
 }
 
 impl OllamaProvider {
-    pub fn new(base_url: String, api_key: Option<String>) -> Self {
+    pub fn new(base_url: String, _api_key: Option<String>) -> Self {
         let http = reqwest::Client::builder().build().expect("reqwest client");
-        Self {
-            base_url,
-            api_key,
-            http,
-        }
+        Self { base_url, http }
     }
 
     fn url(&self, path: &str) -> String {
@@ -31,20 +28,7 @@ impl OllamaProvider {
 
 #[async_trait]
 impl Provider for OllamaProvider {
-    fn kind(&self) -> &'static str {
-        "ollama"
-    }
-    fn base_url(&self) -> &str {
-        &self.base_url
-    }
-    fn api_key(&self) -> Option<&str> {
-        self.api_key.as_deref()
-    }
-
-    fn list_models<'a>(
-        &'a self,
-    ) -> Pin<Box<dyn std::future::Future<Output = ProviderResult<Vec<ModelInfo>>> + Send + 'a>>
-    {
+    fn list_models<'a>(&'a self) -> ProviderFuture<'a, Vec<ModelInfo>> {
         Box::pin(async move {
             let resp = self
                 .http
@@ -82,7 +66,7 @@ impl Provider for OllamaProvider {
         })
     }
 
-    fn probe<'a>(&'a self) -> Pin<Box<dyn std::future::Future<Output = ProbeOutcome> + Send + 'a>> {
+    fn probe<'a>(&'a self) -> ProbeFuture<'a> {
         Box::pin(async move {
             match self.list_models().await {
                 Ok(models) => {
@@ -101,24 +85,7 @@ impl Provider for OllamaProvider {
         })
     }
 
-    fn chat_stream<'a>(
-        &'a self,
-        request: ChatRequest,
-    ) -> Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = ProviderResult<
-                        Pin<
-                            Box<
-                                dyn futures_util::Stream<Item = ProviderResult<ChatResponseChunk>>
-                                    + Send,
-                            >,
-                        >,
-                    >,
-                > + Send
-                + 'a,
-        >,
-    > {
+    fn chat_stream<'a>(&'a self, request: ChatRequest) -> ProviderFuture<'a, ProviderStream> {
         Box::pin(async move {
             let resp = self
                 .http
@@ -133,9 +100,8 @@ impl Provider for OllamaProvider {
                 return Err(ProviderError::Api { status, body });
             }
             let stream = resp.bytes_stream();
-            let reader = tokio_util::io::StreamReader::new(
-                stream.map(|r| r.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))),
-            );
+            let reader =
+                tokio_util::io::StreamReader::new(stream.map(|r| r.map_err(std::io::Error::other)));
             let buf = tokio::io::BufReader::new(reader);
             let lines = LinesStream::new(buf.lines());
             let parsed = lines.filter_map(|line| async move {
@@ -150,10 +116,7 @@ impl Provider for OllamaProvider {
                     Err(e) => Some(Err(ProviderError::Stream(e.to_string()))),
                 }
             });
-            Ok(Box::pin(parsed)
-                as Pin<
-                    Box<dyn futures_util::Stream<Item = ProviderResult<ChatResponseChunk>> + Send>,
-                >)
+            Ok(Box::pin(parsed) as ProviderStream)
         })
     }
 }

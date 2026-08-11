@@ -50,12 +50,16 @@ export function CommandPalette() {
 
   return (
     <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Command palette"
       className="fixed inset-0 z-[150] flex items-start justify-center pt-[12vh] px-4 animate-fade-in"
       onClick={() => setOpen(false)}
     >
-      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
+      <div className="absolute inset-0 overlay-backdrop" />
       <div
-        className="relative w-full max-w-xl glass border border-border rounded-2xl shadow-modal overflow-hidden animate-scale-in"
+        data-tour="palette"
+        className="relative w-full max-w-xl bg-surface-1 border border-border rounded-2xl shadow-modal overflow-hidden animate-scale-in"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-2.5 px-4 py-3 border-b border-border/50">
@@ -84,7 +88,7 @@ export function CommandPalette() {
           />
           <kbd className="text-[10px] text-text-subtle bg-surface-2 border border-border rounded px-1.5 py-0.5 font-mono">esc</kbd>
         </div>
-        <div ref={listRef} className="max-h-[60vh] overflow-y-auto py-1">
+        <div ref={listRef} role="listbox" aria-label="Commands" className="max-h-[60vh] overflow-y-auto py-1">
           {actions.length === 0 ? (
             <div className="px-4 py-6 text-center text-text-muted text-sm">
               {getActions().length === 0 ? "No actions registered yet" : "No matches"}
@@ -98,6 +102,8 @@ export function CommandPalette() {
                 {items.map(({ a, i }) => (
                   <button
                     key={a.id}
+                    role="option"
+                    aria-selected={i === selected}
                     data-action-index={i}
                     onClick={() => runAction(a)}
                     onMouseEnter={() => setSelected(i)}

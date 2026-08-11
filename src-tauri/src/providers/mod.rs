@@ -8,6 +8,7 @@ pub mod types;
 use async_trait::async_trait;
 use futures_util::Stream;
 use serde::{Deserialize, Serialize};
+use std::future::Future;
 use std::pin::Pin;
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -37,30 +38,15 @@ impl From<ProviderError> for String {
 }
 
 pub type ProviderResult<T> = Result<T, ProviderError>;
+pub type ProviderStream = Pin<Box<dyn Stream<Item = ProviderResult<ChatResponseChunk>> + Send>>;
+pub type ProviderFuture<'a, T> = Pin<Box<dyn Future<Output = ProviderResult<T>> + Send + 'a>>;
+pub type ProbeFuture<'a> = Pin<Box<dyn Future<Output = ProbeOutcome> + Send + 'a>>;
 
 #[async_trait]
 pub trait Provider: Send + Sync {
-    fn kind(&self) -> &'static str;
-    fn base_url(&self) -> &str;
-    fn api_key(&self) -> Option<&str>;
-
-    fn list_models<'a>(
-        &'a self,
-    ) -> Pin<Box<dyn std::future::Future<Output = ProviderResult<Vec<ModelInfo>>> + Send + 'a>>;
-    fn probe<'a>(&'a self) -> Pin<Box<dyn std::future::Future<Output = ProbeOutcome> + Send + 'a>>;
-    fn chat_stream<'a>(
-        &'a self,
-        request: ChatRequest,
-    ) -> Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = ProviderResult<
-                        Pin<Box<dyn Stream<Item = ProviderResult<ChatResponseChunk>> + Send>>,
-                    >,
-                > + Send
-                + 'a,
-        >,
-    >;
+    fn list_models<'a>(&'a self) -> ProviderFuture<'a, Vec<ModelInfo>>;
+    fn probe<'a>(&'a self) -> ProbeFuture<'a>;
+    fn chat_stream<'a>(&'a self, request: ChatRequest) -> ProviderFuture<'a, ProviderStream>;
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

@@ -32,24 +32,6 @@ export default {
         error: "var(--color-error)",
         userbubble: "var(--color-user-bubble)",
         ai: "var(--color-assistant-accent)",
-        // Legacy surface-X (kept for backwards compat in existing components)
-        "surface-legacy": {
-          50: "#f8f9fa",
-          100: "#1a1b1e",
-          200: "#1e1f23",
-          300: "#25262a",
-          400: "#2c2d31",
-          500: "#313236",
-          600: "#38393e",
-          700: "#404148",
-          800: "#4a4b52",
-          900: "#55565e",
-        },
-        "accent-legacy": {
-          DEFAULT: "#6c5ce7",
-          hover: "#7d6ff0",
-          muted: "#5a4bd1",
-        },
       },
       borderRadius: {
         sm: "var(--radius-sm)",

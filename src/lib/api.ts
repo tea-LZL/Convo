@@ -220,6 +220,7 @@ export interface SearchConfig {
   provider: string;
   base_url: string | null;
   api_key: string | null;
+  has_api_key?: boolean;
   max_results: number;
 }
 
@@ -459,8 +460,8 @@ export const api = {
       title: note.title ?? null,
       body: note.body,
       tags: note.tags ?? null,
-      source_session_id: note.source_session_id ?? null,
-      source_message_id: note.source_message_id ?? null,
+      sourceSessionId: note.source_session_id ?? null,
+      sourceMessageId: note.source_message_id ?? null,
     },
   }),
   deleteNote: (id: string) => invoke<void>("delete_note", { id }),
@@ -468,7 +469,17 @@ export const api = {
 
   // Tasks
   listTasks: () => invoke<Task[]>("list_tasks"),
-  upsertTask: (task: Partial<Task> & { title: string }) => invoke<string>("upsert_task", { task }),
+  upsertTask: (task: Partial<Task> & { title: string }) => invoke<string>("upsert_task", {
+    task: {
+      id: task.id ?? null,
+      title: task.title,
+      body: task.body ?? null,
+      dueAt: task.due_at ?? null,
+      completedAt: task.completed_at ?? null,
+      priority: task.priority ?? 0,
+      sessionId: task.session_id ?? null,
+    },
+  }),
   deleteTask: (id: string) => invoke<void>("delete_task", { id }),
   completeTask: (id: string, completed: boolean) => invoke<void>("complete_task", { id, completed }),
 
@@ -514,7 +525,16 @@ export const api = {
   // Documents
   listDocuments: () => invoke<Document[]>("list_documents"),
   upsertDocument: (doc: Partial<Document> & { title: string; content: string }) =>
-    invoke<string>("upsert_document", { doc }),
+    invoke<string>("upsert_document", {
+      doc: {
+        id: doc.id ?? null,
+        title: doc.title,
+        content: doc.content,
+        kind: doc.kind ?? "markdown",
+        language: doc.language ?? null,
+        filePath: doc.file_path ?? null,
+      },
+    }),
   deleteDocument: (id: string) => invoke<void>("delete_document", { id }),
   aiEditDocument: (opts: { currentText: string; instruction: string; selection?: string | null; modelId?: string | null; providerId?: string | null }) =>
     invoke<string>("ai_edit_document", {

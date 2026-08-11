@@ -50,7 +50,10 @@ pub fn save_theme(
 #[tauri::command]
 pub fn delete_theme(pool: State<'_, Arc<DbPool>>, id: String) -> Result<(), String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM themes WHERE id = ?1 AND is_builtin = 0", params![id])
-        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM themes WHERE id = ?1 AND is_builtin = 0",
+        params![id],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }

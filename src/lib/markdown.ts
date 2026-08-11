@@ -59,7 +59,7 @@ function blockToHtml(block: string): string {
     const hasClose = lastLine !== openLine && (/^```/.test(lastLine) || /^~~~/.test(lastLine));
     const body = hasClose ? lines.slice(1, -1).join("\n") : lines.slice(1).join("\n");
     const langLabel = lang || "code";
-    return `<div class="code-block-wrap"><button class="code-copy">Copy</button><span class="code-lang">${escapeHtml(langLabel)}</span><pre style="margin:0;border-radius:10px;border:1px solid var(--color-border);background:var(--color-surface-1);padding:16px;overflow:auto;font-family:var(--font-mono);font-size:0.875em;line-height:1.5;color:#e6e8ee;"><code>${escapeHtml(body)}</code></pre></div>`;
+     return `<div class="code-block-wrap"><button class="code-copy">Copy</button><span class="code-lang">${escapeHtml(langLabel)}</span><pre style="margin:0;border-radius:10px;border:1px solid var(--color-border);background:var(--color-surface-1);padding:16px;overflow:auto;font-family:var(--font-mono);font-size:0.875em;line-height:1.5;color:var(--color-text);"><code>${escapeHtml(body)}</code></pre></div>`;
   }
 
   if (trimmed.startsWith("#")) {

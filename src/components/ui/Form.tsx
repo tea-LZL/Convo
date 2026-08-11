@@ -1,4 +1,5 @@
 import { ReactNode, useEffect, useState } from "react";
+import { ChevronDown } from "lucide-react";
 
 interface SwitchProps {
   checked: boolean;
@@ -95,18 +96,24 @@ interface SelectProps {
 
 export function Select({ value, onChange, options, className = "", disabled }: SelectProps) {
   return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      disabled={disabled}
-      className={`bg-surface-2 border border-border rounded-md px-2.5 py-1.5 text-sm text-text focus:outline-none focus:border-accent disabled:opacity-50 ${className}`}
-    >
-      {options.map((o) => (
-        <option key={o.value} value={o.value}>
-          {o.label}
-        </option>
-      ))}
-    </select>
+    <span className="relative inline-flex min-w-0">
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        className={`appearance-none min-w-0 bg-surface-2 border border-border rounded-md px-2.5 py-1.5 pr-8 text-sm font-medium text-text cursor-pointer focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-100 ${className}`}
+      >
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+      <ChevronDown
+        aria-hidden="true"
+        className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-muted"
+      />
+    </span>
   );
 }
 
@@ -147,12 +154,32 @@ interface TabsProps {
 
 export function Tabs({ tabs, active, onChange, className = "" }: TabsProps) {
   return (
-    <div className={`flex border-b border-border ${className}`}>
-      {tabs.map((t) => (
-        <button
-          key={t.id}
-          onClick={() => onChange(t.id)}
-          className={`px-3.5 py-2 text-sm font-medium transition-colors relative ${
+    <div className={`flex border-b border-border ${className}`} role="tablist">
+        {tabs.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            aria-selected={active === t.id}
+            tabIndex={active === t.id ? 0 : -1}
+            onClick={() => onChange(t.id)}
+            onKeyDown={(event) => {
+              const current = tabs.findIndex((tab) => tab.id === t.id);
+              const next = event.key === "ArrowRight" || event.key === "ArrowDown"
+                ? (current + 1) % tabs.length
+                : event.key === "ArrowLeft" || event.key === "ArrowUp"
+                  ? (current - 1 + tabs.length) % tabs.length
+                  : event.key === "Home"
+                    ? 0
+                    : event.key === "End"
+                      ? tabs.length - 1
+                      : -1;
+              if (next < 0) return;
+              event.preventDefault();
+              onChange(tabs[next].id);
+              event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>("[role='tab']")[next]?.focus();
+            }}
+            className={`px-3.5 py-2 text-sm font-medium transition-colors relative ${
             active === t.id ? "text-text" : "text-text-muted hover:text-text"
           }`}
         >

@@ -1,4 +1,14 @@
-import { ReactNode, useState, useRef, useEffect, useLayoutEffect } from "react";
+import {
+  KeyboardEvent as ReactKeyboardEvent,
+  ReactElement,
+  ReactNode,
+  cloneElement,
+  isValidElement,
+  useState,
+  useRef,
+  useEffect,
+  useLayoutEffect,
+} from "react";
 import { createPortal } from "react-dom";
 
 interface DropdownProps {
@@ -8,7 +18,7 @@ interface DropdownProps {
   className?: string;
   menuClassName?: string;
   /** When the trigger sits inside a stacking-context-creating parent
-   * (e.g. backdrop-blur), an absolutely-positioned menu can't
+   * (e.g. translucent overlays), an absolutely-positioned menu can't
    * paint over siblings outside its parent. Portal-mounting the
    * menu at document.body fixes that without requiring consumers
    * to know about CSS quirks. Default: true. */
@@ -68,6 +78,7 @@ export function Dropdown({
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const pos = useMenuPosition(triggerRef, open, align);
 
   useEffect(() => {
@@ -76,12 +87,27 @@ export function Dropdown({
       // Click outside either the trigger wrapper or the portaled menu.
       const target = e.target as Node;
       if (wrapRef.current && wrapRef.current.contains(target)) return;
-      const menu = document.querySelector("[data-dropdown-portal]");
-      if (menu && menu.contains(target)) return;
+      if (menuRef.current && menuRef.current.contains(target)) return;
       setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setOpen(false);
+        triggerRef.current?.querySelector<HTMLElement>("button, [role='button']")?.focus();
+        return;
+      }
+      if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+      const items = Array.from(menuRef.current?.querySelectorAll<HTMLElement>("button:not([disabled]), [role='menuitem']") ?? []);
+      if (items.length === 0) return;
+      e.preventDefault();
+      const current = items.indexOf(document.activeElement as HTMLElement);
+      const next = current === -1
+        ? (e.key === "ArrowDown" ? 0 : items.length - 1)
+        : e.key === "ArrowDown"
+          ? (current + 1) % items.length
+          : (current - 1 + items.length) % items.length;
+      items[next].focus();
     };
     document.addEventListener("mousedown", onClick);
     document.addEventListener("keydown", onKey);
@@ -91,17 +117,54 @@ export function Dropdown({
     };
   }, [open]);
 
+  useEffect(() => {
+    if (!open) return;
+    const items = Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>("button:not([disabled])") ?? []);
+    items.forEach((item) => item.setAttribute("role", "menuitem"));
+    const frame = requestAnimationFrame(() => items[0]?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [open]);
+
   const close = () => setOpen(false);
+
+  const enhanceTrigger = () => {
+    if (!isValidElement(trigger)) return trigger;
+    const element = trigger as ReactElement<{
+      onKeyDown?: (event: ReactKeyboardEvent<HTMLElement>) => void;
+      "aria-haspopup"?: "menu" | boolean;
+      "aria-expanded"?: boolean;
+    }>;
+    return cloneElement(element, {
+      "aria-haspopup": "menu",
+      "aria-expanded": open,
+      onKeyDown: (event: ReactKeyboardEvent<HTMLElement>) => {
+        element.props.onKeyDown?.(event);
+        if (event.defaultPrevented) return;
+        if (event.key === "Enter" || event.key === " " || event.key === "ArrowDown" || event.key === "ArrowUp") {
+          event.preventDefault();
+          event.stopPropagation();
+          setOpen(true);
+        } else if (event.key === "Escape" && open) {
+          event.preventDefault();
+          setOpen(false);
+        }
+      },
+    });
+  };
 
   const menu = open ? (
     <div
+      ref={menuRef}
+      role="menu"
+      aria-label="Menu"
       data-dropdown-portal
-      className={`fixed z-[60] min-w-[180px] glass border border-border rounded-lg shadow-modal overflow-hidden animate-scale-in ${
+      className={`fixed z-[60] min-w-[180px] bg-surface-1 border border-border rounded-lg shadow-modal overflow-hidden animate-scale-in ${
         align === "right" ? "-translate-x-full" : ""
       } ${menuClassName}`}
       style={{
         top: pos?.top ?? 0,
         left: pos?.left ?? 0,
+        visibility: pos ? "visible" : "hidden",
       }}
       // Disable until we have a real position so it doesn't flash
       // at (0,0).
@@ -125,7 +188,7 @@ export function Dropdown({
   return (
     <div ref={wrapRef} className={`relative ${className}`}>
       <div ref={triggerRef} onClick={() => setOpen((o) => !o)}>
-        {trigger}
+        {enhanceTrigger()}
       </div>
       {portal && typeof document !== "undefined"
         ? createPortal(menu, document.body)
