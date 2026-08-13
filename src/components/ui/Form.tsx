@@ -1,4 +1,4 @@
-import { ReactNode, useEffect, useState } from "react";
+import { ReactNode, useEffect, useId, useState } from "react";
 import { ChevronDown } from "lucide-react";
 
 interface SwitchProps {
@@ -10,15 +10,22 @@ interface SwitchProps {
 }
 
 export function Switch({ checked, onChange, label, description, disabled }: SwitchProps) {
+  const controlId = useId();
+  const labelId = useId();
+  const descriptionId = useId();
   return (
-    <label className={`flex items-center justify-between gap-3 ${disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}>
+    <div className={`flex items-center justify-between gap-3 ${disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}>
       <div className="flex-1 min-w-0">
-        {label && <p className="text-sm text-text">{label}</p>}
-        {description && <p className="text-xs text-text-muted mt-0.5">{description}</p>}
+        {label && <label id={labelId} htmlFor={controlId} className="text-sm text-text">{label}</label>}
+        {description && <p id={descriptionId} className="text-xs text-text-muted mt-0.5">{description}</p>}
       </div>
       <button
+        id={controlId}
         type="button"
         role="switch"
+        aria-label={label ? undefined : "Toggle"}
+        aria-labelledby={label ? labelId : undefined}
+        aria-describedby={description ? descriptionId : undefined}
         aria-checked={checked}
         disabled={disabled}
         onClick={() => !disabled && onChange(!checked)}
@@ -28,7 +35,7 @@ export function Switch({ checked, onChange, label, description, disabled }: Swit
           className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${checked ? "translate-x-4" : "translate-x-0"}`}
         />
       </button>
-    </label>
+    </div>
   );
 }
 
@@ -42,9 +49,13 @@ interface TextInputProps {
   className?: string;
   disabled?: boolean;
   maxLength?: number;
+  id?: string;
+  "aria-label"?: string;
+  "aria-labelledby"?: string;
+  "aria-describedby"?: string;
 }
 
-export function TextInput({ value, onChange, placeholder, type = "text", autoFocus, onKeyDown, className = "", disabled, maxLength }: TextInputProps) {
+export function TextInput({ value, onChange, placeholder, type = "text", autoFocus, onKeyDown, className = "", disabled, maxLength, id, "aria-label": ariaLabel, "aria-labelledby": ariaLabelledBy, "aria-describedby": ariaDescribedBy }: TextInputProps) {
   return (
     <input
       type={type}
@@ -55,6 +66,10 @@ export function TextInput({ value, onChange, placeholder, type = "text", autoFoc
       onKeyDown={onKeyDown}
       disabled={disabled}
       maxLength={maxLength}
+      id={id}
+      aria-label={ariaLabel}
+      aria-labelledby={ariaLabelledBy}
+      aria-describedby={ariaDescribedBy}
       className={`w-full bg-surface-2 border border-border rounded-md px-3 py-1.5 text-sm text-text placeholder:text-text-subtle focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 disabled:opacity-50 ${className}`}
     />
   );
@@ -69,9 +84,13 @@ interface TextAreaProps {
   onKeyDown?: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
   className?: string;
   disabled?: boolean;
+  id?: string;
+  "aria-label"?: string;
+  "aria-labelledby"?: string;
+  "aria-describedby"?: string;
 }
 
-export function TextArea({ value, onChange, placeholder, rows = 3, autoFocus, onKeyDown, className = "", disabled }: TextAreaProps) {
+export function TextArea({ value, onChange, placeholder, rows = 3, autoFocus, onKeyDown, className = "", disabled, id, "aria-label": ariaLabel, "aria-labelledby": ariaLabelledBy, "aria-describedby": ariaDescribedBy }: TextAreaProps) {
   return (
     <textarea
       value={value}
@@ -81,6 +100,10 @@ export function TextArea({ value, onChange, placeholder, rows = 3, autoFocus, on
       autoFocus={autoFocus}
       onKeyDown={onKeyDown}
       disabled={disabled}
+      id={id}
+      aria-label={ariaLabel}
+      aria-labelledby={ariaLabelledBy}
+      aria-describedby={ariaDescribedBy}
       className={`w-full bg-surface-2 border border-border rounded-md px-3 py-2 text-sm text-text placeholder:text-text-subtle focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 resize-y disabled:opacity-50 ${className}`}
     />
   );
@@ -92,15 +115,23 @@ interface SelectProps {
   options: Array<{ value: string; label: string }>;
   className?: string;
   disabled?: boolean;
+  id?: string;
+  "aria-label"?: string;
+  "aria-labelledby"?: string;
+  "aria-describedby"?: string;
 }
 
-export function Select({ value, onChange, options, className = "", disabled }: SelectProps) {
+export function Select({ value, onChange, options, className = "", disabled, id, "aria-label": ariaLabel, "aria-labelledby": ariaLabelledBy, "aria-describedby": ariaDescribedBy }: SelectProps) {
   return (
     <span className="relative inline-flex min-w-0">
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
         disabled={disabled}
+        id={id}
+        aria-label={ariaLabel}
+        aria-labelledby={ariaLabelledBy}
+        aria-describedby={ariaDescribedBy}
         className={`appearance-none min-w-0 bg-surface-2 border border-border rounded-md px-2.5 py-1.5 pr-8 text-sm font-medium text-text cursor-pointer focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-100 ${className}`}
       >
         {options.map((o) => (

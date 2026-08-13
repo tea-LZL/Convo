@@ -34,6 +34,7 @@ export function Modal({
 }: ModalProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const previousFocus = useRef<HTMLElement | null>(null);
+
   const onCloseRef = useRef(onClose);
   const titleId = useId();
   const descriptionId = useId();
@@ -45,7 +46,7 @@ export function Modal({
     const focusable = () => Array.from(dialogRef.current?.querySelectorAll<HTMLElement>(
       "button:not([disabled]), [href], input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex='-1'])",
     ) ?? []);
-    window.setTimeout(() => (focusable()[0] ?? dialogRef.current)?.focus(), 0);
+    const frame = requestAnimationFrame(() => (focusable()[0] ?? dialogRef.current)?.focus());
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape" && closeOnEscape) {
         e.preventDefault();
@@ -54,8 +55,17 @@ export function Modal({
       }
       if (e.key !== "Tab") return;
       const items = focusable();
-      if (items.length === 0) return;
+      if (items.length === 0) {
+        e.preventDefault();
+        dialogRef.current?.focus();
+        return;
+      }
       const first = items[0];
+      if (!dialogRef.current?.contains(document.activeElement)) {
+        e.preventDefault();
+        first.focus();
+        return;
+      }
       const last = items[items.length - 1];
       if (e.shiftKey && document.activeElement === first) {
         e.preventDefault();
@@ -67,6 +77,7 @@ export function Modal({
     };
     document.addEventListener("keydown", onKey);
     return () => {
+      cancelAnimationFrame(frame);
       document.removeEventListener("keydown", onKey);
       if (previousFocus.current?.isConnected) previousFocus.current.focus();
       previousFocus.current = null;
@@ -91,6 +102,7 @@ export function Modal({
       aria-modal="true"
       aria-labelledby={title ? titleId : undefined}
       aria-describedby={description ? descriptionId : undefined}
+      aria-label={title ? undefined : "Dialog"}
     >
       <div
         className="absolute inset-0 overlay-backdrop"
@@ -110,6 +122,7 @@ export function Modal({
               {description && <p id={descriptionId} className="text-xs text-text-muted mt-0.5">{description}</p>}
             </div>
             <button
+              type="button"
               onClick={onClose}
               className="text-text-subtle hover:text-text p-1 -mt-1 -mr-1 rounded-md hover:bg-surface-2"
               aria-label="Close"

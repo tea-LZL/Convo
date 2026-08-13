@@ -113,6 +113,41 @@ const EMPTY: SessionState = {
 const stateBySession = new Map<string, SessionState>();
 const terminalStreams = new Set<string>();
 
+function isConversationOpen(cid: string): boolean {
+  if (typeof window === "undefined") return false;
+  const route = window.location.hash.replace(/^#/, "").split(/[?#]/, 1)[0];
+  const [, section, encodedConversationId] = route.split("/");
+  if (section !== "chat" || !encodedConversationId) return false;
+  try {
+    return decodeURIComponent(encodedConversationId) === cid;
+  } catch {
+    return false;
+  }
+}
+
+export function shouldNotifyForCompletedConversation(cid: string): boolean {
+  return typeof document === "undefined" || document.hidden || !isConversationOpen(cid);
+}
+
+export function evictSessionState(cid: string): void {
+  const state = stateBySession.get(cid);
+  if (state?.streaming) return;
+  stateBySession.delete(cid);
+  pendingDeltas.forEach((pending, key) => {
+    if (pending.cid === cid) pendingDeltas.delete(key);
+  });
+  sessionLoads.delete(cid);
+  stopTimers.delete(cid);
+  useChatStreamStore.setState((current) => {
+    if (!(cid in current.sessions)) return current;
+    const sessions = { ...current.sessions };
+    delete sessions[cid];
+    const loaded = { ...current._loaded };
+    delete loaded[cid];
+    return { sessions, _loaded: loaded, version: current.version + 1 };
+  });
+}
+
 function eventStreamKey(cid: string, streamId: string): string {
   return `${cid}:${streamId}`;
 }
@@ -125,6 +160,10 @@ export function acceptTerminalEvent(cid: string, streamId: string): boolean {
   const key = eventStreamKey(cid, streamId);
   if (terminalStreams.has(key)) return false;
   terminalStreams.add(key);
+  if (terminalStreams.size > 256) {
+    const oldest = terminalStreams.values().next().value;
+    if (oldest) terminalStreams.delete(oldest);
+  }
   return true;
 }
 const unlisteners: UnlistenFn[] = [];
@@ -321,7 +360,7 @@ async function ensureListeners() {
       }
 
       playDoneSound(false);
-      if (typeof document !== "undefined" && document.hidden) {
+      if (shouldNotifyForCompletedConversation(cid)) {
         try {
           sendNotification({ title: "Convo", body: "Response complete" });
         } catch { /* ignore */ }
@@ -593,7 +632,10 @@ export async function sendMessage(
     role: m.role,
     content: m.content,
     ...(m.thinking ? { thinking: m.thinking } : {}),
-    ...(imageDataForMessage(m).length > 0 ? { images: imageDataForMessage(m) } : {}),
+    ...(() => {
+      const images = imageDataForMessage(m);
+      return images.length > 0 ? { images } : {};
+    })(),
   }));
 
   try {
@@ -696,11 +738,9 @@ export async function recallMemories(
   alwaysOnContent: string
 ): Promise<string> {
   try {
-    let allItems = await api.listMemory();
-    if (!allItems || allItems.length === 0) {
-      allItems = await api.getEnabledMemory();
-    }
-    allItems = (allItems ?? []).filter((item) => item.is_enabled);
+    const memoryState = useMemoryStore.getState();
+    if (!memoryState.loaded) await memoryState.refresh();
+    let allItems = useMemoryStore.getState().items.filter((item) => item.is_enabled);
     if (allItems.length === 0) return "";
     const queryWords = query
       .toLowerCase()

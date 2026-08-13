@@ -4,6 +4,7 @@ import { Button } from "../ui/Button";
 import { Tooltip } from "../ui/Form";
 import { IconButton } from "../ui/IconButton";
 import { useAttachments } from "../../hooks/useAttachments";
+import { useSettingsStore } from "../../stores/settings";
 import { parseCommand, runCommand, SlashCommandContext } from "../../lib/slashCommands";
 import type { ChatStatus } from "../../stores/chatStream";
 
@@ -50,7 +51,11 @@ export function ChatInput({
   slashCtx: SlashCommandContext;
 }) {
   const [input, setInput] = useState("");
+  const enterToSend = useSettingsStore((s) => s.enterToSend);
   const ref = useRef<HTMLTextAreaElement>(null);
+  const inputValueRef = useRef(input);
+  inputValueRef.current = input;
+  const isMac = typeof navigator !== "undefined" && /mac/i.test(navigator.platform);
   const hasAttachmentError = attachments.attachments.some((attachment) => attachment.status === "error");
   const attachmentsBlocked = attachments.attachments.some((attachment) => attachment.status !== "ready");
 
@@ -74,7 +79,7 @@ export function ChatInput({
   // ArrowUp recall (last user message)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "ArrowUp" && input === "" && ref.current && document.activeElement === ref.current) {
+      if (e.key === "ArrowUp" && inputValueRef.current === "" && ref.current && document.activeElement === ref.current) {
         e.preventDefault();
         const ev = new CustomEvent("convo:recall-last");
         window.dispatchEvent(ev);
@@ -82,7 +87,7 @@ export function ChatInput({
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [input]);
+  }, []);
 
   const openPicker = async () => {
     try {
@@ -121,26 +126,30 @@ export function ChatInput({
     if (parsed) {
       const result = await runCommand(parsed, slashCtx);
       if (result.sent && result.text) {
-        setInput("");
         await onSend(result.text);
+        setInput("");
+        onInputChange("");
         return;
       }
       if (result.text !== undefined) {
         setInput(result.text);
+        onInputChange(result.text);
         setTimeout(() => ref.current?.focus(), 0);
         return;
       }
       if (result.clear) {
         setInput("");
+        onInputChange("");
         return;
       }
     }
-    setInput("");
     await onSend(text);
+    setInput("");
+    onInputChange("");
   };
 
   const handleKey = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (e.key === "Enter" && !e.shiftKey && (enterToSend || e.ctrlKey || e.metaKey)) {
       e.preventDefault();
       handleSend();
     }
@@ -157,7 +166,8 @@ export function ChatInput({
           onInputChange(e.target.value);
         }}
         onKeyDown={handleKey}
-        placeholder="Type a message, or / for commands… (Enter to send, Shift+Enter for newline)"
+        aria-label="Message"
+        placeholder={`Type a message, or / for commands… (${enterToSend ? "Enter" : `${isMac ? "⌘" : "Ctrl"}+Enter`} to send, Shift+Enter for newline)`}
         rows={1}
         disabled={disabled}
         className="w-full bg-transparent text-sm text-text placeholder:text-text-subtle focus:outline-none px-4 pt-3 pb-1 resize-none overflow-y-auto"

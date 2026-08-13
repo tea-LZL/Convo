@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useMemo } from "react";
+import React, { useRef, useEffect, useMemo, useState } from "react";
 import { ChevronDown, Check, Edit2 } from "lucide-react";
 import { ChatMessage } from "../../lib/api";
 import { Button } from "../ui/Button";
@@ -41,7 +41,6 @@ function messageRowAreEqual(prev: MessageRowProps, next: MessageRowProps) {
     pm.attachments_json === nm.attachments_json &&
     pm.created_at === nm.created_at &&
     prev.editingMessageId === next.editingMessageId &&
-    prev.editingText === next.editingText &&
     prev.collapsedThinking === next.collapsedThinking &&
     prev.sessionId === next.sessionId
   );
@@ -52,16 +51,20 @@ export const MessageRow = React.memo(function MessageRow({
   i,
   sessionId,
   editingMessageId,
-  editingText,
   setEditingMessageId,
-  setEditingText,
   collapsedThinking,
   setCollapsedThinking,
   setContextMenu,
   onResend,
 }: MessageRowProps) {
   const thinkingOpen = !collapsedThinking.has(i);
+  const [editText, setEditText] = useState(msg.content);
   const atts = parseAttachments(msg.attachments_json);
+
+  useEffect(() => {
+    if (editingMessageId === msg.id) setEditText(msg.content);
+  }, [editingMessageId, msg.content, msg.id]);
+
   return (
     <div
       key={msg.id}
@@ -109,9 +112,9 @@ export const MessageRow = React.memo(function MessageRow({
       {editingMessageId === msg.id ? (
         <div className="bg-surface-2 border border-border rounded-md p-2">
           <textarea
-            value={editingText}
-            onChange={(e) => setEditingText(e.target.value)}
-            rows={Math.max(2, Math.min(10, editingText.split("\n").length + 1))}
+            value={editText}
+            onChange={(e) => setEditText(e.target.value)}
+            rows={Math.max(2, Math.min(10, editText.split("\n").length + 1))}
             className="w-full bg-transparent text-sm text-text focus:outline-none resize-none"
             autoFocus
           />
@@ -121,7 +124,7 @@ export const MessageRow = React.memo(function MessageRow({
               size="xs"
               variant="primary"
               onClick={async () => {
-                const newContent = editingText.trim();
+                const newContent = editText.trim();
                 if (!newContent) return;
                 await onResend(i, newContent);
               }}
@@ -135,7 +138,7 @@ export const MessageRow = React.memo(function MessageRow({
         <div className="bg-userbubble rounded-2xl px-3.5 py-2 text-sm text-text whitespace-pre-wrap break-words inline-block max-w-[85%]">
           {msg.content}
           <div className="mt-1 flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-            <IconButton icon={<Edit2 size={11} />} label="Edit & resend" size="sm" onClick={() => { setEditingMessageId(msg.id); setEditingText(msg.content); }} />
+            <IconButton icon={<Edit2 size={11} />} label="Edit & resend" size="sm" onClick={() => setEditingMessageId(msg.id)} />
           </div>
         </div>
       ) : (
@@ -168,9 +171,7 @@ export const MessageRow = React.memo(function MessageRow({
 export const MessageList = React.memo(function MessageList({
   sessionId,
   editingMessageId,
-  editingText,
   setEditingMessageId,
-  setEditingText,
   collapsedThinking,
   setCollapsedThinking,
   setContextMenu,
@@ -191,13 +192,9 @@ export const MessageList = React.memo(function MessageList({
     }
   }, [messages.length, onBumpScroll]);
 
-  // useMemo over the .map(): the children are JSX elements with
-  // stable callback refs (from useCallback in the parent), so the
-  // memoized array is reusable across renders as long as `messages`
-  // and the editing state haven't changed. The per-row memo
-  // comparator still runs on each render of the parent — but the
-  // comparator is O(1) (a few string equality checks) and skips
-  // the markdown re-parse on no-change.
+  // The edit draft belongs to the active MessageRow. Keeping it out of
+  // this component means typing in one long-history row does not rebuild
+  // the JSX array for every message on every keystroke.
   const renderedMessages = useMemo(
     () => messages.map((msg, i) => (
       <MessageRow
@@ -206,16 +203,14 @@ export const MessageList = React.memo(function MessageList({
         i={i}
         sessionId={sessionId}
         editingMessageId={editingMessageId}
-        editingText={editingText}
         setEditingMessageId={setEditingMessageId}
-        setEditingText={setEditingText}
         collapsedThinking={collapsedThinking}
         setCollapsedThinking={setCollapsedThinking}
         setContextMenu={setContextMenu}
         onResend={onResend}
       />
     )),
-    [messages, sessionId, editingMessageId, editingText, collapsedThinking, setEditingMessageId, setEditingText, setCollapsedThinking, setContextMenu, onResend]
+    [messages, sessionId, editingMessageId, collapsedThinking, setEditingMessageId, setCollapsedThinking, setContextMenu, onResend]
   );
 
   return <div className="max-w-3xl mx-auto w-full px-3 sm:px-4 py-4">{renderedMessages}</div>;

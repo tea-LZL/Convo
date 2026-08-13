@@ -1,9 +1,9 @@
 /**
  * Sessions search overlay (Ctrl+Shift+F).
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Search, X, MessageSquare } from "lucide-react";
+import { Search, MessageSquare } from "lucide-react";
 import { api, SessionWithSnippet } from "../lib/api";
 
 export function SessionSearch() {
@@ -12,56 +12,90 @@ export function SessionSearch() {
   const [results, setResults] = useState<Array<SessionWithSnippet>>([]);
   const [selected, setSelected] = useState(0);
   const navigate = useNavigate();
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const previousFocus = useRef<HTMLElement | null>(null);
+
+  const close = () => setOpen(false);
 
   useEffect(() => {
     const onTrigger = () => setOpen((o) => !o);
     const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "f") {
+      if (e.key === "Escape" && open) {
         e.preventDefault();
-        setOpen((o) => !o);
-      } else if (e.key === "Escape" && open) {
         setOpen(false);
+      } else if (e.key === "Tab" && open) {
+        const items = Array.from(dialogRef.current?.querySelectorAll<HTMLElement>(
+          "input:not([disabled]), button:not([disabled]):not([tabindex='-1']), [tabindex]:not([tabindex='-1'])",
+        ) ?? []);
+        if (items.length === 0) {
+          e.preventDefault();
+          dialogRef.current?.focus();
+          return;
+        }
+        const current = items.indexOf(document.activeElement as HTMLElement);
+        const next = e.shiftKey
+          ? (current <= 0 ? items.length - 1 : current - 1)
+          : (current === items.length - 1 ? 0 : current + 1);
+        e.preventDefault();
+        items[next].focus();
       }
     };
     window.addEventListener("convo:search-sessions", onTrigger);
-    document.addEventListener("keydown", onKey);
+    document.addEventListener("keydown", onKey, true);
     return () => {
       window.removeEventListener("convo:search-sessions", onTrigger);
-      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("keydown", onKey, true);
     };
   }, [open]);
 
   useEffect(() => {
     if (!open) return;
-    setTimeout(() => document.querySelector<HTMLInputElement>("[data-search-input]")?.focus(), 30);
+    previousFocus.current = document.activeElement as HTMLElement | null;
+    const frame = requestAnimationFrame(() => dialogRef.current?.querySelector<HTMLInputElement>("[data-search-input]")?.focus());
+    return () => {
+      cancelAnimationFrame(frame);
+      if (previousFocus.current?.isConnected) previousFocus.current.focus();
+      previousFocus.current = null;
+    };
   }, [open]);
 
   useEffect(() => {
+    if (!open) return;
     if (!query.trim()) {
       setResults([]);
+      setSelected(0);
       return;
     }
-    const t = setTimeout(async () => {
-      try {
-        const r = await api.searchSessions(query);
+    let cancelled = false;
+    const t = window.setTimeout(() => {
+      void api.searchSessions(query).then((r) => {
+        if (cancelled) return;
         setResults(r);
         setSelected(0);
-      } catch (e) {
-        console.error(e);
-      }
+      }).catch((e) => {
+        if (!cancelled) console.error(e);
+      });
     }, 150);
-    return () => clearTimeout(t);
-  }, [query]);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+    };
+  }, [open, query]);
 
   if (!open) return null;
 
   return (
     <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Search sessions"
       className="fixed inset-0 z-[140] flex items-start justify-center pt-[10vh] px-4 animate-fade-in"
-      onClick={() => setOpen(false)}
+      onClick={close}
     >
        <div className="absolute inset-0 overlay-backdrop" />
       <div
+        ref={dialogRef}
+        data-session-search
         className="relative w-full max-w-2xl bg-surface-1 border border-border rounded-2xl shadow-modal overflow-hidden animate-scale-in"
         onClick={(e) => e.stopPropagation()}
       >
@@ -69,6 +103,13 @@ export function SessionSearch() {
           <Search size={16} className="text-text-subtle" />
           <input
             data-search-input
+            role="combobox"
+            aria-controls="session-search-results"
+            aria-autocomplete="list"
+            aria-haspopup="listbox"
+            aria-expanded={open}
+            aria-activedescendant={results[selected] ? `session-result-${results[selected].id}` : undefined}
+            aria-label="Search sessions"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
@@ -89,7 +130,7 @@ export function SessionSearch() {
           />
           <kbd className="text-[10px] text-text-subtle bg-surface-2 border border-border rounded px-1.5 py-0.5 font-mono">esc</kbd>
         </div>
-        <div className="max-h-[60vh] overflow-y-auto py-1">
+        <div id="session-search-results" role="listbox" aria-label="Sessions" className="max-h-[60vh] overflow-y-auto py-1">
           {query.trim() === "" ? (
             <div className="px-4 py-6 text-center text-text-muted text-sm">
               Type to search across all session titles and message content.
@@ -100,6 +141,11 @@ export function SessionSearch() {
             results.map((r, i) => (
               <button
                 key={r.id}
+                id={`session-result-${r.id}`}
+                role="option"
+                aria-selected={i === selected}
+                tabIndex={-1}
+                type="button"
                 onClick={() => {
                   navigate(`/chat/${r.id}`);
                   setOpen(false);

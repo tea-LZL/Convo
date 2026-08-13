@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api, Session } from "../../lib/api";
-import { handleKeyDown, parseEvent, useShortcutsStore } from "../../stores/shortcuts";
+import { handleKeyDown, isEditableTarget, parseEvent, useShortcutsStore } from "../../stores/shortcuts";
 import { useSessionsStore } from "../../stores/sessions";
 import { TOUR_STEPS, useTourStore } from "../../stores/tour";
 
@@ -30,18 +30,26 @@ describe("shell interactions", () => {
     expect(useSessionsStore.getState().sessions).toHaveLength(2);
   });
 
-  it("rejects duplicate shortcut bindings and dispatches valid bindings", () => {
+  it("rejects duplicate bindings, dispatches current store bindings, and normalizes arrows", () => {
     const action = vi.fn();
     useShortcutsStore.getState().register({ id: "one", combo: "ctrl+k", action });
     useShortcutsStore.getState().register({ id: "two", combo: "ctrl+p", action });
     expect(useShortcutsStore.getState().setCombo("two", "ctrl+k")).toBe(false);
     expect(useShortcutsStore.getState().bindings.find((binding) => binding.id === "two")?.combo).toBe("ctrl+p");
-    window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true }));
-    (window as Window & { __shortcutsBindings?: unknown }).__shortcutsBindings = useShortcutsStore.getState().bindings;
+    (window as Window & { __shortcutsBindings?: unknown }).__shortcutsBindings = [];
     (window as Window & { __shortcutsIsMac?: boolean }).__shortcutsIsMac = false;
     handleKeyDown(new KeyboardEvent("keydown", { key: "k", ctrlKey: true }));
     expect(action).toHaveBeenCalledTimes(1);
     expect(parseEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true }), false)).toBe("ctrl+k");
+    expect(parseEvent(new KeyboardEvent("keydown", { key: "ArrowUp", ctrlKey: true }), false)).toBe("ctrl+up");
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+    expect(isEditableTarget(input)).toBe(true);
+    document.addEventListener("keydown", handleKeyDown);
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true }));
+    document.removeEventListener("keydown", handleKeyDown);
+    expect(action).toHaveBeenCalledTimes(2);
+    input.remove();
   });
 
   it("replays and completes the onboarding tour", () => {

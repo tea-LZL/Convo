@@ -31,6 +31,7 @@ const diagnostics = {
 
 function invokeResult(command: string): unknown {
   if (command === "create_session") return session;
+  if (command === "list_sessions") return [session];
   if (command === "app_info") return { version: "0.7.0", data_dir: "/tmp", db_path: "/tmp/convo.db", os: "linux", arch: "x86_64" };
   if (command === "get_diagnostics") return diagnostics;
   if (command === "get_hardware") {

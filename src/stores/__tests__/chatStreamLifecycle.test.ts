@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { sendNotification } from "@tauri-apps/plugin-notification";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getSessionState, sendMessage, stopStream } from "../chatStream";
 
@@ -139,6 +140,41 @@ describe("stream delta transport", () => {
     expect(state.messages.filter((message) => message.role === "assistant")).toHaveLength(1);
     expect(state.messages.find((message) => message.role === "assistant")?.id).toBe(assistantMessageId);
     expect(state.status).toBe("complete");
+  });
+
+  it("notifies when a response completes outside the open conversation", async () => {
+    window.location.hash = "#/documents";
+    const { streamId, assistantMessageId } = await startStream("background-session");
+
+    callbacks["chat-done"]({ payload: {
+      conversation_id: "background-session",
+      stream_id: streamId,
+      assistant_message_id: assistantMessageId,
+      prompt_tokens: null,
+      output_tokens: null,
+      completed_at: "now",
+    } });
+
+    expect(sendNotification).toHaveBeenCalledWith({
+      title: "Convo",
+      body: "Response complete",
+    });
+  });
+
+  it("does not notify when the completed conversation is open", async () => {
+    window.location.hash = "#/chat/open-session";
+    const { streamId, assistantMessageId } = await startStream("open-session");
+
+    callbacks["chat-done"]({ payload: {
+      conversation_id: "open-session",
+      stream_id: streamId,
+      assistant_message_id: assistantMessageId,
+      prompt_tokens: null,
+      output_tokens: null,
+      completed_at: "now",
+    } });
+
+    expect(sendNotification).not.toHaveBeenCalled();
   });
 
   it("cancels the exact active stream generation", async () => {

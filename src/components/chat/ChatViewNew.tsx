@@ -9,13 +9,13 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, ChatMessage, Provider, Model } from "../../lib/api";
+import { api, Model, Provider, Session } from "../../lib/api";
 import { getLastUsedChatModel, getLastUsedModelForProvider, setLastUsedChatModel } from "../../lib/lastUsedChatModel";
 import { useChat } from "../../hooks/useChat";
 import { useAttachments } from "../../hooks/useAttachments";
 import { filterCommands, SlashCommandContext } from "../../lib/slashCommands";
 import { ErrorBoundary } from "../ui/ErrorBoundary";
-import { useChatStreamStore } from "../../stores/chatStream";
+
 import { ChatHeader } from "./ChatHeader";
 import { MessageList } from "./MessageList";
 import { StreamingSection } from "./StreamingSection";
@@ -24,8 +24,7 @@ import { ChatContextMenu } from "./ChatContextMenu";
 import { AttachmentStripItem } from "./AttachmentChip";
 import type { ChatContextMenuState } from "./types";
 
-export function ChatViewNew({ sessionId }: { sessionId: string }) {
-  const [providers, setProviders] = useState<Provider[]>([]);
+export function ChatViewNew({ sessionId, providers, session }: { sessionId: string; providers: Provider[]; session?: Session }) {
   const [models, setModels] = useState<Model[]>([]);
   const [providerId, setProviderId] = useState<string>("");
   const [modelId, setModelId] = useState<string>("");
@@ -34,7 +33,6 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
   const [showSlashMenu, setShowSlashMenu] = useState(false);
   const [slashQuery, setSlashQuery] = useState("");
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
-  const [editingText, setEditingText] = useState("");
   const [contextMenu, setContextMenu] = useState<ChatContextMenuState | null>(null);
   const [sessionLoaded, setSessionLoaded] = useState(false);
 
@@ -46,6 +44,12 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
   const contextMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const frame = requestAnimationFrame(() => contextMenuRef.current?.querySelector<HTMLElement>("[role='menuitem']")?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [contextMenu]);
 
   // Close the right-click context menu on left-click outside of it, on
   // Esc, and on scroll.
@@ -71,41 +75,31 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
     };
   }, [contextMenu]);
 
-  // Load providers
-  useEffect(() => {
-    api.listProviders().then((ps) => {
-      setProviders(ps);
-      const def = ps.find((p) => p.is_default) || ps[0];
-      if (def) setProviderId(def.id);
-    }).catch(console.error);
-  }, []);
-
-  // Load session (model)
+  // Load the selected session's model from the already-refreshed session store.
   useEffect(() => {
     if (sessionLoaded) return;
-    api.listSessions().then((slist) => {
-      const s = slist.find((x) => x.id === sessionId);
-      if (s) {
-        if (s.model_id) {
-          const sep = s.model_id.indexOf("::");
-          if (sep >= 0) {
-            setProviderId(s.model_id.slice(0, sep));
-            setModelId(s.model_id.slice(sep + 2));
-          } else {
-            setModelId(s.model_id);
-          }
+    const defaultProvider = providers.find((p) => p.is_default) || providers[0];
+    if (defaultProvider) setProviderId(defaultProvider.id);
+    if (session) {
+      if (session.model_id) {
+        const sep = session.model_id.indexOf("::");
+        if (sep >= 0) {
+          setProviderId(session.model_id.slice(0, sep));
+          setModelId(session.model_id.slice(sep + 2));
         } else {
-          const lastModel = getLastUsedChatModel();
-          if (lastModel) {
-            setProviderId(lastModel.providerId);
-            setModelId(lastModel.modelId);
-          }
+          setModelId(session.model_id);
         }
-        if (s.provider_id) setProviderId(s.provider_id);
+      } else {
+        const lastModel = getLastUsedChatModel();
+        if (lastModel) {
+          setProviderId(lastModel.providerId);
+          setModelId(lastModel.modelId);
+        }
       }
-      setSessionLoaded(true);
-    }).catch(console.error);
-  }, [sessionId, sessionLoaded]);
+      if (session.provider_id) setProviderId(session.provider_id);
+    }
+    setSessionLoaded(true);
+  }, [providers, session, sessionId, sessionLoaded]);
 
   // Refresh models when provider changes
   useEffect(() => {
@@ -268,9 +262,7 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
             <MessageList
               sessionId={sessionId}
               editingMessageId={editingMessageId}
-              editingText={editingText}
               setEditingMessageId={setEditingMessageId}
-              setEditingText={setEditingText}
               collapsedThinking={collapsedThinking}
               setCollapsedThinking={setCollapsedThinking}
               setContextMenu={setContextMenu}
@@ -381,7 +373,6 @@ export function ChatViewNew({ sessionId }: { sessionId: string }) {
           collapsedThinking={collapsedThinking}
           setCollapsedThinking={setCollapsedThinking}
           setEditingMessageId={setEditingMessageId}
-          setEditingText={setEditingText}
           chatReload={chat.reload}
           chatSend={chat.send}
         />

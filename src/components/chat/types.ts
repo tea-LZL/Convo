@@ -14,9 +14,7 @@ export interface MessageRowProps {
   i: number;
   sessionId: string;
   editingMessageId: string | null;
-  editingText: string;
   setEditingMessageId: (id: string | null) => void;
-  setEditingText: (text: string) => void;
   collapsedThinking: Set<number>;
   setCollapsedThinking: (updater: (s: Set<number>) => Set<number>) => void;
   setContextMenu: (m: ChatContextMenuState | null) => void;
@@ -26,9 +24,7 @@ export interface MessageRowProps {
 export interface MessageListProps {
   sessionId: string;
   editingMessageId: string | null;
-  editingText: string;
   setEditingMessageId: (id: string | null) => void;
-  setEditingText: (text: string) => void;
   collapsedThinking: Set<number>;
   setCollapsedThinking: (updater: (s: Set<number>) => Set<number>) => void;
   setContextMenu: (m: ChatContextMenuState | null) => void;

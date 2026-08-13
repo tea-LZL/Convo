@@ -185,6 +185,7 @@ export function TasksRoute() {
         <div className="mb-4 rounded-lg border border-border bg-surface-1 p-3 space-y-2">
           <div className="flex gap-2">
             <TextInput
+              aria-label="New task title"
               value={draft.title}
               onChange={(title) => setDraft((current) => ({ ...current, title }))}
               onKeyDown={(event) => { if (event.key === "Enter") void add(); }}
@@ -193,10 +194,10 @@ export function TasksRoute() {
             />
             <Button variant="primary" onClick={() => void add()} loading={creating} icon={<Plus size={14} />}>Add</Button>
           </div>
-          <TextArea value={draft.body} onChange={(body) => setDraft((current) => ({ ...current, body }))} placeholder="Details (optional)" rows={2} />
+          <TextArea aria-label="New task details" value={draft.body} onChange={(body) => setDraft((current) => ({ ...current, body }))} placeholder="Details (optional)" rows={2} />
           <div className="flex gap-2 flex-wrap">
             <input aria-label="New task due date" type="date" value={draft.dueAt} onChange={(e) => setDraft((current) => ({ ...current, dueAt: e.target.value }))} className="bg-surface-2 border border-border rounded-md px-2.5 py-1.5 text-sm text-text" />
-            <Select value={draft.priority} onChange={(priority) => setDraft((current) => ({ ...current, priority }))} options={PRIORITIES} />
+            <Select aria-label="New task priority" value={draft.priority} onChange={(priority) => setDraft((current) => ({ ...current, priority }))} options={PRIORITIES} />
           </div>
         </div>
         {error && (
@@ -215,11 +216,11 @@ export function TasksRoute() {
               <li key={task.id} className={`px-3 py-2 bg-surface-1 border border-border rounded-md ${task.completed_at ? "opacity-60" : ""}`}>
                 {editingId === task.id ? (
                   <div className="space-y-2">
-                    <TextInput value={editDraft.title} onChange={(title) => setEditDraft((current) => ({ ...current, title }))} autoFocus />
-                    <TextArea value={editDraft.body} onChange={(body) => setEditDraft((current) => ({ ...current, body }))} rows={2} />
+                    <TextInput aria-label={`Title for ${task.title}`} value={editDraft.title} onChange={(title) => setEditDraft((current) => ({ ...current, title }))} autoFocus />
+                    <TextArea aria-label={`Details for ${task.title}`} value={editDraft.body} onChange={(body) => setEditDraft((current) => ({ ...current, body }))} rows={2} />
                     <div className="flex gap-2 flex-wrap">
                       <input aria-label={`Due date for ${task.title}`} type="date" value={editDraft.dueAt} onChange={(e) => setEditDraft((current) => ({ ...current, dueAt: e.target.value }))} className="bg-surface-2 border border-border rounded-md px-2.5 py-1.5 text-sm text-text" />
-                      <Select value={editDraft.priority} onChange={(priority) => setEditDraft((current) => ({ ...current, priority }))} options={PRIORITIES} />
+                      <Select aria-label={`Priority for ${task.title}`} value={editDraft.priority} onChange={(priority) => setEditDraft((current) => ({ ...current, priority }))} options={PRIORITIES} />
                       <div className="flex-1" />
                       <Button size="xs" variant="ghost" onClick={() => setEditingId(null)} icon={<X size={12} />}>Cancel</Button>
                       <Button size="xs" variant="primary" loading={savingId === task.id} onClick={() => void saveEdit(task)} icon={<Save size={12} />}>Save</Button>

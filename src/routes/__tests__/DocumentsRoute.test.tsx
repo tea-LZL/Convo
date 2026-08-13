@@ -39,6 +39,20 @@ describe("DocumentsRoute", () => {
     })));
   });
 
+  it("keeps document tabs keyboard-accessible without nesting the close action", async () => {
+    render(
+      <MemoryRouter>
+        <DocumentsRoute />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole("tab", { name: "Readme" })).toHaveAttribute("aria-controls", "document-panel-doc-1");
+    expect(screen.getByRole("button", { name: "Close Readme" })).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Title")).toHaveAttribute("aria-label", "Document title");
+    expect(screen.getByRole("button", { name: "More document actions" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Readme" }).querySelector("button")).toBeNull();
+  });
+
   it("keeps a dirty draft when persistence fails", async () => {
     vi.mocked(api.upsertDocument).mockRejectedValue(new Error("read only"));
     render(

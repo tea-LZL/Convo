@@ -175,13 +175,13 @@ export function ModelsSection() {
       <h1 className="text-xl font-semibold text-text">Models</h1>
       <p className="text-sm text-text-muted mt-1 mb-6">Discover, manage, and start chats with provider-scoped models.</p>
       <div className="flex items-center gap-2 mb-4 flex-wrap">
-        <Select value={providerId} onChange={setProviderId} options={providers.map((p) => ({ value: p.id, label: p.name }))} />
+        <Select aria-label="Model provider" value={providerId} onChange={setProviderId} options={providers.map((p) => ({ value: p.id, label: p.name }))} />
         <Button variant="outline" onClick={refresh} loading={loading}>Refresh</Button>
         {provider?.kind === "ollama" && <Button variant="secondary" onClick={() => setCustomOpen(true)}>Create custom</Button>}
       </div>
       {provider?.kind === "ollama" && (
         <div className="mb-4 flex items-center gap-2">
-          <TextInput value={pullName} onChange={setPullName} placeholder="Model name to pull (for example llama3.2)" />
+          <TextInput aria-label="Model name to pull" value={pullName} onChange={setPullName} placeholder="Model name to pull (for example llama3.2)" />
           <Button
             variant="secondary"
             disabled={!pullName.trim() || pull !== null}
@@ -245,9 +245,9 @@ export function ModelsSection() {
         )}
       >
         <div className="space-y-3">
-          <div><label className="mb-1 block text-xs text-text-muted">Model name</label><TextInput value={customName} onChange={setCustomName} placeholder="my-model" /></div>
-          <div><label className="mb-1 block text-xs text-text-muted">Base model</label><TextInput value={customBase} onChange={setCustomBase} placeholder="llama3.2" /></div>
-          <div><label className="mb-1 block text-xs text-text-muted">Context length</label><TextInput value={customContext} onChange={setCustomContext} type="number" /></div>
+          <div><label htmlFor="custom-model-name" className="mb-1 block text-xs text-text-muted">Model name</label><TextInput id="custom-model-name" value={customName} onChange={setCustomName} placeholder="my-model" /></div>
+          <div><label htmlFor="custom-base-model" className="mb-1 block text-xs text-text-muted">Base model</label><TextInput id="custom-base-model" value={customBase} onChange={setCustomBase} placeholder="llama3.2" /></div>
+          <div><label htmlFor="custom-context-length" className="mb-1 block text-xs text-text-muted">Context length</label><TextInput id="custom-context-length" value={customContext} onChange={setCustomContext} type="number" /></div>
         </div>
       </Modal>
     </div>

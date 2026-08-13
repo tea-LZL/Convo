@@ -266,7 +266,6 @@ pub async fn run_compare(
                                                 "run_id": &run_id_clone,
                                                 "index": i,
                                                 "content": &msg.content,
-                                                "full_content": &full_content,
                                             }),
                                         );
                                     }

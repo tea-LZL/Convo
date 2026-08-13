@@ -398,12 +398,13 @@ export function MemoryRoute() {
               </span>
             </div>
             <div>
-              <label className="text-xs text-text-muted block mb-1">Title (optional)</label>
-              <TextInput value={draft.title} onChange={(v) => setDraft({ ...draft, title: v })} />
+              <label htmlFor="memory-title" className="text-xs text-text-muted block mb-1">Title (optional)</label>
+              <TextInput id="memory-title" value={draft.title} onChange={(v) => setDraft({ ...draft, title: v })} />
             </div>
             <div>
-              <label className="text-xs text-text-muted block mb-1">Content</label>
+              <label htmlFor="memory-content" className="text-xs text-text-muted block mb-1">Content</label>
               <TextArea
+                id="memory-content"
                 value={draft.content}
                 onChange={(v) => setDraft({ ...draft, content: v })}
                 rows={5}
@@ -411,8 +412,8 @@ export function MemoryRoute() {
               />
             </div>
             <div>
-              <label className="text-xs text-text-muted block mb-1">Tags (comma-separated)</label>
-              <TextInput value={draft.tags} onChange={(v) => setDraft({ ...draft, tags: v })} placeholder="preference, code-style, project-x" />
+              <label htmlFor="memory-tags" className="text-xs text-text-muted block mb-1">Tags (comma-separated)</label>
+              <TextInput id="memory-tags" value={draft.tags} onChange={(v) => setDraft({ ...draft, tags: v })} placeholder="preference, code-style, project-x" />
             </div>
             <label className="flex items-center gap-2 text-sm text-text-muted cursor-pointer">
               <input

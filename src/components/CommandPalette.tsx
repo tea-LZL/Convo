@@ -16,12 +16,45 @@ export function CommandPalette() {
   const [selected, setSelected] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const previousFocus = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     if (open) {
+      previousFocus.current = document.activeElement as HTMLElement | null;
       setSelected(0);
-      setTimeout(() => inputRef.current?.focus(), 30);
+      const frame = requestAnimationFrame(() => inputRef.current?.focus());
+      return () => {
+        cancelAnimationFrame(frame);
+        if (previousFocus.current?.isConnected) previousFocus.current.focus();
+        previousFocus.current = null;
+      };
     }
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const getFocusable = () => Array.from(dialogRef.current?.querySelectorAll<HTMLElement>(
+      "input:not([disabled]), button:not([disabled]):not([tabindex='-1']), [tabindex]:not([tabindex='-1'])",
+    ) ?? []);
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setOpen(false);
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const items = getFocusable();
+      if (items.length === 0) return;
+      const current = items.indexOf(document.activeElement as HTMLElement);
+      const next = event.shiftKey
+        ? (current <= 0 ? items.length - 1 : current - 1)
+        : (current === items.length - 1 ? 0 : current + 1);
+      event.preventDefault();
+      items[next].focus();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
   }, [open]);
 
   const actions = useMemo(() => (open ? filterActions(query) : []), [open, query]);
@@ -33,7 +66,7 @@ export function CommandPalette() {
   useEffect(() => {
     if (!open) return;
     const el = listRef.current?.querySelector(`[data-action-index="${selected}"]`);
-    el?.scrollIntoView({ block: "nearest" });
+    el?.scrollIntoView?.({ block: "nearest" });
   }, [selected, open]);
 
   if (!open) return null;
@@ -58,6 +91,8 @@ export function CommandPalette() {
     >
       <div className="absolute inset-0 overlay-backdrop" />
       <div
+        ref={dialogRef}
+        data-command-palette
         data-tour="palette"
         className="relative w-full max-w-xl bg-surface-1 border border-border rounded-2xl shadow-modal overflow-hidden animate-scale-in"
         onClick={(e) => e.stopPropagation()}
@@ -66,6 +101,13 @@ export function CommandPalette() {
           <Search size={16} className="text-text-subtle" />
           <input
             ref={inputRef}
+            role="combobox"
+            aria-controls="command-palette-list"
+            aria-autocomplete="list"
+            aria-haspopup="listbox"
+            aria-expanded={open}
+            aria-activedescendant={actions[selected] ? `command-${actions[selected].id}` : undefined}
+            aria-label="Search commands"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Type a command or search..."
@@ -88,7 +130,7 @@ export function CommandPalette() {
           />
           <kbd className="text-[10px] text-text-subtle bg-surface-2 border border-border rounded px-1.5 py-0.5 font-mono">esc</kbd>
         </div>
-        <div ref={listRef} role="listbox" aria-label="Commands" className="max-h-[60vh] overflow-y-auto py-1">
+        <div id="command-palette-list" ref={listRef} role="listbox" aria-label="Commands" className="max-h-[60vh] overflow-y-auto py-1">
           {actions.length === 0 ? (
             <div className="px-4 py-6 text-center text-text-muted text-sm">
               {getActions().length === 0 ? "No actions registered yet" : "No matches"}
@@ -102,8 +144,11 @@ export function CommandPalette() {
                 {items.map(({ a, i }) => (
                   <button
                     key={a.id}
+                    type="button"
                     role="option"
+                    id={`command-${a.id}`}
                     aria-selected={i === selected}
+                    tabIndex={-1}
                     data-action-index={i}
                     onClick={() => runAction(a)}
                     onMouseEnter={() => setSelected(i)}

@@ -13,7 +13,6 @@ interface ChatContextMenuProps {
   collapsedThinking: Set<number>;
   setCollapsedThinking: React.Dispatch<React.SetStateAction<Set<number>>>;
   setEditingMessageId: (id: string | null) => void;
-  setEditingText: (text: string) => void;
   chatReload: () => Promise<void>;
   chatSend: (text: string) => Promise<void>;
 }
@@ -26,24 +25,45 @@ export function ChatContextMenu({
   sessionId,
   setCollapsedThinking,
   setEditingMessageId,
-  setEditingText,
   chatReload,
   chatSend,
 }: ChatContextMenuProps) {
   return (
     <div
       ref={contextMenuRef}
+      role="menu"
+      aria-label="Message actions"
+      tabIndex={-1}
       className="fixed z-[100] min-w-[180px] bg-surface-1 border border-border rounded-lg shadow-modal py-1 animate-scale-in"
       style={{ left: contextMenu.x, top: contextMenu.y }}
       onClick={() => setContextMenu(null)}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          setContextMenu(null);
+          return;
+        }
+        if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+        const items = Array.from(contextMenuRef.current?.querySelectorAll<HTMLElement>("[role='menuitem']") ?? []);
+        const current = items.indexOf(document.activeElement as HTMLElement);
+        const next = event.key === "ArrowDown"
+          ? (current + 1) % items.length
+          : (current - 1 + items.length) % items.length;
+        event.preventDefault();
+        items[next]?.focus();
+      }}
     >
       <button
+        role="menuitem"
+        type="button"
         onClick={() => { navigator.clipboard.writeText(contextMenu.content); setContextMenu(null); toast.success("Copied"); }}
         className="w-full text-left px-3 py-1.5 text-xs text-text-muted hover:bg-surface-2 hover:text-text"
       >
         Copy
       </button>
       <button
+        role="menuitem"
+        type="button"
         onClick={() => {
           const blob = new Blob([contextMenu.content], { type: "text/markdown" });
           navigator.clipboard.write([new ClipboardItem({ "text/markdown": blob })]);
@@ -57,6 +77,8 @@ export function ChatContextMenu({
       {contextMenu.role === "assistant" && (
         <>
           <button
+            role="menuitem"
+            type="button"
             onClick={async () => {
               setContextMenu(null);
               if (contextMenu.msgIndex === null) return;
@@ -76,6 +98,8 @@ export function ChatContextMenu({
             Regenerate
           </button>
           <button
+            role="menuitem"
+            type="button"
             onClick={async () => {
               setContextMenu(null);
               if (contextMenu.msgIndex === null) return;
@@ -94,12 +118,13 @@ export function ChatContextMenu({
       )}
       {contextMenu.role === "user" && contextMenu.msgIndex !== null && (
         <button
+          role="menuitem"
+          type="button"
           onClick={() => {
             setContextMenu(null);
             const m = chatMessages[contextMenu.msgIndex!];
             if (m) {
               setEditingMessageId(m.id);
-              setEditingText(m.content);
             }
           }}
           className="w-full text-left px-3 py-1.5 text-xs text-text-muted hover:bg-surface-2 hover:text-text"
@@ -108,6 +133,8 @@ export function ChatContextMenu({
         </button>
       )}
       <button
+        role="menuitem"
+        type="button"
         onClick={async () => {
           if (contextMenu.msgIndex === null) return;
           setContextMenu(null);
@@ -123,6 +150,8 @@ export function ChatContextMenu({
       </button>
       <div className="my-1 border-t border-border/60" />
       <button
+        role="menuitem"
+        type="button"
         onClick={async () => {
           setContextMenu(null);
           if (contextMenu.msgIndex === null) return;

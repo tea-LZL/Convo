@@ -2,7 +2,7 @@
  * Compare route — side-by-side model comparison with blind mode, per-column
  * stop, save winner as chat, history.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, CompareConfig, CompareRunSummary, CompareRunResult } from "../lib/api";
 import { Button } from "../components/ui/Button";
@@ -30,6 +30,10 @@ interface ColumnState {
   promptTokens?: number;
   outputTokens?: number;
 }
+
+type PendingColumnUpdate = Omit<Partial<ColumnState>, "content"> & {
+  contentDelta?: string;
+};
 
 export function CompareRoute() {
   const [providers, setProviders] = useState<Array<{ id: string; name: string; kind: string }>>([]);
@@ -73,65 +77,56 @@ export function CompareRoute() {
     if (!runId) return;
     let active = true;
     const unlisteners: Array<() => void> = [];
-    (async () => {
-      const u1 = await listen<{ run_id: string; index: number; content: string; full_content: string }>("compare-chunk", (e) => {
-        if (e.payload.run_id !== runId) return;
-        setColumns((prev) => {
-          const next = prev.slice();
-          next[e.payload.index] = {
-            ...(next[e.payload.index] || { startedAt: Date.now(), content: "", thinking: "", done: false }),
-            content: e.payload.full_content,
+    const pending = new Map<number, PendingColumnUpdate>();
+    let frame: number | null = null;
+    const flush = () => {
+      frame = null;
+      if (!active || pending.size === 0) return;
+      const updates = new Map(pending);
+      pending.clear();
+      setColumns((prev) => {
+        const next = prev.slice();
+        for (const [index, patch] of updates) {
+          const current = next[index] || { startedAt: Date.now(), content: "", thinking: "", done: false };
+          const { contentDelta, ...statePatch } = patch;
+          next[index] = {
+            ...current,
+            ...statePatch,
+            content: current.content + (contentDelta ?? ""),
           };
-          return next;
-        });
+        }
+        return next;
+      });
+    };
+    const queue = (index: number, patch: PendingColumnUpdate) => {
+      const previous = pending.get(index);
+      pending.set(index, {
+        ...previous,
+        ...patch,
+        contentDelta: `${previous?.contentDelta ?? ""}${patch.contentDelta ?? ""}`,
+      });
+      if (frame === null) frame = requestAnimationFrame(flush);
+    };
+    (async () => {
+      const u1 = await listen<{ run_id: string; index: number; content: string }>("compare-chunk", (e) => {
+        if (e.payload.run_id !== runId) return;
+        queue(e.payload.index, { contentDelta: e.payload.content });
       });
       const u2 = await listen<{ run_id: string; index: number; thinking: string }>("compare-thinking", (e) => {
         if (e.payload.run_id !== runId) return;
-        setColumns((prev) => {
-          const next = prev.slice();
-          next[e.payload.index] = {
-            ...(next[e.payload.index] || { startedAt: Date.now(), content: "", thinking: "", done: false }),
-            thinking: e.payload.thinking,
-          };
-          return next;
-        });
+        queue(e.payload.index, { thinking: e.payload.thinking });
       });
       const u3 = await listen<{ run_id: string; index: number; prompt_tokens: number; output_tokens: number }>("compare-done", (e) => {
         if (e.payload.run_id !== runId) return;
-        setColumns((prev) => {
-          const next = prev.slice();
-          next[e.payload.index] = {
-            ...(next[e.payload.index] || { startedAt: Date.now(), content: "", thinking: "", done: false }),
-            done: true,
-            promptTokens: e.payload.prompt_tokens,
-            outputTokens: e.payload.output_tokens,
-          };
-          return next;
-        });
+        queue(e.payload.index, { done: true, promptTokens: e.payload.prompt_tokens, outputTokens: e.payload.output_tokens });
       });
       const u4 = await listen<{ run_id: string; index: number; error: string }>("compare-error", (e) => {
         if (e.payload.run_id !== runId) return;
-        setColumns((prev) => {
-          const next = prev.slice();
-          next[e.payload.index] = {
-            ...(next[e.payload.index] || { startedAt: Date.now(), content: "", thinking: "", done: false }),
-            done: true,
-            error: e.payload.error,
-          };
-          return next;
-        });
+        queue(e.payload.index, { done: true, error: e.payload.error });
       });
       const u5 = await listen<{ run_id: string; index: number }>("compare-cancelled", (e) => {
         if (e.payload.run_id !== runId) return;
-        setColumns((prev) => {
-          const next = prev.slice();
-          next[e.payload.index] = {
-            ...(next[e.payload.index] || { startedAt: Date.now(), content: "", thinking: "", done: false }),
-            done: true,
-            cancelled: true,
-          };
-          return next;
-        });
+        queue(e.payload.index, { done: true, cancelled: true });
       });
       const listeners = [u1, u2, u3, u4, u5];
       if (!active) listeners.forEach((unlisten) => unlisten());
@@ -141,6 +136,8 @@ export function CompareRoute() {
     });
     return () => {
       active = false;
+      if (frame !== null) cancelAnimationFrame(frame);
+      pending.clear();
       unlisteners.forEach((unlisten) => unlisten());
     };
   }, [runId]);

@@ -47,14 +47,17 @@ function useMenuPosition(
       const el = triggerRef.current;
       if (!el) return;
       const r = el.getBoundingClientRect();
-      setPos({
-        top: r.bottom + 4 /* mt-1 = 4px */,
-        // Mirror Tailwind's `right-0` / `left-0` on the absolute
-        // menu: position the menu's right edge to the trigger's
-        // right edge (when align=right), otherwise align the menu's
-        // left edge to the trigger's left edge.
-        left: align === "right" ? r.right : r.left,
-      });
+      const menu = document.querySelector<HTMLElement>("[data-dropdown-portal]");
+      const menuWidth = menu?.offsetWidth ?? 180;
+      const menuHeight = menu?.offsetHeight ?? 240;
+      const gap = 4;
+      const preferredLeft = align === "right" ? r.right - menuWidth : r.left;
+      const left = Math.max(8, Math.min(preferredLeft, window.innerWidth - menuWidth - 8));
+      const below = r.bottom + gap;
+      const top = below + menuHeight <= window.innerHeight - 8
+        ? below
+        : Math.max(8, r.top - menuHeight - gap);
+      setPos({ top, left });
     };
     update();
     window.addEventListener("resize", update);
@@ -123,6 +126,15 @@ export function Dropdown({
     items.forEach((item) => item.setAttribute("role", "menuitem"));
     const frame = requestAnimationFrame(() => items[0]?.focus());
     return () => cancelAnimationFrame(frame);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    return () => {
+      if (document.activeElement && menuRef.current?.contains(document.activeElement)) {
+        triggerRef.current?.querySelector<HTMLElement>("button, [role='button']")?.focus();
+      }
+    };
   }, [open]);
 
   const close = () => setOpen(false);

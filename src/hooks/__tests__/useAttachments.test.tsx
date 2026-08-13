@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../../lib/api";
 import { useAttachments } from "../useAttachments";
 import { ChatInput } from "../../components/chat/ChatInput";
+import { useSettingsStore } from "../../stores/settings";
 
 function attachmentResult(id: string) {
   return {
@@ -22,6 +23,7 @@ function attachmentResult(id: string) {
 describe("useAttachments", () => {
   beforeEach(() => {
     vi.spyOn(api, "addAttachment").mockResolvedValue(attachmentResult("server-1"));
+    useSettingsStore.setState({ enterToSend: true });
     delete (window as typeof window & { __pendingFileByLocalId?: unknown }).__pendingFileByLocalId;
   });
 
@@ -181,6 +183,14 @@ describe("useAttachments", () => {
 });
 
 describe("ChatInput attachments", () => {
+  const baseAttachments = {
+    addFiles: vi.fn(),
+    remove: vi.fn(),
+    clear: vi.fn(),
+    serializeForMessage: vi.fn(),
+    isDragging: false,
+  };
+
   it("blocks send while an attachment is uploading", () => {
     const attachments = {
       attachments: [{
@@ -193,11 +203,7 @@ describe("ChatInput attachments", () => {
         previewUrl: null,
         status: "uploading" as const,
       }],
-      addFiles: vi.fn(),
-      remove: vi.fn(),
-      clear: vi.fn(),
-      serializeForMessage: vi.fn(),
-      isDragging: false,
+      ...baseAttachments,
     };
 
     render(
@@ -229,11 +235,7 @@ describe("ChatInput attachments", () => {
         status: "error" as const,
         error: "offline",
       }],
-      addFiles: vi.fn(),
-      remove: vi.fn(),
-      clear: vi.fn(),
-      serializeForMessage: vi.fn(),
-      isDragging: false,
+      ...baseAttachments,
     };
 
     render(
@@ -251,5 +253,29 @@ describe("ChatInput attachments", () => {
 
     expect(screen.getByRole("alert")).toHaveTextContent("Remove failed attachments to send");
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+  });
+
+  it("uses Ctrl+Enter when Enter-to-send is disabled", () => {
+    const onSend = vi.fn();
+    useSettingsStore.setState({ enterToSend: false });
+    render(
+      <ChatInput
+        disabled={false}
+        streaming={false}
+        attachments={{ attachments: [], ...baseAttachments }}
+        onSend={onSend}
+        onStop={vi.fn()}
+        onInputChange={vi.fn()}
+        slashCtx={{ sessionId: "session-1" }}
+      />,
+    );
+    const input = screen.getByRole("textbox");
+    fireEvent.change(input, { target: { value: "hello" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onSend).not.toHaveBeenCalled();
+    fireEvent.keyDown(input, { key: "Enter", ctrlKey: true });
+    expect(onSend).toHaveBeenCalledWith("hello");
+    fireEvent.keyDown(input, { key: "Enter", ctrlKey: true, shiftKey: true });
+    expect(onSend).toHaveBeenCalledTimes(1);
   });
 });

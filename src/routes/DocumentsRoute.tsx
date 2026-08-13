@@ -413,43 +413,48 @@ export function DocumentsRoute() {
       {/* Tab bar */}
       <div role="tablist" aria-label="Open documents" className="flex items-center gap-1 px-2 h-10 border-b border-border bg-surface-1 overflow-x-auto">
         {tabs.map((t) => (
-          <div
-            key={t.id}
-            role="tab"
-            aria-selected={t.id === activeId}
-            tabIndex={t.id === activeId ? 0 : -1}
-            onClick={() => setActiveId(t.id)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" || event.key === " ") {
-                event.preventDefault();
-                setActiveId(t.id);
-              }
-            }}
-            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-t-md border-b-2 transition-colors shrink-0 ${
-              t.id === activeId
-                ? "bg-surface-2 text-text border-b-accent"
-                : "text-text-muted border-b-transparent hover:bg-surface-2 hover:text-text"
-            }`}
-          >
-            <FileText size={11} className="text-text-subtle shrink-0" />
-            <span className="truncate max-w-[140px]">{t.title || "Untitled"}</span>
-            {t.dirty && <span className="w-1.5 h-1.5 rounded-full bg-warn" />}
+          <div key={t.id} className="flex items-center gap-1 rounded-t-md shrink-0">
             <button
-                type="button"
-                onClick={(e) => { e.stopPropagation(); remove(t.id); }}
-                className="text-text-subtle hover:text-error ml-1 px-0.5 rounded"
-                aria-label={`Close ${t.title || "Untitled"}`}
-              >
-                ×
-              </button>
+              id={`document-tab-${t.id}`}
+              type="button"
+              role="tab"
+              aria-selected={t.id === activeId}
+              aria-controls={`document-panel-${t.id}`}
+              tabIndex={t.id === activeId ? 0 : -1}
+              onClick={() => setActiveId(t.id)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  setActiveId(t.id);
+                }
+              }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs border-b-2 transition-colors ${
+                t.id === activeId
+                  ? "bg-surface-2 text-text border-b-accent"
+                  : "text-text-muted border-b-transparent hover:bg-surface-2 hover:text-text"
+              }`}
+            >
+              <FileText size={11} className="text-text-subtle shrink-0" aria-hidden="true" />
+              <span className="truncate max-w-[140px]">{t.title || "Untitled"}</span>
+              {t.dirty && <span className="w-1.5 h-1.5 rounded-full bg-warn" aria-label="Unsaved changes" />}
+            </button>
+            <button
+              type="button"
+              onClick={() => void remove(t.id)}
+              className="text-text-subtle hover:text-error px-0.5 rounded"
+              aria-label={`Close ${t.title || "Untitled"}`}
+            >
+              ×
+            </button>
           </div>
         ))}
         <div className="flex-1" />
       </div>
       {active && (
-        <div className="flex-1 flex flex-col min-h-0">
+        <div id={`document-panel-${active.id}`} role="tabpanel" aria-labelledby={`document-tab-${active.id}`} className="flex-1 flex flex-col min-h-0">
           <div className="flex items-center gap-2 px-4 h-10 border-b border-border bg-surface-1">
             <input
+              aria-label="Document title"
               value={active.title}
               onChange={(e) => updateActive({ title: e.target.value, savedToDb: false })}
               placeholder="Title"
@@ -479,7 +484,7 @@ export function DocumentsRoute() {
               align="right"
               menuClassName="w-48"
               trigger={
-                <button className="text-text-subtle hover:text-text p-1.5 rounded-md hover:bg-surface-2">
+                <button type="button" aria-label="More document actions" className="text-text-subtle hover:text-text p-1.5 rounded-md hover:bg-surface-2">
                   <MoreHorizontal size={14} />
                 </button>
               }
@@ -487,12 +492,14 @@ export function DocumentsRoute() {
               {() => (
                 <div className="py-1">
                   <button
+                    type="button"
                     onClick={() => setShowAiEdit(true)}
                     className="w-full text-left px-3 py-1.5 text-xs text-text-muted hover:bg-surface-2 hover:text-text flex items-center gap-1.5"
                   >
                     <Sparkles size={11} className="text-accent" /> Ask AI to edit
                   </button>
                   <button
+                    type="button"
                     onClick={insertIntoChat}
                     className="w-full text-left px-3 py-1.5 text-xs text-text-muted hover:bg-surface-2 hover:text-text flex items-center gap-1.5"
                     disabled={!active.content.trim()}
@@ -501,6 +508,7 @@ export function DocumentsRoute() {
                   </button>
                   {active.diskPath ? (
                     <button
+                      type="button"
                       onClick={saveToDisk}
                       className="w-full text-left px-3 py-1.5 text-xs text-text-muted hover:bg-surface-2 hover:text-text flex items-center gap-1.5"
                       disabled={!active.dirty}
@@ -509,6 +517,7 @@ export function DocumentsRoute() {
                     </button>
                   ) : (
                     <button
+                      type="button"
                       onClick={() => save()}
                       className="w-full text-left px-3 py-1.5 text-xs text-text-muted hover:bg-surface-2 hover:text-text flex items-center gap-1.5"
                       disabled={!active.dirty}
@@ -517,6 +526,7 @@ export function DocumentsRoute() {
                     </button>
                   )}
                   <button
+                    type="button"
                     onClick={exportDoc}
                     className="w-full text-left px-3 py-1.5 text-xs text-text-muted hover:bg-surface-2 hover:text-text flex items-center gap-1.5"
                   >
@@ -560,7 +570,7 @@ export function DocumentsRoute() {
           {selection && (
             <div className="px-4 py-1.5 bg-accent/10 border-t border-accent/30 text-[11px] text-accent flex items-center justify-between">
               <span>{selection.length} chars selected</span>
-              <button onClick={() => { setSelection(""); window.getSelection()?.removeAllRanges(); }} className="hover:text-text">Clear</button>
+              <button type="button" onClick={() => { setSelection(""); window.getSelection()?.removeAllRanges(); }} className="hover:text-text">Clear</button>
             </div>
           )}
         </div>
@@ -689,6 +699,8 @@ function MarkdownPreview({ content }: { content: string }) {
           return (
             <div className="code-block-wrap my-2">
               <button
+                type="button"
+                aria-label="Copy code"
                 className="code-copy"
                 onClick={(e: any) => { navigator.clipboard.writeText(codeStr); e.preventDefault(); }}
               >Copy</button>

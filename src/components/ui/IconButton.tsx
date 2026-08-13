@@ -22,11 +22,12 @@ const VARIANTS = {
 export function IconButton({ icon, label, onClick, variant = "ghost", size = "md", active = false, className = "", disabled = false }: IconButtonProps) {
   return (
     <button
+      type="button"
       onClick={onClick}
       disabled={disabled}
       title={label}
       aria-label={label}
-      className={`inline-flex items-center justify-center rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${SIZES[size]} ${active ? "bg-surface-3 text-text" : VARIANTS[variant]} ${className}`}
+      className={`inline-flex items-center justify-center rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${SIZES[size]} ${active ? "bg-surface-3 text-text" : VARIANTS[variant]} ${className}`}
     >
       <span style={{ display: "inline-flex" }}>
         {icon && (() => {

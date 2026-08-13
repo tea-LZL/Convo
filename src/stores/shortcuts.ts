@@ -76,10 +76,19 @@ export function parseEvent(e: KeyboardEvent, isMac = isMacFn()): string {
   if (e.shiftKey) parts.push("shift");
   let key = e.key.toLowerCase();
   if (key === " ") key = "space";
-  if (key === "escape") key = "escape";
-  if (key.length === 1) key = key;
+  if (key === "arrowup") key = "up";
+  if (key === "arrowdown") key = "down";
+  if (key === "arrowleft") key = "left";
+  if (key === "arrowright") key = "right";
   if (parts.length === 0) return key;
   return `${parts.join("+")}+${key}`;
+}
+
+export function isEditableTarget(target: EventTarget | null): boolean {
+  const element = target as HTMLElement | null;
+  if (!element) return false;
+  if (element.isContentEditable || element.closest?.("[contenteditable='true']")) return true;
+  return ["INPUT", "TEXTAREA", "SELECT"].includes(element.tagName);
 }
 
 export function matchesCombo(eventCombo: string, target: string): boolean {
@@ -119,9 +128,11 @@ export function useGlobalShortcuts() {
 }
 
 export function handleKeyDown(e: KeyboardEvent) {
-  const w = window as any;
-  const bindings: ShortcutBinding[] = w.__shortcutsBindings ?? [];
-  const isMac: boolean = w.__shortcutsIsMac ?? false;
+  if (e.defaultPrevented) return;
+  // Keep normal text-entry keys inside controls, but allow modifier-based
+  // application shortcuts such as Ctrl+K and Ctrl+N to work from inputs.
+  if (isEditableTarget(e.target) && !e.ctrlKey && !e.metaKey && !e.altKey) return;
+  const { bindings, isMac } = useShortcutsStore.getState();
   const eventCombo = parseEvent(e, isMac);
   for (const b of bindings) {
     if (matchesCombo(eventCombo, b.combo)) {

@@ -26,8 +26,6 @@ export interface UseChat {
   messages: SessionState["messages"];
   status: ChatStatus;
   streaming: boolean;
-  streamContent: string;
-  streamThinking: string;
   totalTokens: number;
   error: string | null;
   loadingMessages: boolean;
@@ -56,12 +54,7 @@ export function useChat(
   const status = useChatStreamStore(
     (s) => (sessionId ? s.sessions[sessionId]?.status ?? "idle" : "idle")
   );
-  const streamContent = useChatStreamStore(
-    (s) => (sessionId ? s.sessions[sessionId]?.streamContent ?? "" : "")
-  );
-  const streamThinking = useChatStreamStore(
-    (s) => (sessionId ? s.sessions[sessionId]?.streamThinking ?? "" : "")
-  );
+
   const messages = useChatStreamStore(
     (s) => (sessionId ? s.sessions[sessionId]?.messages ?? EMPTY_MESSAGES : EMPTY_MESSAGES)
   );
@@ -132,8 +125,6 @@ export function useChat(
     messages,
     status,
     streaming,
-    streamContent,
-    streamThinking,
     totalTokens,
     error,
     loadingMessages,

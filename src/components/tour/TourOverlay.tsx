@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { X, ChevronLeft, ChevronRight } from "lucide-react";
 import { Button } from "../ui/Button";
 import { TOUR_STEPS, useTourStore } from "../../stores/tour";
@@ -10,6 +10,41 @@ export function TourOverlay() {
   const prev = useTourStore((s) => s.prev);
   const skip = useTourStore((s) => s.skip);
   const [rect, setRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const previousFocus = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!active) return;
+    previousFocus.current = document.activeElement as HTMLElement | null;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        skip();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const items = Array.from(panelRef.current?.querySelectorAll<HTMLElement>("button:not([disabled])") ?? []);
+      if (items.length === 0) return;
+      const current = items.indexOf(document.activeElement as HTMLElement);
+      const next = event.shiftKey
+        ? (current <= 0 ? items.length - 1 : current - 1)
+        : (current === items.length - 1 ? 0 : current + 1);
+      event.preventDefault();
+      items[next].focus();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      if (previousFocus.current?.isConnected) previousFocus.current.focus();
+      previousFocus.current = null;
+    };
+  }, [active, skip]);
+
+  useEffect(() => {
+    if (!active) return;
+    const frame = requestAnimationFrame(() => panelRef.current?.querySelector<HTMLElement>("button")?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [active, step]);
 
   useEffect(() => {
     if (!active) {
@@ -42,7 +77,7 @@ export function TourOverlay() {
   const isLast = step === TOUR_STEPS.length - 1;
 
   return (
-    <div className="fixed inset-0 z-[180] pointer-events-none">
+    <div className="fixed inset-0 z-[180] pointer-events-none" role="dialog" aria-modal="true" aria-label="Welcome tour">
       <div className="absolute inset-0 overlay-backdrop pointer-events-auto" onClick={skip} />
       {rect && (
         <div
@@ -57,6 +92,7 @@ export function TourOverlay() {
         />
       )}
       <div
+        ref={panelRef}
         className={`absolute pointer-events-auto max-w-sm bg-surface-1 border border-border rounded-xl shadow-modal p-4 animate-scale-in ${
           rect ? "" : "left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
         }`}

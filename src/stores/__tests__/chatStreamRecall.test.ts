@@ -1,12 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { recallMemories } from "../chatStream";
+import { useMemoryStore } from "../memory";
 import { preferenceItem, factItem, skillItem } from "../../test/fixtures/memory";
 
 const mockedInvoke = vi.mocked(invoke);
 
 beforeEach(() => {
   mockedInvoke.mockReset();
+  useMemoryStore.setState({ items: [], loaded: false, loading: false, _overrides: {} });
 });
 
 describe("recallMemories", () => {

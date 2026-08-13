@@ -31,6 +31,8 @@ interface SessionsState {
   search: (q: string) => Promise<Array<Session & { snippet: string }>>;
 }
 
+let refreshPromise: Promise<void> | null = null;
+
 export const useSessionsStore = create<SessionsState>((set, get) => ({
   sessions: [],
   activeId: null,
@@ -38,13 +40,20 @@ export const useSessionsStore = create<SessionsState>((set, get) => ({
   error: null,
 
   refresh: async () => {
-    set({ loading: true });
-    try {
-      const sessions = await api.listSessions(null, true);
-      set({ sessions, loading: false, error: null });
-    } catch (e) {
-      set({ loading: false, error: String(e) });
-    }
+    if (refreshPromise) return refreshPromise;
+    const promise = (async () => {
+      set({ loading: true });
+      try {
+        const sessions = await api.listSessions(null, true);
+        set({ sessions, loading: false, error: null });
+      } catch (e) {
+        set({ loading: false, error: String(e) });
+      }
+    })().finally(() => {
+      refreshPromise = null;
+    });
+    refreshPromise = promise;
+    return promise;
   },
 
   create: async (opts) => {
@@ -64,6 +73,11 @@ export const useSessionsStore = create<SessionsState>((set, get) => ({
 
   remove: async (id) => {
     await api.deleteSession(id);
+    // Drop the chat stream cache for deleted sessions. The stream store
+    // intentionally survives route switches, but deleted sessions should
+    // not remain retained for the lifetime of the app.
+    const { evictSessionState } = await import("./chatStream");
+    evictSessionState(id);
     if (get().activeId === id) set({ activeId: null });
     await get().refresh();
   },

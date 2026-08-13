@@ -8,6 +8,7 @@ import { useSessionsStore, Session } from "../../stores/sessions";
 import { IconButton } from "../ui/IconButton";
 import { Tooltip } from "../ui/Form";
 import { usePaletteStore } from "../../stores/palette";
+import { comboDisplay, useShortcutsStore } from "../../stores/shortcuts";
 import { toast } from "../../stores/toasts";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { Modal } from "../ui/Modal";
@@ -42,6 +43,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
   const location = useLocation();
   const navigate = useNavigate();
   const setPaletteOpen = usePaletteStore((s) => s.setOpen);
+  const isMac = useShortcutsStore((s) => s.isMac);
   const sessions = useSessionsStore((s) => s.sessions);
   const activeId = useSessionsStore((s) => s.activeId);
   const setActive = useSessionsStore((s) => s.setActive);
@@ -57,6 +59,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
   const [renameTarget, setRenameTarget] = useState<Session | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [appVersion, setAppVersion] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
   const ctxMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -70,6 +73,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
   // Same pattern as the chat message menu (commits 3+4 of v0.6.1).
   useEffect(() => {
     if (!ctxMenu) return;
+    const frame = requestAnimationFrame(() => ctxMenuRef.current?.querySelector<HTMLElement>("[role='menuitem']")?.focus());
     const onLeftClick = (e: MouseEvent) => {
       if (e.button !== 0) return;
       if (ctxMenuRef.current && !ctxMenuRef.current.contains(e.target as Node)) {
@@ -84,6 +88,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
     document.addEventListener("keydown", onKey);
     document.addEventListener("scroll", onScroll, true);
     return () => {
+      cancelAnimationFrame(frame);
       document.removeEventListener("mousedown", onLeftClick);
       document.removeEventListener("keydown", onKey);
       document.removeEventListener("scroll", onScroll, true);
@@ -91,14 +96,17 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
   }, [ctxMenu]);
 
   const handleNewChat = async () => {
-    const s = await create();
-    setActive(s.id);
-    // Navigate to the canonical URL directly. Going to /chat first
-    // would trigger the URL-sync effect in ChatRoute to redirect
-    // here anyway, but the extra hop leaves a brief moment where
-    // no session is selected and the EmptyChat view is rendered.
-    // A direct /chat/${id} navigation is a single route change.
-    navigate(`/chat/${s.id}`);
+    if (creating) return;
+    setCreating(true);
+    try {
+      const s = await create();
+      setActive(s.id);
+      navigate(`/chat/${s.id}`);
+    } catch (error) {
+      toast.error(String(error), "Chat could not be created");
+    } finally {
+      setCreating(false);
+    }
   };
 
   const openContextMenu = (e: React.MouseEvent, s: Session) => {
@@ -194,7 +202,8 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
           <button
             type="button"
             aria-label="New chat"
-            onClick={handleNewChat}
+            disabled={creating}
+          onClick={handleNewChat}
             className="w-8 h-8 rounded-md flex items-center justify-center bg-accent hover:bg-accent-hover text-white transition-colors"
           >
             <Plus size={14} />
@@ -229,12 +238,14 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
 
       <div className="p-2">
         <button
+          type="button"
+          aria-label="Search and commands"
           onClick={() => setPaletteOpen(true)}
           className="w-full flex items-center gap-2 px-2.5 py-1.5 bg-surface-2 hover:bg-surface-3 border border-border rounded-md text-xs text-text-muted transition-colors"
         >
           <Search size={12} />
           <span className="flex-1 text-left">Search & commands</span>
-          <kbd className="text-[9px] bg-surface-3 border border-border rounded px-1 py-0.5 font-mono">⌘K</kbd>
+          <kbd className="text-[9px] bg-surface-3 border border-border rounded px-1 py-0.5 font-mono">{comboDisplay("ctrl+k", isMac)}</kbd>
         </button>
       </div>
 
@@ -244,6 +255,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
           return (
             <button
               key={n.id}
+              type="button"
               onClick={() => navigate(n.path)}
               className={`flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm transition-colors ${
                 active ? "bg-accent/15 text-accent" : "text-text-muted hover:text-text hover:bg-surface-2"
@@ -258,6 +270,8 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
 
       <div className="px-2 py-2 mt-1">
         <button
+          type="button"
+          disabled={creating}
           onClick={handleNewChat}
           className="w-full flex items-center gap-2 px-2.5 py-1.5 bg-accent hover:bg-accent-hover text-white rounded-md text-sm font-medium transition-colors"
         >
@@ -273,6 +287,8 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
               {showArchived ? "Archived" : "Recent"}
             </div>
             <button
+              type="button"
+              aria-label={showArchived ? "Show active chats" : "Show archived chats"}
               onClick={() => setShowArchived((v) => !v)}
               className="text-[10px] text-text-subtle hover:text-text flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-surface-2"
               title={showArchived ? "Show active chats" : `Show archived (${archivedSessions.length})`}
@@ -311,6 +327,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
           Tools
         </div>
         <button
+          type="button"
           onClick={() => navigate("/hardware")}
           className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm transition-colors ${
             location.pathname === "/hardware" ? "bg-accent/15 text-accent" : "text-text-muted hover:text-text hover:bg-surface-2"
@@ -320,6 +337,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
           Hardware scan
         </button>
         <button
+          type="button"
           onClick={() => navigate("/diagnostics")}
           className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm transition-colors ${
             location.pathname === "/diagnostics" ? "bg-accent/15 text-accent" : "text-text-muted hover:text-text hover:bg-surface-2"
@@ -407,6 +425,7 @@ function SessionRow({
       }`}
     >
       <button
+        type="button"
         onClick={onLeftClick}
         onContextMenu={onContextMenu}
         className="flex-1 min-w-0 text-left px-2 py-1.5 flex items-center gap-1.5"
@@ -417,6 +436,8 @@ function SessionRow({
       </button>
       <div className="opacity-0 group-hover:opacity-100 flex items-center pr-1.5 gap-0.5 transition-opacity">
         <button
+          type="button"
+          aria-label={session.is_pinned ? "Unpin" : "Pin"}
           onClick={(e) => { e.stopPropagation(); onPin(); }}
           className="text-text-subtle hover:text-accent p-0.5"
           title={session.is_pinned ? "Unpin" : "Pin"}
@@ -424,6 +445,8 @@ function SessionRow({
           <Pin size={10} className={session.is_pinned ? "text-accent" : ""} />
         </button>
         <button
+          type="button"
+          aria-label={session.is_archived ? "Unarchive" : "Archive"}
           onClick={(e) => { e.stopPropagation(); onArchive(); }}
           className="text-text-subtle hover:text-text p-0.5"
           title={session.is_archived ? "Unarchive" : "Archive"}
@@ -455,17 +478,24 @@ const SessionContextMenuView = forwardRef<HTMLDivElement, {
   return (
     <div
       ref={ref}
+      role="menu"
+      aria-label={`Actions for ${session.title}`}
+      tabIndex={-1}
       className="fixed z-[100] min-w-[180px] bg-surface-1 border border-border rounded-lg shadow-modal py-1 animate-scale-in"
       style={{ left: cx, top: cy }}
       onClick={(e) => e.stopPropagation()}
     >
       <button
+        type="button"
+        role="menuitem"
         onClick={onRename}
         className="w-full text-left px-3 py-1.5 text-xs text-text-muted hover:bg-surface-2 hover:text-text flex items-center gap-2"
       >
         <Pencil size={12} /> Rename
       </button>
       <button
+        type="button"
+        role="menuitem"
         onClick={onPin}
         className="w-full text-left px-3 py-1.5 text-xs text-text-muted hover:bg-surface-2 hover:text-text flex items-center gap-2"
       >
@@ -473,6 +503,8 @@ const SessionContextMenuView = forwardRef<HTMLDivElement, {
         {session.is_pinned ? "Unpin" : "Pin"}
       </button>
       <button
+        type="button"
+        role="menuitem"
         onClick={onArchive}
         className="w-full text-left px-3 py-1.5 text-xs text-text-muted hover:bg-surface-2 hover:text-text flex items-center gap-2"
       >
@@ -481,6 +513,8 @@ const SessionContextMenuView = forwardRef<HTMLDivElement, {
       </button>
       <div className="my-1 border-t border-border/60" />
       <button
+        type="button"
+        role="menuitem"
         onClick={onCopyId}
         className="w-full text-left px-3 py-1.5 text-xs text-text-muted hover:bg-surface-2 hover:text-text flex items-center gap-2"
       >
@@ -488,6 +522,8 @@ const SessionContextMenuView = forwardRef<HTMLDivElement, {
       </button>
       <div className="my-1 border-t border-border/60" />
       <button
+        type="button"
+        role="menuitem"
         onClick={onDelete}
         className="w-full text-left px-3 py-1.5 text-xs text-error hover:bg-surface-2 flex items-center gap-2"
       >

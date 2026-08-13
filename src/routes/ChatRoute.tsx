@@ -8,7 +8,7 @@ import { ChatViewNew } from "../components/chat/ChatViewNew";
 import { ErrorBoundary } from "../components/ui/ErrorBoundary";
 import { ChatSkeleton } from "../components/ui/Skeleton";
 import { useSessionsStore } from "../stores/sessions";
-import { api } from "../lib/api";
+import { api, Provider } from "../lib/api";
 import { errorClass, recordLog } from "../lib/logger";
 
 export function ChatRoute() {
@@ -16,35 +16,59 @@ export function ChatRoute() {
   const navigate = useNavigate();
   const setActive = useSessionsStore((s) => s.setActive);
   const activeId = useSessionsStore((s) => s.activeId);
+  const sessions = useSessionsStore((s) => s.sessions);
+  const sessionsLoading = useSessionsStore((s) => s.loading);
+  const sessionsError = useSessionsStore((s) => s.error);
   const refresh = useSessionsStore((s) => s.refresh);
   const [loading, setLoading] = useState(true);
   const [hasProviders, setHasProviders] = useState<boolean | null>(null);
+  const [providers, setProviders] = useState<Provider[]>([]);
 
   useEffect(() => {
-    (async () => {
+    let cancelled = false;
+    setLoading(true);
+    void (async () => {
       await refresh();
-      if (sessionId && sessionId !== activeId) {
-        setActive(sessionId);
-      }
-      try {
-        const ps = await api.listProviders();
-        setHasProviders(ps.length > 0);
-      } catch (error) {
-        recordLog({ operation: "list_providers", status: "failed", route: "/chat", errorClass: errorClass(error) });
-        setHasProviders(true); // optimistic
+      if (cancelled) return;
+      const state = useSessionsStore.getState();
+      if (!state.error && sessionId) {
+        if (state.sessions.some((session) => session.id === sessionId)) {
+          if (state.activeId !== sessionId) setActive(sessionId);
+        } else {
+          setActive(null);
+          navigate("/chat", { replace: true });
+          setLoading(false);
+          return;
+        }
       }
       setLoading(false);
     })();
-  }, [sessionId, activeId, setActive, refresh]);
+    return () => { cancelled = true; };
+  }, [navigate, refresh, sessionId, setActive]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void api.listProviders().then((ps) => {
+      if (cancelled) return;
+      setProviders(ps);
+      setHasProviders(ps.length > 0);
+    }).catch((error) => {
+      if (cancelled) return;
+      recordLog({ operation: "list_providers", status: "failed", route: "/chat", errorClass: errorClass(error) });
+      setHasProviders(true); // optimistic
+    });
+    return () => { cancelled = true; };
+  }, []);
 
   // Sync URL to activeId
   useEffect(() => {
+    if (loading || sessionsLoading || sessionsError) return;
     if (activeId && !sessionId) {
       navigate(`/chat/${activeId}`, { replace: true });
     } else if (!activeId && sessionId) {
       navigate("/chat", { replace: true });
     }
-  }, [activeId, sessionId, navigate]);
+  }, [activeId, loading, navigate, sessionId, sessionsError, sessionsLoading]);
 
   // Listen for "Insert into chat" from other routes (e.g. Documents)
   useEffect(() => {
@@ -66,7 +90,10 @@ export function ChatRoute() {
   // Poll for provider changes (e.g. after Settings → Providers add)
   useEffect(() => {
     const onFocus = () => {
-      api.listProviders().then((ps) => setHasProviders(ps.length > 0)).catch((error) => {
+      api.listProviders().then((ps) => {
+        setProviders(ps);
+        setHasProviders(ps.length > 0);
+      }).catch((error) => {
         recordLog({ operation: "refresh_chat_providers", status: "failed", route: "/chat", errorClass: errorClass(error) });
       });
     };
@@ -74,8 +101,24 @@ export function ChatRoute() {
     return () => window.removeEventListener("focus", onFocus);
   }, []);
 
-  if (loading) {
+  if (loading || sessionsLoading || hasProviders === null) {
     return <ChatSkeleton />;
+  }
+
+  if (sessionsError) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center gap-3 p-8 text-center">
+        <h1 className="text-sm font-semibold text-text">Chats could not be loaded</h1>
+        <p className="text-xs text-text-muted max-w-md">{sessionsError}</p>
+        <button
+          type="button"
+          onClick={() => { setLoading(true); void refresh().finally(() => setLoading(false)); }}
+          className="px-3 py-1.5 rounded-md border border-border bg-surface-2 hover:bg-surface-3 text-xs text-text"
+        >
+          Retry
+        </button>
+      </div>
+    );
   }
 
   if (!activeId) {
@@ -83,8 +126,13 @@ export function ChatRoute() {
   }
 
   return (
-    <ErrorBoundary label="Chat">
-      <ChatViewNew key={activeId} sessionId={activeId} />
+    <ErrorBoundary label="Chat" resetKey={activeId}>
+      <ChatViewNew
+        key={activeId}
+        sessionId={activeId}
+        session={sessions.find((session) => session.id === activeId)}
+        providers={providers}
+      />
     </ErrorBoundary>
   );
 }

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useThemeStore } from "../stores/theme";
 import { useSettingsStore } from "../stores/settings";
-import { useShortcutsStore, comboDisplay } from "../stores/shortcuts";
+import { parseEvent, useShortcutsStore, comboDisplay } from "../stores/shortcuts";
 import { useTourStore } from "../stores/tour";
 import { api, Provider, SearchConfig } from "../lib/api";
 import { errorClass, recordLog } from "../lib/logger";
@@ -58,6 +58,7 @@ function SettingsLink({ to, icon, label, active }: { to: string; icon: React.Rea
   return (
     <Link
       to={to}
+      aria-current={active ? "page" : undefined}
       className={`flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm transition-colors ${
         active ? "bg-accent/15 text-accent" : "text-text-muted hover:text-text hover:bg-surface-2"
       }`}
@@ -136,6 +137,8 @@ function GeneralSection() {
 
 export function ProvidersSection() {
   const [providers, setProviders] = useState<Provider[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState("");
   const [kind, setKind] = useState<"ollama" | "openai_compat">("ollama");
@@ -146,9 +149,20 @@ export function ProvidersSection() {
   const [scanning, setScanning] = useState(false);
   const [confirmDeleteProvider, setConfirmDeleteProvider] = useState<string | null>(null);
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
+  const [saving, setSaving] = useState(false);
 
-  const refresh = async () => setProviders(await api.listProviders());
-  useEffect(() => { refresh(); }, []);
+  const refresh = async () => {
+    setLoading(true);
+    setLoadError(null);
+    try {
+      setProviders(await api.listProviders());
+    } catch (e) {
+      setLoadError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { void refresh(); }, []);
 
   const probe = async () => {
     try {
@@ -160,6 +174,8 @@ export function ProvidersSection() {
   };
 
   const add = async () => {
+    if (saving) return;
+    setSaving(true);
     try {
       const providerName = name.trim() || `${kind} (${baseUrl})`;
       let providerId: string;
@@ -179,6 +195,7 @@ export function ProvidersSection() {
        });
       toast.success(editingProvider ? "Provider updated" : "Provider added");
     } catch (e) { toast.error(String(e)); }
+    finally { setSaving(false); }
   };
 
   const remove = async (id: string) => {
@@ -251,7 +268,14 @@ export function ProvidersSection() {
         </Card>
       )}
       <Card>
-        {providers.length === 0 ? (
+        {loading ? (
+          <div className="text-center text-text-muted text-sm py-6">Loading providers…</div>
+        ) : loadError ? (
+          <div role="alert" className="text-center text-error text-sm py-6">
+            <p>{loadError}</p>
+            <Button size="xs" variant="secondary" onClick={() => void refresh()} className="mt-2">Retry</Button>
+          </div>
+        ) : providers.length === 0 ? (
           <div className="text-center text-text-muted text-sm py-6">No providers yet. Add one to start chatting.</div>
         ) : (
           providers.map((p) => (
@@ -288,47 +312,46 @@ export function ProvidersSection() {
         )}
       </Card>
       {adding && (
-         <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 overlay-backdrop animate-fade-in" onClick={() => setAdding(false)}>
-          <div className="bg-surface-1 border border-border rounded-2xl shadow-modal w-full max-w-md p-5 animate-scale-in" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between mb-4">
-               <h3 className="text-base font-semibold text-text">{editingProvider ? "Edit provider" : "Add provider"}</h3>
-              <button onClick={() => setAdding(false)} className="text-text-subtle hover:text-text"><X size={16} /></button>
+        <Modal
+          open
+          onClose={() => setAdding(false)}
+          title={editingProvider ? "Edit provider" : "Add provider"}
+          size="md"
+        >
+          <div className="space-y-3">
+            <div>
+              <label htmlFor="provider-kind" className="text-xs text-text-muted block mb-1">Kind</label>
+              <Select id="provider-kind" disabled={editingProvider !== null} value={kind} onChange={(v) => setKind(v as any)} options={[
+                { value: "ollama", label: "Ollama" },
+                { value: "openai_compat", label: "OpenAI-compatible" },
+              ]} />
             </div>
-            <div className="space-y-3">
+            <div>
+              <label htmlFor="provider-name" className="text-xs text-text-muted block mb-1">Name</label>
+              <TextInput id="provider-name" value={name} onChange={setName} placeholder="e.g. OpenRouter" />
+            </div>
+            <div>
+              <label htmlFor="provider-base-url" className="text-xs text-text-muted block mb-1">Base URL</label>
+              <TextInput id="provider-base-url" value={baseUrl} onChange={setBaseUrl} placeholder="http://localhost:11434" />
+            </div>
+            {kind === "openai_compat" && (
               <div>
-                <label className="text-xs text-text-muted block mb-1">Kind</label>
-                <Select disabled={editingProvider !== null} value={kind} onChange={(v) => setKind(v as any)} options={[
-                  { value: "ollama", label: "Ollama" },
-                  { value: "openai_compat", label: "OpenAI-compatible" },
-                ]} />
+                <label htmlFor="provider-api-key" className="text-xs text-text-muted block mb-1">API key (optional, stored in OS keyring)</label>
+                <TextInput id="provider-api-key" value={apiKey} onChange={setApiKey} type="password" placeholder={editingProvider ? "Leave blank to keep current key" : "sk-..."} />
               </div>
-              <div>
-                <label className="text-xs text-text-muted block mb-1">Name</label>
-                <TextInput value={name} onChange={setName} placeholder="e.g. OpenRouter" />
+            )}
+            {probeMsg && (
+              <div className={`text-xs flex items-center gap-1 ${probeMsg.ok ? "text-success" : "text-error"}`}>
+                {probeMsg.ok ? <CheckCircle2 size={12} /> : <AlertCircle size={12} />}
+                {probeMsg.message}
               </div>
-              <div>
-                <label className="text-xs text-text-muted block mb-1">Base URL</label>
-                <TextInput value={baseUrl} onChange={setBaseUrl} placeholder="http://localhost:11434" />
-              </div>
-              {kind === "openai_compat" && (
-                <div>
-                  <label className="text-xs text-text-muted block mb-1">API key (optional, stored in OS keyring)</label>
-                   <TextInput value={apiKey} onChange={setApiKey} type="password" placeholder={editingProvider ? "Leave blank to keep current key" : "sk-..."} />
-                </div>
-              )}
-              {probeMsg && (
-                <div className={`text-xs flex items-center gap-1 ${probeMsg.ok ? "text-success" : "text-error"}`}>
-                  {probeMsg.ok ? <CheckCircle2 size={12} /> : <AlertCircle size={12} />}
-                  {probeMsg.message}
-                </div>
-              )}
-              <div className="flex items-center justify-end gap-2 pt-2">
-                <Button size="sm" variant="ghost" onClick={probe}>Test connection</Button>
-                 <Button size="sm" variant="primary" onClick={add}>{editingProvider ? "Save" : "Add"}</Button>
-              </div>
+            )}
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <Button size="sm" variant="ghost" onClick={() => void probe()} disabled={saving}>Test connection</Button>
+              <Button size="sm" variant="primary" onClick={() => void add()} loading={saving}>{editingProvider ? "Save" : "Add"}</Button>
             </div>
           </div>
-        </div>
+        </Modal>
       )}
       <ConfirmDialog
         open={confirmDeleteProvider !== null}
@@ -397,8 +420,8 @@ export function SearchSection() {
       <Card>
         <div className="space-y-3">
           <div>
-            <label className="text-xs text-text-muted block mb-1">Provider</label>
-            <Select value={cfg.provider} onChange={(v) => setCfg({ ...cfg, provider: v })} options={[
+            <label htmlFor="search-provider" className="text-xs text-text-muted block mb-1">Provider</label>
+            <Select id="search-provider" value={cfg.provider} onChange={(v) => setCfg({ ...cfg, provider: v })} options={[
               { value: "duckduckgo", label: "DuckDuckGo (free, no key)" },
               { value: "searxng", label: "SearXNG (self-hosted)" },
               { value: "brave", label: "Brave Search API" },
@@ -406,30 +429,30 @@ export function SearchSection() {
           </div>
           {cfg.provider === "searxng" && (
             <div>
-              <label className="text-xs text-text-muted block mb-1">SearXNG base URL</label>
-              <TextInput value={cfg.base_url ?? ""} onChange={(v) => setCfg({ ...cfg, base_url: v })} placeholder="http://localhost:8080" />
+              <label htmlFor="search-searxng-url" className="text-xs text-text-muted block mb-1">SearXNG base URL</label>
+              <TextInput id="search-searxng-url" value={cfg.base_url ?? ""} onChange={(v) => setCfg({ ...cfg, base_url: v })} placeholder="http://localhost:8080" />
             </div>
           )}
           {cfg.provider === "brave" && (
             <div>
-              <label className="text-xs text-text-muted block mb-1">Brave API key</label>
-              <TextInput value={cfg.api_key ?? ""} onChange={(v) => setCfg({ ...cfg, api_key: v })} type="password" placeholder={cfg.has_api_key ? "Leave blank to keep saved key" : "BSA..."} />
+              <label htmlFor="search-brave-key" className="text-xs text-text-muted block mb-1">Brave API key</label>
+              <TextInput id="search-brave-key" value={cfg.api_key ?? ""} onChange={(v) => setCfg({ ...cfg, api_key: v })} type="password" placeholder={cfg.has_api_key ? "Leave blank to keep saved key" : "BSA..."} />
               {cfg.has_api_key && !cfg.api_key && <p className="text-[10px] text-success mt-1">A key is saved in the OS keyring.</p>}
             </div>
           )}
           <div>
-            <label className="text-xs text-text-muted block mb-1">Max results per search</label>
-            <Select value={String(cfg.max_results)} onChange={(v) => setCfg({ ...cfg, max_results: Number(v) })} options={["3","5","8","10"].map((v) => ({ value: v, label: v }))} />
+            <label htmlFor="search-max-results" className="text-xs text-text-muted block mb-1">Max results per search</label>
+            <Select id="search-max-results" value={String(cfg.max_results)} onChange={(v) => setCfg({ ...cfg, max_results: Number(v) })} options={["3","5","8","10"].map((v) => ({ value: v, label: v }))} />
           </div>
           <div className="flex justify-end pt-2">
-            <Button variant="primary" onClick={save} loading={saving}>Save</Button>
+            <Button variant="primary" onClick={save} loading={saving} disabled={loading}>Save</Button>
           </div>
         </div>
       </Card>
       <Card className="mt-4">
         <h2 className="text-sm font-medium text-text mb-2">Test search</h2>
         <div className="flex gap-2">
-          <TextInput value={testQuery} onChange={setTestQuery} placeholder="Search query" />
+          <TextInput aria-label="Search query" value={testQuery} onChange={setTestQuery} placeholder="Search query" />
           <Button variant="secondary" onClick={() => void testSearch()} loading={testing}>Test</Button>
         </div>
         {testResults.length > 0 && (
@@ -516,29 +539,18 @@ function ShortcutsSection() {
     if (!recording) return;
     const onKey = (e: KeyboardEvent) => {
       e.preventDefault();
+      e.stopImmediatePropagation();
       if (e.key === "Escape") { setRecording(null); return; }
-      const isMac = useShortcutsStore.getState().isMac;
-      const parts: string[] = [];
-      const ctrlKey = isMac ? e.metaKey : e.ctrlKey;
-      if (ctrlKey) parts.push("ctrl");
-      if (e.altKey) parts.push("alt");
-      if (e.shiftKey) parts.push("shift");
-      let key = e.key.toLowerCase();
-      if (key === " ") key = "space";
-      if (key === "escape") key = "escape";
-      if (key === "arrowup") key = "up";
-      if (key === "arrowdown") key = "down";
-      if (key === "arrowleft") key = "left";
-      if (key === "arrowright") key = "right";
+      const key = e.key.toLowerCase();
       if (key === "control" || key === "meta" || key === "alt" || key === "shift") return;
-      parts.push(key);
-       if (!setCombo(recording, parts.join("+"))) {
+      const combo = parseEvent(e, useShortcutsStore.getState().isMac);
+      if (!setCombo(recording, combo)) {
          toast.error("That shortcut is already in use", "Shortcut conflict");
-       }
+      }
       setRecording(null);
     };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
   }, [recording, setCombo]);
 
   return (
