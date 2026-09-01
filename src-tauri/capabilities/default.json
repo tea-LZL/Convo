@@ -5,9 +5,11 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "shell:allow-open",
     "notification:default",
     "fs:allow-read-file",
-    "dialog:allow-open"
+    "fs:allow-read-text-file",
+    "fs:allow-write-text-file",
+    "dialog:allow-open",
+    "dialog:allow-save"
   ]
 }

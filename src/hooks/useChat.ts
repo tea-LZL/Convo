@@ -19,8 +19,11 @@ import {
   stopStream,
   ChatStatus,
   SessionState,
+  SendOpts,
   useChatStreamStore,
 } from "../stores/chatStream";
+
+type ChatSendOptions = Pick<SendOpts, "systemOverride" | "attachmentsJson" | "resendSnapshot" | "resendLock">;
 
 export interface UseChat {
   messages: SessionState["messages"];
@@ -29,7 +32,7 @@ export interface UseChat {
   totalTokens: number;
   error: string | null;
   loadingMessages: boolean;
-  send: (text: string, options?: { systemOverride?: string; attachmentsJson?: string | null }) => Promise<void>;
+  send: (text: string, options?: ChatSendOptions) => Promise<boolean>;
   stop: () => Promise<void>;
   reload: () => Promise<void>;
   clear: () => Promise<void>;
@@ -41,7 +44,8 @@ const EMPTY_MESSAGES: SessionState["messages"] = [];
 export function useChat(
   sessionId: string | null,
   modelName: string,
-  providerId: string = ""
+  providerId: string = "",
+  contextLength: number | null = 8192,
 ): UseChat {
   // Per-slice subscriptions. Each `useChatStreamStore` call is its
   // own subscription; Zustand compares the returned value with the
@@ -90,15 +94,18 @@ export function useChat(
   );
 
   const send = useCallback(
-    async (text: string, options?: { systemOverride?: string; attachmentsJson?: string | null }) => {
-      if (!sessionId) return;
-      await sendMessage(sessionId, text, modelName, {
+    async (text: string, options?: ChatSendOptions): Promise<boolean> => {
+      if (!sessionId) return false;
+      return sendMessage(sessionId, text, modelName, {
         systemOverride: options?.systemOverride,
         attachmentsJson: options?.attachmentsJson,
+        resendSnapshot: options?.resendSnapshot,
+        resendLock: options?.resendLock,
+        contextLength,
         providerId: providerId || undefined,
       });
     },
-    [sessionId, modelName, providerId]
+    [sessionId, modelName, providerId, contextLength]
   );
 
   const stop = useCallback(async () => {
@@ -118,8 +125,11 @@ export function useChat(
 
   const retryLast = useCallback(async () => {
     if (!sessionId) return;
-    await retryLastMessage(sessionId, modelName, { providerId: providerId || undefined });
-  }, [modelName, providerId, sessionId]);
+    await retryLastMessage(sessionId, modelName, {
+      providerId: providerId || undefined,
+      contextLength,
+    });
+  }, [modelName, providerId, sessionId, contextLength]);
 
   return {
     messages,

@@ -57,7 +57,7 @@ describe("useMemoryStore", () => {
   });
 
   it("persists automatic extraction before requesting facts", async () => {
-    vi.spyOn(api, "queueMemoryReview").mockResolvedValue("review-1");
+    vi.spyOn(api, "queueMemoryReview").mockResolvedValue({ reviewId: "review-1", attempt: 1 });
     vi.spyOn(api, "extractFactsFromSession").mockResolvedValue(extractedFacts);
     vi.spyOn(api, "finishMemoryReview").mockResolvedValue();
     vi.spyOn(api, "listMemoryReviews").mockResolvedValue([]);
@@ -66,22 +66,71 @@ describe("useMemoryStore", () => {
 
     expect(api.queueMemoryReview).toHaveBeenCalledWith("session-1");
     expect(api.extractFactsFromSession).toHaveBeenCalledWith("session-1", "model-1", "provider-1");
-    expect(api.finishMemoryReview).toHaveBeenCalledWith("review-1", extractedFacts);
+    expect(api.finishMemoryReview).toHaveBeenCalledWith("review-1", 1, extractedFacts);
+  });
+
+  it("deduplicates extracted candidates by kind and normalized content before finishing", async () => {
+    const candidates = [
+      { kind: "user_pref", title: "First title", content: "  Prefers   concise replies. ", tags: "first" },
+      { kind: "user_pref", title: "Later title", content: "prefers concise replies.", tags: "later" },
+      { kind: "project_fact", title: "Different kind", content: "PREFERS CONCISE REPLIES.", tags: null },
+      { kind: "user_pref", title: "Near duplicate", content: "Prefers concise replies!", tags: null },
+    ];
+    vi.spyOn(api, "queueMemoryReview").mockResolvedValue({ reviewId: "review-1", attempt: 1 });
+    vi.spyOn(api, "extractFactsFromSession").mockResolvedValue(candidates);
+    vi.spyOn(api, "finishMemoryReview").mockResolvedValue();
+    vi.spyOn(api, "listMemoryReviews").mockResolvedValue([]);
+
+    await useMemoryStore.getState().queueReview("session-1");
+
+    expect(api.finishMemoryReview).toHaveBeenCalledWith("review-1", 1, [
+      candidates[0],
+      candidates[2],
+      candidates[3],
+    ]);
   });
 
   it("persists automatic extraction failures for retry", async () => {
-    vi.spyOn(api, "queueMemoryReview").mockResolvedValue("review-1");
+    vi.spyOn(api, "queueMemoryReview").mockResolvedValue({ reviewId: "review-1", attempt: 1 });
     vi.spyOn(api, "extractFactsFromSession").mockRejectedValue(new Error("offline"));
     vi.spyOn(api, "failMemoryReview").mockResolvedValue();
     vi.spyOn(api, "listMemoryReviews").mockResolvedValue([]);
 
     await useMemoryStore.getState().queueReview("session-1");
 
-    expect(api.failMemoryReview).toHaveBeenCalledWith("review-1", "offline");
+    expect(api.failMemoryReview).toHaveBeenCalledWith("review-1", 1, "offline");
+  });
+
+  it("does not mask a stale completion as a new extraction failure", async () => {
+    vi.spyOn(api, "queueMemoryReview").mockResolvedValue({ reviewId: "review-1", attempt: 1 });
+    vi.spyOn(api, "extractFactsFromSession").mockResolvedValue(extractedFacts);
+    vi.spyOn(api, "finishMemoryReview").mockRejectedValue(
+      new Error("Memory review attempt is stale or no longer extracting"),
+    );
+    const fail = vi.spyOn(api, "failMemoryReview").mockResolvedValue();
+    vi.spyOn(api, "listMemoryReviews").mockResolvedValue([]);
+
+    await expect(useMemoryStore.getState().queueReview("session-1")).rejects.toThrow("stale");
+    expect(fail).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a stale failure response instead of hiding it", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(api, "queueMemoryReview").mockResolvedValue({ reviewId: "review-1", attempt: 1 });
+    vi.spyOn(api, "extractFactsFromSession").mockRejectedValue(new Error("offline"));
+    vi.spyOn(api, "failMemoryReview").mockRejectedValue(
+      new Error("Memory review attempt is stale or no longer extracting"),
+    );
+
+    await expect(useMemoryStore.getState().queueReview("session-1")).rejects.toThrow("stale");
   });
 
   it("retries a failed persisted review", async () => {
-    vi.spyOn(api, "retryMemoryReview").mockResolvedValue("session-1");
+    vi.spyOn(api, "retryMemoryReview").mockResolvedValue({
+      reviewId: "review-1",
+      attempt: 2,
+      sessionId: "session-1",
+    });
     vi.spyOn(api, "extractFactsFromSession").mockResolvedValue(extractedFacts);
     vi.spyOn(api, "finishMemoryReview").mockResolvedValue();
     vi.spyOn(api, "listMemoryReviews").mockResolvedValue([]);
@@ -89,7 +138,7 @@ describe("useMemoryStore", () => {
     await useMemoryStore.getState().retryReview("review-1");
 
     expect(api.extractFactsFromSession).toHaveBeenCalledWith("session-1");
-    expect(api.finishMemoryReview).toHaveBeenCalledWith("review-1", extractedFacts);
+    expect(api.finishMemoryReview).toHaveBeenCalledWith("review-1", 2, extractedFacts);
     expect(useMemoryStore.getState().reviews).toEqual([]);
   });
 

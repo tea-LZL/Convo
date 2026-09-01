@@ -5,7 +5,7 @@ import { Tooltip } from "../ui/Form";
 import { IconButton } from "../ui/IconButton";
 import { useAttachments } from "../../hooks/useAttachments";
 import { useSettingsStore } from "../../stores/settings";
-import { parseCommand, runCommand, SlashCommandContext } from "../../lib/slashCommands";
+import { isCustomCommand, parseCommand, runCommand, SlashCommandContext } from "../../lib/slashCommands";
 import type { ChatStatus } from "../../stores/chatStream";
 
 type ChatInputAttachments = Pick<ReturnType<typeof useAttachments>, "attachments" | "addFiles">;
@@ -45,7 +45,7 @@ export function ChatInput({
   streaming: boolean;
   status?: ChatStatus;
   attachments: ChatInputAttachments;
-  onSend: (text: string) => Promise<void> | void;
+  onSend: (text: string) => Promise<boolean> | boolean;
   onStop: () => void;
   onInputChange: (text: string) => void;
   slashCtx: SlashCommandContext;
@@ -54,6 +54,7 @@ export function ChatInput({
   const enterToSend = useSettingsStore((s) => s.enterToSend);
   const ref = useRef<HTMLTextAreaElement>(null);
   const inputValueRef = useRef(input);
+  const pendingExpansionRef = useRef<string | null>(null);
   inputValueRef.current = input;
   const isMac = typeof navigator !== "undefined" && /mac/i.test(navigator.platform);
   const hasAttachmentError = attachments.attachments.some((attachment) => attachment.status === "error");
@@ -122,28 +123,43 @@ export function ChatInput({
   const handleSend = async () => {
     const text = input.trim();
     if (!text || streaming || disabled || attachmentsBlocked) return;
+
+    if (pendingExpansionRef.current !== null && input === pendingExpansionRef.current) {
+      const sent = await onSend(text);
+      if (sent === false) return;
+      pendingExpansionRef.current = null;
+      setInput("");
+      onInputChange("");
+      return;
+    }
+
     const parsed = parseCommand(text);
     if (parsed) {
       const result = await runCommand(parsed, slashCtx);
       if (result.sent && result.text) {
-        await onSend(result.text);
+        const sent = await onSend(result.text);
+        if (sent === false) return;
         setInput("");
         onInputChange("");
         return;
       }
       if (result.text !== undefined) {
+        pendingExpansionRef.current = isCustomCommand(parsed.name) ? result.text : null;
         setInput(result.text);
         onInputChange(result.text);
         setTimeout(() => ref.current?.focus(), 0);
         return;
       }
       if (result.clear) {
+        pendingExpansionRef.current = null;
         setInput("");
         onInputChange("");
         return;
       }
     }
-    await onSend(text);
+    pendingExpansionRef.current = null;
+    const sent = await onSend(text);
+    if (sent === false) return;
     setInput("");
     onInputChange("");
   };
@@ -162,6 +178,9 @@ export function ChatInput({
         data-chat-input
         value={input}
         onChange={(e) => {
+          if (pendingExpansionRef.current !== null && e.target.value !== pendingExpansionRef.current) {
+            pendingExpansionRef.current = null;
+          }
           setInput(e.target.value);
           onInputChange(e.target.value);
         }}

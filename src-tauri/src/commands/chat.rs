@@ -1,5 +1,6 @@
+use crate::commands::memory_reviews::rebase_review_watermark;
 use crate::db::models::Message;
-use rusqlite::params;
+use rusqlite::{params, TransactionBehavior};
 use std::sync::Arc;
 use tauri::State;
 use uuid::Uuid;
@@ -54,6 +55,7 @@ pub fn save_messages(
             params![session_id],
         )
         .map_err(|e| e.to_string())?;
+        rebase_review_watermark(&tx, &session_id)?;
     }
     for mut m in messages {
         m.session_id = session_id.clone();
@@ -65,12 +67,15 @@ pub fn save_messages(
 
 #[tauri::command]
 pub fn clear_messages(pool: State<'_, Arc<DbPool>>, session_id: String) -> Result<(), String> {
-    let conn = pool.get().map_err(|e| e.to_string())?;
-    conn.execute(
+    let mut conn = pool.get().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute(
         "DELETE FROM messages WHERE session_id = ?1",
         params![session_id],
     )
     .map_err(|e| e.to_string())?;
+    rebase_review_watermark(&tx, &session_id)?;
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -80,12 +85,15 @@ pub fn delete_message(
     session_id: String,
     message_id: String,
 ) -> Result<(), String> {
-    let conn = pool.get().map_err(|e| e.to_string())?;
-    conn.execute(
+    let mut conn = pool.get().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute(
         "DELETE FROM messages WHERE id = ?1 AND session_id = ?2",
         params![message_id, session_id],
     )
     .map_err(|e| e.to_string())?;
+    rebase_review_watermark(&tx, &session_id)?;
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -95,26 +103,39 @@ pub fn upsert_message(pool: State<'_, Arc<DbPool>>, message: MessageInput) -> Re
     upsert_message_conn(&conn, &message)
 }
 
-#[tauri::command]
-pub fn truncate_messages(
-    pool: State<'_, Arc<DbPool>>,
-    session_id: String,
-    from_message_id: String,
+fn truncate_messages_conn(
+    conn: &mut rusqlite::Connection,
+    session_id: &str,
+    from_message_id: &str,
 ) -> Result<(), String> {
-    let conn = pool.get().map_err(|e| e.to_string())?;
-    let created_at: String = conn
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let created_at: String = tx
         .query_row(
             "SELECT created_at FROM messages WHERE id = ?1 AND session_id = ?2",
             params![from_message_id, session_id],
             |row| row.get(0),
         )
         .map_err(|e| e.to_string())?;
-    conn.execute(
+    tx.execute(
         "DELETE FROM messages WHERE session_id = ?1 AND created_at >= ?2",
         params![session_id, created_at],
     )
     .map_err(|e| e.to_string())?;
+    rebase_review_watermark(&tx, session_id)?;
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[tauri::command]
+pub fn truncate_messages(
+    pool: State<'_, Arc<DbPool>>,
+    session_id: String,
+    from_message_id: String,
+) -> Result<(), String> {
+    let mut conn = pool.get().map_err(|e| e.to_string())?;
+    truncate_messages_conn(&mut conn, &session_id, &from_message_id)
 }
 
 #[tauri::command]
@@ -340,8 +361,26 @@ fn clean_title(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{clean_title, upsert_message_conn, MessageInput};
+    use super::{clean_title, truncate_messages_conn, upsert_message_conn, MessageInput};
     use rusqlite::Connection;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::thread;
+    use std::time::{Duration, Instant};
+    use uuid::Uuid;
+
+    static TRUNCATE_BUSY_HANDLER_CALLED: AtomicBool = AtomicBool::new(false);
+    static TRUNCATE_WRITER_STARTED: AtomicBool = AtomicBool::new(false);
+    static TRUNCATE_WRITER_COMMITTED: AtomicBool = AtomicBool::new(false);
+    static TRUNCATE_RELEASE_WRITER: AtomicBool = AtomicBool::new(false);
+
+    fn release_truncate_writer_on_busy(_: i32) -> bool {
+        TRUNCATE_BUSY_HANDLER_CALLED.store(true, Ordering::SeqCst);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !TRUNCATE_WRITER_COMMITTED.load(Ordering::SeqCst) && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        TRUNCATE_WRITER_COMMITTED.load(Ordering::SeqCst)
+    }
 
     #[test]
     fn upsert_message_preserves_concurrent_rows() {
@@ -387,5 +426,92 @@ mod tests {
         let out = clean_title(&long);
         assert!(out.chars().count() <= 61);
         assert!(out.ends_with('…'));
+    }
+
+    #[test]
+    fn truncate_acquires_write_lock_before_reading_created_at() {
+        TRUNCATE_BUSY_HANDLER_CALLED.store(false, Ordering::SeqCst);
+        TRUNCATE_WRITER_STARTED.store(false, Ordering::SeqCst);
+        TRUNCATE_WRITER_COMMITTED.store(false, Ordering::SeqCst);
+        TRUNCATE_RELEASE_WRITER.store(false, Ordering::SeqCst);
+
+        let path = std::env::temp_dir().join(format!("convo-truncate-{}.db", Uuid::new_v4()));
+        let setup = Connection::open(&path).unwrap();
+        setup
+            .execute_batch(
+                "PRAGMA journal_mode = WAL;
+                 CREATE TABLE messages (
+                   id TEXT PRIMARY KEY,
+                   session_id TEXT NOT NULL,
+                   role TEXT NOT NULL,
+                   created_at TEXT NOT NULL
+                 );
+                 CREATE TABLE pending_memory_reviews (
+                   session_id TEXT PRIMARY KEY,
+                   status TEXT NOT NULL,
+                   evaluated_assistant_count INTEGER NOT NULL,
+                   updated_at TEXT NOT NULL
+                 );
+                 INSERT INTO messages (id, session_id, role, created_at)
+                 VALUES ('message-1', 'session-1', 'assistant', '2026-01-01T00:00:01Z');",
+            )
+            .unwrap();
+        drop(setup);
+
+        let writer_path = path.clone();
+        let writer = thread::spawn(move || {
+            let writer = Connection::open(writer_path).unwrap();
+            writer
+                .execute_batch(
+                    "BEGIN IMMEDIATE;
+                     INSERT INTO messages (id, session_id, role, created_at)
+                     VALUES ('message-2', 'session-1', 'assistant', '2026-01-01T00:00:02Z');",
+                )
+                .unwrap();
+            TRUNCATE_WRITER_STARTED.store(true, Ordering::SeqCst);
+
+            while !TRUNCATE_BUSY_HANDLER_CALLED.load(Ordering::SeqCst)
+                && !TRUNCATE_RELEASE_WRITER.load(Ordering::SeqCst)
+            {
+                thread::yield_now();
+            }
+            if TRUNCATE_BUSY_HANDLER_CALLED.load(Ordering::SeqCst) {
+                writer.execute_batch("COMMIT").unwrap();
+                TRUNCATE_WRITER_COMMITTED.store(true, Ordering::SeqCst);
+            } else {
+                writer.execute_batch("ROLLBACK").unwrap();
+            }
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !TRUNCATE_WRITER_STARTED.load(Ordering::SeqCst) {
+            assert!(Instant::now() < deadline, "writer did not start");
+            thread::yield_now();
+        }
+
+        let mut command = Connection::open(&path).unwrap();
+        command
+            .busy_handler(Some(release_truncate_writer_on_busy))
+            .unwrap();
+        let result = truncate_messages_conn(&mut command, "session-1", "message-1");
+        TRUNCATE_RELEASE_WRITER.store(true, Ordering::SeqCst);
+        writer.join().unwrap();
+        assert!(TRUNCATE_BUSY_HANDLER_CALLED.load(Ordering::SeqCst));
+        assert!(result.is_ok(), "truncate failed: {result:?}");
+
+        drop(command);
+        let check = Connection::open(&path).unwrap();
+        let remaining: i64 = check
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE session_id = 'session-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining, 0);
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
     }
 }

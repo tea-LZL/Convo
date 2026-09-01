@@ -9,11 +9,20 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, Model, Provider, Session } from "../../lib/api";
+import { api, ChatMessage, Model, Provider, Session } from "../../lib/api";
 import { getLastUsedChatModel, getLastUsedModelForProvider, setLastUsedChatModel } from "../../lib/lastUsedChatModel";
 import { useChat } from "../../hooks/useChat";
 import { useAttachments } from "../../hooks/useAttachments";
 import { filterCommands, SlashCommandContext } from "../../lib/slashCommands";
+import { toast } from "../../stores/toasts";
+import { useSlashCommandsStore } from "../../stores/slashCommands";
+import {
+  acquireResendLock,
+  isClearLocked,
+  isResendLocked,
+  releaseResendLock,
+  type ResendLock,
+} from "../../stores/chatStream";
 import { ErrorBoundary } from "../ui/ErrorBoundary";
 
 import { ChatHeader } from "./ChatHeader";
@@ -23,6 +32,31 @@ import { ChatInput } from "./ChatInput";
 import { ChatContextMenu } from "./ChatContextMenu";
 import { AttachmentStripItem } from "./AttachmentChip";
 import type { ChatContextMenuState } from "./types";
+
+interface ResendRecoveryResult {
+  saveError: unknown | null;
+  reloadError: unknown | null;
+}
+
+async function restoreResendSnapshot(
+  sessionId: string,
+  messages: ChatMessage[],
+  reload: () => Promise<void>,
+): Promise<ResendRecoveryResult> {
+  let saveError: unknown | null = null;
+  let reloadError: unknown | null = null;
+  try {
+    await api.saveMessages(sessionId, messages);
+  } catch (error) {
+    saveError = error;
+  }
+  try {
+    await reload();
+  } catch (error) {
+    reloadError = error;
+  }
+  return { saveError, reloadError };
+}
 
 export function ChatViewNew({ sessionId, providers, session }: { sessionId: string; providers: Provider[]; session?: Session }) {
   const [models, setModels] = useState<Model[]>([]);
@@ -35,15 +69,33 @@ export function ChatViewNew({ sessionId, providers, session }: { sessionId: stri
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ChatContextMenuState | null>(null);
   const [sessionLoaded, setSessionLoaded] = useState(false);
+  const customSlashCommands = useSlashCommandsStore((state) => state.commands);
+  const refreshSlashCommands = useSlashCommandsStore((state) => state.refresh);
 
   const navigate = useNavigate();
   const attachments = useAttachments(sessionId);
 
-  const chat = useChat(sessionId, modelId, providerId);
+  const chat = useChat(sessionId, modelId, providerId, contextLength);
 
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
   const contextMenuRef = useRef<HTMLDivElement>(null);
+  const resendStateRef = useRef<{
+    streaming: boolean;
+    messages: ChatMessage[];
+    reload: () => Promise<void>;
+    send: (text: string, options?: {
+      attachmentsJson?: string | null;
+      resendSnapshot?: ChatMessage[];
+      resendLock?: ResendLock;
+    }) => Promise<boolean>;
+  } | null>(null);
+  resendStateRef.current = {
+    streaming: chat.streaming,
+    messages: chat.messages,
+    reload: chat.reload,
+    send: chat.send,
+  };
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -74,6 +126,12 @@ export function ChatViewNew({ sessionId, providers, session }: { sessionId: stri
       document.removeEventListener("scroll", onScroll, true);
     };
   }, [contextMenu]);
+
+  // Prompt commands are low-frequency state; load them once without coupling
+  // this view to the high-frequency streaming slices.
+  useEffect(() => {
+    void Promise.resolve(refreshSlashCommands()).catch(() => undefined);
+  }, [refreshSlashCommands]);
 
   // Load the selected session's model from the already-refreshed session store.
   useEffect(() => {
@@ -147,7 +205,15 @@ export function ChatViewNew({ sessionId, providers, session }: { sessionId: stri
       setContextLength(8192);
       return;
     }
-    api.getModelContextLength(modelId).then(setContextLength).catch(() => setContextLength(8192));
+    let cancelled = false;
+    api.getModelContextLength(modelId)
+      .then((length) => {
+        if (!cancelled) setContextLength(length);
+      })
+      .catch(() => {
+        if (!cancelled) setContextLength(8192);
+      });
+    return () => { cancelled = true; };
   }, [modelId, models, providerId, providers]);
 
   // Auto-scroll tracking
@@ -166,17 +232,22 @@ export function ChatViewNew({ sessionId, providers, session }: { sessionId: stri
   // of truth for creating the user message — onSend no longer builds
   // a separate message with a different UUID (which caused
   // duplicates after chat.reload()).
-  const onSend = async (text: string) => {
+  const onSend = async (text: string): Promise<boolean> => {
+    if (isResendLocked(sessionId)) {
+      toast.warn("Wait for resend recovery to finish before sending.");
+      return false;
+    }
+    if (isClearLocked(sessionId)) {
+      toast.warn("Wait for message clearing to finish before sending.");
+      return false;
+    }
     stickToBottom.current = true;
     const readyIds = attachments.attachments.filter((a) => a.serverId).map((a) => a.serverId!);
     const attJson = attachments.serializeForMessage(readyIds);
+    const sent = await chat.send(text, { attachmentsJson: attJson });
+    if (sent === false) return false;
     attachments.commit(readyIds);
-    try {
-      await chat.send(text, { attachmentsJson: attJson });
-    } catch (error) {
-      attachments.releaseCommitted(readyIds);
-      throw error;
-    }
+    return true;
   };
 
   const handleSlashInput = (text: string): boolean => {
@@ -184,7 +255,7 @@ export function ChatViewNew({ sessionId, providers, session }: { sessionId: stri
       setShowSlashMenu(false);
       return false;
     }
-    if (text.includes(" ") || text.length > 24) {
+    if (text.includes(" ") || text.length > 33) {
       setShowSlashMenu(false);
       return false;
     }
@@ -203,15 +274,54 @@ export function ChatViewNew({ sessionId, providers, session }: { sessionId: stri
   }, []);
 
   const onResend = useCallback(async (msgIndex: number, content: string) => {
-    const message = chat.messages[msgIndex];
-    if (!message) return;
+    const current = resendStateRef.current;
+    if (!current) return;
+    if (current.streaming) {
+      toast.warn("Stop the current response before editing or regenerating.");
+      return;
+    }
+    const resendLock = acquireResendLock(sessionId);
+    if (!resendLock) {
+      toast.warn("Another resend or recovery is already in progress.");
+      return;
+    }
     try {
-      await api.truncateMessages(sessionId, message.id);
-    } catch (e) { console.error(e); }
-    setEditingMessageId(null);
-    await chat.reload();
-    await chat.send(content);
-  }, [chat.messages, chat.reload, chat.send, sessionId]);
+      const message = current.messages[msgIndex];
+      if (!message) return;
+      const snapshot = current.messages.slice();
+      let truncated = false;
+      let sendStarted = false;
+      try {
+        await api.truncateMessages(sessionId, message.id);
+        truncated = true;
+        await current.reload();
+        sendStarted = true;
+        await current.send(content, {
+          attachmentsJson: message.attachments_json,
+          resendSnapshot: snapshot,
+          resendLock,
+        });
+        setEditingMessageId(null);
+      } catch (e) {
+        if (!truncated) {
+          toast.error(`Unable to resend message. Your draft was kept. ${String(e)}`);
+          return;
+        }
+        if (sendStarted) {
+          // The store owns recovery once the replacement send has started.
+          toast.error(`Unable to resend message. Your draft was kept. ${String(e)}`);
+          return;
+        }
+        const recovery = await restoreResendSnapshot(sessionId, snapshot, current.reload);
+        const recoveryMessage = recovery.saveError || recovery.reloadError
+          ? ` The original history could not be fully restored. ${String(recovery.saveError ?? recovery.reloadError)}`
+          : " The original history was restored.";
+        toast.error(`Unable to resend message. Your draft was kept.${recoveryMessage} ${String(e)}`);
+      }
+    } finally {
+      releaseResendLock(resendLock);
+    }
+  }, [sessionId]);
 
   const slashCtx: SlashCommandContext = {
     sessionId,
@@ -219,8 +329,7 @@ export function ChatViewNew({ sessionId, providers, session }: { sessionId: stri
     setProviderId: (id) => setProviderId(id),
     currentModel: modelId,
     resendLast: async () => {
-      const lastUser = [...chat.messages].reverse().find((m) => m.role === "user");
-      if (lastUser) await chat.send(lastUser.content);
+      await chat.retryLast();
     },
     clearAll: async () => {
       await chat.clear();
@@ -301,7 +410,7 @@ export function ChatViewNew({ sessionId, providers, session }: { sessionId: stri
         {/* Slash menu */}
         {showSlashMenu && (
           <div className="absolute bottom-full left-3 right-3 mb-1 max-w-3xl mx-auto bg-surface-1 border border-border rounded-lg shadow-modal max-h-64 overflow-y-auto animate-scale-in">
-            {filterCommands(slashQuery).map((c) => (
+            {filterCommands(slashQuery, customSlashCommands).map((c) => (
               <button
                 key={c.name}
                 onMouseDown={(e) => {
@@ -375,6 +484,7 @@ export function ChatViewNew({ sessionId, providers, session }: { sessionId: stri
           setEditingMessageId={setEditingMessageId}
           chatReload={chat.reload}
           chatSend={chat.send}
+          canRegenerate={!chat.streaming}
         />
       )}
     </div>

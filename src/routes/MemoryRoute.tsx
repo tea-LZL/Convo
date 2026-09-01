@@ -1,40 +1,37 @@
-import { useEffect, useState } from "react";
-import { Plus, Trash2, Brain, Power, PowerOff, Search, Tag, X, Save, Sparkles, Filter, Edit3, Check, Bell } from "lucide-react";
-import { api, ExtractableSession, ExtractedFact, MemoryItem, MemorySearchHit } from "../lib/api";
+import { useEffect, useRef, useState } from "react";
+import { Brain, Plus, Save, Sparkles, Tag } from "lucide-react";
+import { api } from "../lib/api";
+import type { ExtractableSession, ExtractedFact, MemoryItem, MemoryReview, MemorySearchHit } from "../lib/api";
 import { Button } from "../components/ui/Button";
-import { Dropdown } from "../components/ui/Dropdown";
-import { EmptyState } from "../components/ui/EmptyState";
 import { Modal } from "../components/ui/Modal";
-import { Tabs, TextArea, TextInput } from "../components/ui/Form";
-import { Spinner } from "../components/ui/Form";
+import { Spinner, TextArea } from "../components/ui/Form";
 import { toast } from "../stores/toasts";
 import { useMemoryStore } from "../stores/memory";
 import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { RouteShell } from "../components/ui/RouteShell";
+import { MemoryEditor, memoryDraftFromItem, type MemoryEditorDraft } from "../components/memory/MemoryEditor";
+import { MemoryLibrary, KIND_COLOR, KIND_LABEL, type MemoryKind, type MemoryKindFilter } from "../components/memory/MemoryLibrary";
+import { duplicateCandidateIndexes, MemoryReviewQueue } from "../components/memory/MemoryReviewQueue";
+import { RecallTester } from "../components/memory/RecallTester";
 import { useNavigate } from "react-router-dom";
 
-type KindFilter = "all" | "user_pref" | "project_fact" | "skill";
-
-const KIND_LABEL: Record<KindFilter, string> = {
-  all: "All",
-  user_pref: "Preferences",
-  project_fact: "Project facts",
-  skill: "Skills",
-};
-
-const KIND_COLOR: Record<string, string> = {
-  user_pref: "bg-accent/15 text-accent border-accent/30",
-  project_fact: "bg-success/15 text-success border-success/30",
-  skill: "bg-warn/15 text-warn border-warn/30",
-};
+function memoryKindOrNull(kind: string): MemoryKind | null {
+  if (kind === "user_pref" || kind === "project_fact" || kind === "skill") return kind;
+  return null;
+}
 
 export function MemoryRoute() {
   const [items, setItems] = useState<MemoryItem[]>([]);
-  const [filter, setFilter] = useState<KindFilter>("all");
+  const [recallItems, setRecallItems] = useState<MemoryItem[]>([]);
+  const [filter, setFilter] = useState<MemoryKindFilter>("all");
   const [query, setQuery] = useState("");
   const [searchHits, setSearchHits] = useState<MemorySearchHit[] | null>(null);
   const [editing, setEditing] = useState<MemoryItem | null>(null);
-  const [draft, setDraft] = useState<{ title: string; content: string; tags: string; is_enabled: boolean }>({
+  const [savingEdit, setSavingEdit] = useState(false);
+  const savingEditRef = useRef(false);
+  const editSessionRef = useRef(0);
+  const [draft, setDraft] = useState<MemoryEditorDraft>({
+    kind: "user_pref",
     title: "",
     content: "",
     tags: "",
@@ -45,6 +42,13 @@ export function MemoryRoute() {
   const [extractFacts, setExtractFacts] = useState<ExtractedFact[] | null>(null);
   const [selectedFacts, setSelectedFacts] = useState<Set<number>>(new Set());
   const [showAdd, setShowAdd] = useState(false);
+  const [showRecallTester, setShowRecallTester] = useState(false);
+  const [memoryLoading, setMemoryLoading] = useState(true);
+  const [memoryError, setMemoryError] = useState<string | null>(null);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [recallLoading, setRecallLoading] = useState(true);
+  const [recallError, setRecallError] = useState<string | null>(null);
   const [extractSessionId, setExtractSessionId] = useState<string | null>(null);
   const [extractSessions, setExtractSessions] = useState<ExtractableSession[]>([]);
   const reviews = useMemoryStore((s) => s.reviews);
@@ -56,27 +60,113 @@ export function MemoryRoute() {
   const removeMemory = useMemoryStore((s) => s.remove);
   const [reviewId, setReviewId] = useState<string | null>(null);
   const [reviewSelected, setReviewSelected] = useState<Set<number>>(new Set());
+  const [reviewDrafts, setReviewDrafts] = useState<Record<string, ExtractedFact[]>>({});
+  const [deleteMemoryId, setDeleteMemoryId] = useState<string | null>(null);
+  const [reviewAction, setReviewAction] = useState<"saving" | "discarding" | null>(null);
+  const retryingReviewIdsRef = useRef(new Set<string>());
+  const [retryingReviewIds, setRetryingReviewIds] = useState<Set<string>>(new Set());
+  const reviewActionRef = useRef<"saving" | "discarding" | null>(null);
   const navigate = useNavigate();
+  const libraryRequestRef = useRef(0);
+  const recallRequestRef = useRef(0);
+  const searchRequestRef = useRef(0);
+  const filterRef = useRef(filter);
+  const queryRef = useRef(query);
 
-  const refresh = async () => {
-    const list = await api.listMemory(filter === "all" ? undefined : filter);
-    setItems(list);
-    setSearchHits(null);
+  const performSearch = async (
+    searchQuery: string,
+    searchFilter: MemoryKindFilter,
+    requestId: number,
+  ) => {
+    try {
+      const result = await api.searchMemory(
+        searchQuery,
+        searchFilter === "all" ? undefined : searchFilter,
+      );
+      if (requestId !== searchRequestRef.current) return;
+      setSearchHits(result);
+      setSearchError(null);
+    } catch (e) {
+      if (requestId !== searchRequestRef.current) return;
+      setSearchHits(null);
+      setSearchError(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (requestId === searchRequestRef.current) setSearchLoading(false);
+    }
   };
 
-  useEffect(() => { refresh(); }, [filter]);
+  const startSearch = (searchQuery: string, searchFilter: MemoryKindFilter) => {
+    const normalizedQuery = searchQuery.trim();
+    const requestId = ++searchRequestRef.current;
+    if (!normalizedQuery) {
+      setSearchHits(null);
+      setSearchError(null);
+      setSearchLoading(false);
+      return;
+    }
+    setSearchLoading(true);
+    setSearchError(null);
+    void performSearch(normalizedQuery, searchFilter, requestId);
+  };
+
+  const refreshLibrary = async (revalidateSearch = true) => {
+    const requestId = ++libraryRequestRef.current;
+    if (revalidateSearch) startSearch(queryRef.current, filterRef.current);
+    setMemoryLoading(true);
+    setMemoryError(null);
+    try {
+      const currentFilter = filterRef.current;
+      const list = await api.listMemory(currentFilter === "all" ? undefined : currentFilter);
+      if (requestId !== libraryRequestRef.current) return;
+      setItems(list);
+    } catch (e) {
+      if (requestId !== libraryRequestRef.current) return;
+      setMemoryError(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (requestId === libraryRequestRef.current) setMemoryLoading(false);
+    }
+  };
+
+  const refreshRecallItems = async () => {
+    const requestId = ++recallRequestRef.current;
+    setRecallLoading(true);
+    setRecallError(null);
+    try {
+      const list = await api.listMemory();
+      if (requestId !== recallRequestRef.current) return;
+      setRecallItems(list);
+    } catch (e) {
+      if (requestId !== recallRequestRef.current) return;
+      setRecallError(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (requestId === recallRequestRef.current) setRecallLoading(false);
+    }
+  };
+
+  const refresh = async (revalidateSearch = true) => {
+    await Promise.all([refreshLibrary(revalidateSearch), refreshRecallItems()]);
+  };
+
+  useEffect(() => { filterRef.current = filter; }, [filter]);
+  useEffect(() => { queryRef.current = query; }, [query]);
+  useEffect(() => { void refresh(false); }, [filter]);
   useEffect(() => { void refreshReviews(); }, [refreshReviews]);
 
   useEffect(() => {
-    if (!query.trim()) {
+    const requestId = ++searchRequestRef.current;
+    const normalizedQuery = query.trim();
+    if (!normalizedQuery) {
       setSearchHits(null);
+      setSearchError(null);
+      setSearchLoading(false);
       return;
     }
-    const t = setTimeout(async () => {
-      try {
-        const r = await api.searchMemory(query, filter === "all" ? undefined : filter);
-        setSearchHits(r);
-      } catch (e) { console.error(e); }
+    setSearchHits(null);
+    setSearchError(null);
+    setSearchLoading(true);
+    const t = setTimeout(() => {
+      if (requestId !== searchRequestRef.current) return;
+      void performSearch(normalizedQuery, filter, requestId);
     }, 200);
     return () => clearTimeout(t);
   }, [query, filter]);
@@ -92,35 +182,53 @@ export function MemoryRoute() {
   };
 
   const startEdit = (item: MemoryItem) => {
+    if (savingEditRef.current) return;
+    editSessionRef.current += 1;
     setEditing(item);
-    setDraft({
-      title: item.title ?? "",
-      content: item.content,
-      tags: item.tags ?? "",
-      is_enabled: item.is_enabled,
-    });
+    setDraft(memoryDraftFromItem(item));
+  };
+
+  const closeEdit = () => {
+    if (savingEditRef.current) return;
+    editSessionRef.current += 1;
+    setEditing(null);
+  };
+
+  const handleEditChange = (patch: Partial<MemoryEditorDraft>) => {
+    if (savingEditRef.current) return;
+    setDraft((current) => ({ ...current, ...patch }));
   };
 
   const saveEdit = async () => {
-    if (!editing) return;
+    if (!editing || savingEditRef.current) return;
     if (!draft.content.trim()) {
       toast.error("Content cannot be empty");
       return;
     }
-    await upsertMemory({
-      id: editing.id,
-      kind: editing.kind as "user_pref" | "project_fact" | "skill",
-      title: draft.title || null,
-      content: draft.content,
-      tags: draft.tags || null,
-      is_enabled: draft.is_enabled,
-    });
-    setEditing(null);
-    await refresh();
-    toast.success("Saved");
+    const editSession = editSessionRef.current;
+    savingEditRef.current = true;
+    setSavingEdit(true);
+    try {
+      await upsertMemory({
+        id: editing.id,
+        kind: draft.kind,
+        title: draft.title || null,
+        content: draft.content,
+        tags: draft.tags || null,
+        is_enabled: draft.is_enabled,
+      });
+      if (editSession === editSessionRef.current) setEditing(null);
+      await refresh();
+      toast.success("Saved");
+    } catch (e) {
+      toast.error(String(e), "Memory could not be saved");
+    } finally {
+      savingEditRef.current = false;
+      setSavingEdit(false);
+    }
   };
 
-  const add = async (kind: "user_pref" | "project_fact" | "skill") => {
+  const add = async (kind: MemoryKind) => {
     try {
       const id = await upsertMemory({
         kind,
@@ -181,9 +289,192 @@ export function MemoryRoute() {
     await refresh();
   };
 
-  const visible = searchHits ?? items.map((i) => ({ item: i, snippet: "" }));
-  const reviewPending = reviewId ? reviews.find((review) => review.id === reviewId) ?? null : null;
-  const [deleteMemoryId, setDeleteMemoryId] = useState<string | null>(null);
+  const visible = searchHits ?? items.map((item) => ({ item, snippet: "" }));
+  const activeReview = reviewId ? reviews.find((review) => review.id === reviewId) ?? null : null;
+  const persistedItemsReady = !recallLoading && recallError === null;
+  const persistedItems = persistedItemsReady ? recallItems : [];
+
+  const openReview = (review: MemoryReview, selectedIndexes: number[]) => {
+    setReviewId(review.id);
+    setReviewSelected(new Set(selectedIndexes));
+    setReviewDrafts((current) => current[review.id]
+      ? current
+      : { ...current, [review.id]: review.facts.map((fact) => ({ ...fact })) });
+  };
+
+  const closeReview = () => {
+    setReviewId(null);
+    setReviewSelected(new Set());
+  };
+
+  const clearReview = (id: string) => {
+    closeReview();
+    setReviewDrafts((current) => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+  };
+
+  const updateReviewCandidate = (index: number, patch: Partial<ExtractedFact>) => {
+    if (!activeReview) return;
+    setReviewDrafts((current) => {
+      const candidates = current[activeReview.id] ?? activeReview.facts;
+      return {
+        ...current,
+        [activeReview.id]: candidates.map((candidate, candidateIndex) => (
+          candidateIndex === index ? { ...candidate, ...patch } : candidate
+        )),
+      };
+    });
+  };
+
+  const toggleReviewSelection = (index: number, selected: boolean) => {
+    setReviewSelected((current) => {
+      const next = new Set(current);
+      if (selected) next.add(index);
+      else next.delete(index);
+      return next;
+    });
+  };
+
+  const selectAllReview = (indexes: number[]) => {
+    setReviewSelected(new Set(indexes));
+  };
+
+  const beginReviewAction = (action: "saving" | "discarding") => {
+    if (reviewActionRef.current !== null) return false;
+    reviewActionRef.current = action;
+    setReviewAction(action);
+    return true;
+  };
+
+  const endReviewAction = (action: "saving" | "discarding") => {
+    if (reviewActionRef.current !== action) return;
+    reviewActionRef.current = null;
+    setReviewAction(null);
+  };
+
+  const discardReview = async () => {
+    if (!activeReview || !beginReviewAction("discarding")) return;
+    const id = activeReview.id;
+    try {
+      await markReviewReviewed(id);
+      clearReview(id);
+    } catch (e) {
+      toast.error(String(e), "Review could not be discarded");
+    } finally {
+      endReviewAction("discarding");
+    }
+  };
+
+  const saveReview = async () => {
+    if (!activeReview || reviewActionRef.current !== null) return;
+    if (!persistedItemsReady) {
+      toast.warn("Wait for saved memory to load before accepting candidates");
+      return;
+    }
+    const candidates = reviewDrafts[activeReview.id] ?? activeReview.facts;
+    const selectedCandidates = candidates.flatMap((candidate, index) => (
+      reviewSelected.has(index) ? [{ candidate, index }] : []
+    ));
+    const normalizedSelected: Array<{
+      index: number;
+      candidate: ExtractedFact & { kind: MemoryKind };
+    }> = [];
+    for (const { candidate, index } of selectedCandidates) {
+      const kind = memoryKindOrNull(candidate.kind);
+      if (!kind) {
+        toast.warn(`Candidate ${index + 1} has unsupported kind "${candidate.kind}". Choose user_pref, project_fact, or skill before saving.`);
+        return;
+      }
+      if (!candidate.content.trim()) {
+        toast.warn(`Candidate ${index + 1} has empty content. Add content or unselect it before saving.`);
+        return;
+      }
+      normalizedSelected.push({
+        index,
+        candidate: { ...candidate, kind },
+      });
+    }
+    const duplicateIndexes = duplicateCandidateIndexes(candidates, persistedItems, persistedItemsReady);
+    const chosen = normalizedSelected
+      .filter(({ index }) => !duplicateIndexes.has(index))
+      .map(({ candidate }) => candidate);
+    if (chosen.length === 0) {
+      toast.warn("Select at least one new candidate");
+      return;
+    }
+    if (!beginReviewAction("saving")) return;
+    const id = activeReview.id;
+    try {
+      for (const candidate of chosen) {
+        await upsertMemory({
+          kind: candidate.kind,
+          title: candidate.title,
+          content: candidate.content,
+          tags: candidate.tags,
+          is_enabled: true,
+        });
+      }
+      await markReviewReviewed(id);
+      const savedSkill = chosen.some((candidate) => candidate.kind === "skill");
+      toast.success(`Saved ${chosen.length} memory item${chosen.length === 1 ? "" : "s"}`);
+      clearReview(id);
+      if (savedSkill) {
+        filterRef.current = "skill";
+        setFilter("skill");
+      }
+      await refresh();
+    } catch (e) {
+      toast.error(String(e), "Memory review could not be saved");
+    } finally {
+      endReviewAction("saving");
+    }
+  };
+
+  const openReviewSourceChat = () => {
+    const sessionId = activeReview?.sessionId;
+    closeReview();
+    if (sessionId) navigate(`/chat/${sessionId}`);
+  };
+
+  const retryReviewById = (id: string) => {
+    if (retryingReviewIdsRef.current.has(id)) return;
+    retryingReviewIdsRef.current.add(id);
+    setRetryingReviewIds((current) => new Set(current).add(id));
+    void retryReview(id)
+      .catch((error) => toast.error(String(error)))
+      .finally(() => {
+        retryingReviewIdsRef.current.delete(id);
+        setRetryingReviewIds((current) => {
+          const next = new Set(current);
+          next.delete(id);
+          return next;
+        });
+      });
+  };
+
+  const handleQueryChange = (nextQuery: string) => {
+    queryRef.current = nextQuery;
+    searchRequestRef.current += 1;
+    setSearchHits(null);
+    setSearchError(null);
+    setSearchLoading(Boolean(nextQuery.trim()));
+    setQuery(nextQuery);
+  };
+
+  const handleFilterChange = (nextFilter: MemoryKindFilter) => {
+    if (nextFilter === filter) return;
+    filterRef.current = nextFilter;
+    searchRequestRef.current += 1;
+    if (queryRef.current.trim()) {
+      setSearchHits(null);
+      setSearchError(null);
+      setSearchLoading(true);
+    }
+    setFilter(nextFilter);
+  };
 
   return (
     <RouteShell
@@ -191,6 +482,9 @@ export function MemoryRoute() {
       description={`${items.length} item(s) · durable context used when relevant.`}
       actions={
         <>
+          <Button size="sm" variant="secondary" icon={<Brain size={11} />} onClick={() => setShowRecallTester(true)}>
+            Test recall
+          </Button>
           <Button size="sm" variant="secondary" icon={<Sparkles size={11} />} onClick={() => {
             setShowExtract(true);
             void runExtract();
@@ -203,167 +497,54 @@ export function MemoryRoute() {
         </>
       }
     >
-      <div className="px-4 py-2 border-b border-border bg-surface-1/40 flex items-center gap-2 flex-wrap">
-        <div className="relative flex-1 min-w-[200px]">
-          <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-subtle" />
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search memory…"
-            className="w-full bg-surface-2 border border-border rounded-md pl-8 pr-3 py-1.5 text-xs text-text placeholder:text-text-subtle focus:outline-none focus:border-accent"
-          />
-        </div>
-        <Tabs
-          active={filter}
-          onChange={(v) => setFilter(v as KindFilter)}
-          tabs={[
-            { id: "all", label: "All" },
-            { id: "user_pref", label: "Preferences" },
-            { id: "project_fact", label: "Project facts" },
-            { id: "skill", label: "Skills" },
-          ]}
-        />
-      </div>
-      {reviews.length > 0 && (
-        <div className="border-b border-border bg-accent/5 px-4 py-2 flex items-center gap-2 flex-wrap">
-          <Bell size={12} className="text-accent shrink-0" />
-          <span className="text-xs text-text">Memory extraction reviews</span>
-          <div className="flex-1" />
-          {reviews.map((review) => {
-            const label = review.status === "pending"
-              ? `Pending (${review.facts.length})`
-              : review.status === "failed" ? "Failed · Retry"
-                : review.status === "extracting" ? "Extracting · Retry" : "Reviewed";
-            return (
-              <Button
-                key={review.id}
-                size="xs"
-                variant="secondary"
-                disabled={review.status === "reviewed"}
-                onClick={() => {
-                  if (review.status === "failed" || review.status === "extracting") void retryReview(review.id);
-                  if (review.status === "pending") {
-                    setReviewId(review.id);
-                    setReviewSelected(new Set(review.facts.map((_, i) => i)));
-                  }
-                }}
-                title={`From session ${review.sessionId.slice(0, 8)}…`}
-              >
-                {label}
-              </Button>
-            );
-          })}
-        </div>
-      )}
-      <div className="p-3 sm:p-4 max-w-2xl mx-auto w-full">
-        {visible.length === 0 ? (
-          query ? (
-            <EmptyState
-              icon={<Brain size={32} />}
-              title="No matches"
-              description="Try a different query or filter."
-            />
-          ) : (
-            <div className="py-8">
-              <div className="text-center mb-6">
-                <Brain size={32} className="mx-auto text-text-subtle mb-3" />
-                <h2 className="text-sm font-semibold text-text">No memories yet</h2>
-                <p className="text-xs text-text-muted mt-1">Add user preferences, project facts, and skills.
-                They're included as context in every chat.</p>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                <button
-                  onClick={() => add("user_pref")}
-                   className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/30 rounded-lg p-3 text-left transition-colors"
-                >
-                  <div className="text-xs font-medium text-text mb-1">Set a preference</div>
-                  <div className="text-[10px] text-text-muted">"I prefer concise replies"</div>
-                </button>
-                <button
-                  onClick={() => add("project_fact")}
-                   className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/30 rounded-lg p-3 text-left transition-colors"
-                >
-                  <div className="text-xs font-medium text-text mb-1">Log a project fact</div>
-                  <div className="text-[10px] text-text-muted">"This repo uses Tauri v2"</div>
-                </button>
-                <button
-                  onClick={() => add("skill")}
-                   className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/30 rounded-lg p-3 text-left transition-colors"
-                >
-                  <div className="text-xs font-medium text-text mb-1">Create a skill</div>
-                  <div className="text-[10px] text-text-muted">"Run tests with `npm t` before push"</div>
-                </button>
-              </div>
-            </div>
-          )
-        ) : (
-          <ul className="space-y-2">
-            {visible.map((entry, i) => {
-              const item = entry.item;
-              const tags = (item.tags ?? "").split(",").map((t) => t.trim()).filter(Boolean);
-              return (
-                <li key={item.id} className={`bg-surface-1 border border-border rounded-lg p-3 group ${!item.is_enabled ? "opacity-50" : ""}`}>
-                  <div className="flex items-start gap-2">
-                    <span className={`inline-flex items-center text-[10px] uppercase tracking-wider font-medium px-1.5 py-0.5 rounded border ${KIND_COLOR[item.kind] || KIND_COLOR.skill}`}>
-                      {KIND_LABEL[item.kind as KindFilter] || item.kind}
-                    </span>
-                    {item.title && <div className="text-sm font-medium text-text">{item.title}</div>}
-                    <div className="flex-1" />
-                    <button
-                      type="button"
-                      aria-label={item.is_enabled ? `Disable ${item.title || "memory item"}` : `Enable ${item.title || "memory item"}`}
-                      onClick={() => toggle(item)}
-                      className="text-text-subtle hover:text-text p-1"
-                      title={item.is_enabled ? "Disable" : "Enable"}
-                    >
-                      {item.is_enabled ? <Power size={12} /> : <PowerOff size={12} />}
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={`Edit ${item.title || "memory item"}`}
-                      onClick={() => startEdit(item)}
-                      className="text-text-subtle hover:text-text p-1"
-                      title="Edit"
-                    >
-                      <Edit3 size={12} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={`Delete ${item.title || "memory item"}`}
-                      onClick={() => setDeleteMemoryId(item.id)}
-                      className="text-text-subtle hover:text-error p-1"
-                      title="Delete"
-                    >
-                      <Trash2 size={12} />
-                    </button>
-                  </div>
-                  {entry.snippet ? (
-                    <div
-                      className="text-xs text-text-muted leading-relaxed mt-1.5"
-                      dangerouslySetInnerHTML={{
-                        __html: entry.snippet
-                          .replace(/<mark>/g, '<mark class="bg-warn/30 text-text rounded px-0.5">')
-                          .replace(/<\/mark>/g, '</mark>'),
-                      }}
-                    />
-                  ) : (
-                    <div className="text-xs text-text-muted leading-relaxed mt-1.5 whitespace-pre-wrap">{item.content}</div>
-                  )}
-                  {tags.length > 0 && (
-                    <div className="flex flex-wrap gap-1 mt-2">
-                      {tags.map((t, j) => (
-                        <span key={j} className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border border-border bg-surface-2 text-text-subtle">
-                          <Tag size={8} /> {t}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </div>
+      <MemoryReviewQueue
+        reviews={reviews}
+        persistedItems={persistedItems}
+        persistedItemsReady={persistedItemsReady}
+        persistedItemsError={recallError}
+        reviewAction={reviewAction}
+        activeReviewId={reviewId}
+        selected={reviewSelected}
+        drafts={reviewDrafts}
+        retryingReviewIds={retryingReviewIds}
+        onOpenReview={openReview}
+        onRetry={retryReviewById}
+        onToggleSelection={toggleReviewSelection}
+        onSelectAll={selectAllReview}
+        onCloseReview={closeReview}
+        onRetryPersistedItems={() => void refreshRecallItems()}
+        onDiscard={discardReview}
+        onSave={saveReview}
+        onOpenSourceChat={openReviewSourceChat}
+        onCandidateChange={updateReviewCandidate}
+      />
+      <MemoryLibrary
+        items={items}
+        visible={visible}
+        filter={filter}
+        query={query}
+        loading={memoryLoading}
+        error={memoryError}
+        searchLoading={searchLoading}
+        searchError={searchError}
+        onQueryChange={handleQueryChange}
+        onFilterChange={handleFilterChange}
+        onRetry={() => void refreshLibrary()}
+        onSearchRetry={() => startSearch(queryRef.current, filterRef.current)}
+        onAdd={add}
+        onToggle={toggle}
+        onEdit={startEdit}
+        onDelete={(id) => setDeleteMemoryId(id)}
+      />
+
+      <RecallTester
+        open={showRecallTester}
+        onClose={() => setShowRecallTester(false)}
+        items={recallItems}
+        loading={recallLoading}
+        error={recallError}
+        onRetry={() => void refreshRecallItems()}
+      />
 
       {/* Add modal */}
       <Modal open={showAdd} onClose={() => setShowAdd(false)} title="Add memory" size="sm">
@@ -377,56 +558,15 @@ export function MemoryRoute() {
         </div>
       </Modal>
 
-      {/* Edit modal */}
-      <Modal
-        open={!!editing}
-        onClose={() => setEditing(null)}
-        title="Edit memory"
-        size="md"
-        footer={
-          <>
-            <Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
-            <Button variant="primary" onClick={saveEdit} icon={<Save size={12} />}>Save</Button>
-          </>
-        }
-      >
-        {editing && (
-          <div className="space-y-2">
-            <div className="text-xs text-text-muted">
-              <span className={`inline-block px-1.5 py-0.5 rounded border ${KIND_COLOR[editing.kind]}`}>
-                {KIND_LABEL[editing.kind as KindFilter] || editing.kind}
-              </span>
-            </div>
-            <div>
-              <label htmlFor="memory-title" className="text-xs text-text-muted block mb-1">Title (optional)</label>
-              <TextInput id="memory-title" value={draft.title} onChange={(v) => setDraft({ ...draft, title: v })} />
-            </div>
-            <div>
-              <label htmlFor="memory-content" className="text-xs text-text-muted block mb-1">Content</label>
-              <TextArea
-                id="memory-content"
-                value={draft.content}
-                onChange={(v) => setDraft({ ...draft, content: v })}
-                rows={5}
-                autoFocus
-              />
-            </div>
-            <div>
-              <label htmlFor="memory-tags" className="text-xs text-text-muted block mb-1">Tags (comma-separated)</label>
-              <TextInput id="memory-tags" value={draft.tags} onChange={(v) => setDraft({ ...draft, tags: v })} placeholder="preference, code-style, project-x" />
-            </div>
-            <label className="flex items-center gap-2 text-sm text-text-muted cursor-pointer">
-              <input
-                type="checkbox"
-                checked={draft.is_enabled}
-                onChange={(e) => setDraft({ ...draft, is_enabled: e.target.checked })}
-                className="accent-[var(--color-accent)]"
-              />
-              Include in chat context
-            </label>
-          </div>
-        )}
-      </Modal>
+      <MemoryEditor
+        open={editing !== null}
+        item={editing}
+        draft={draft}
+        onChange={handleEditChange}
+        onClose={closeEdit}
+        onSave={() => void saveEdit()}
+        saving={savingEdit}
+      />
 
       {/* Extract from session modal */}
       <Modal
@@ -487,7 +627,7 @@ export function MemoryRoute() {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
                       <span className={`inline-block text-[10px] uppercase tracking-wider font-medium px-1.5 py-0.5 rounded border ${KIND_COLOR[f.kind] || KIND_COLOR.skill}`}>
-                        {KIND_LABEL[f.kind as KindFilter] || f.kind}
+                        {KIND_LABEL[f.kind as MemoryKindFilter] || f.kind}
                       </span>
                       {f.title && <span className="text-xs font-medium text-text">{f.title}</span>}
                     </div>
@@ -531,126 +671,6 @@ export function MemoryRoute() {
         )}
       </Modal>
 
-      {/* Pending review modal — surfaces auto-extracted facts from
-          chat-done. User picks which to save as memory items. */}
-      <Modal
-        open={!!reviewId}
-        onClose={() => {
-          setReviewId(null);
-          setReviewSelected(new Set());
-        }}
-        title="Review extracted facts"
-        description={
-          reviewPending
-            ? `Auto-extracted from chat ${reviewPending.sessionId.slice(0, 8)} — pick the facts that should become memory.`
-            : ""
-        }
-        size="lg"
-        footer={
-          reviewPending ? (
-            <>
-              <Button
-                variant="ghost"
-                onClick={async () => {
-                  await markReviewReviewed(reviewPending.id);
-                  setReviewId(null);
-                  setReviewSelected(new Set());
-                }}
-              >
-                Discard all
-              </Button>
-              <Button
-                variant="secondary"
-                onClick={() => setReviewSelected(new Set(reviewPending.facts.map((_, i) => i)))}
-              >
-                Select all
-              </Button>
-              <Button
-                variant="primary"
-                onClick={async () => {
-                  const chosen = reviewPending.facts.filter((_, i) => reviewSelected.has(i));
-                  for (const f of chosen) {
-                    await upsertMemory({
-                      kind: f.kind as "user_pref" | "project_fact" | "skill",
-                      title: f.title,
-                      content: f.content,
-                      tags: f.tags,
-                      is_enabled: true,
-                    });
-                  }
-                  toast.success(`Saved ${chosen.length} memory item${chosen.length === 1 ? "" : "s"}`);
-                  await markReviewReviewed(reviewPending.id);
-                  setReviewId(null);
-                  setReviewSelected(new Set());
-                  await refresh();
-                }}
-                disabled={reviewSelected.size === 0}
-                icon={<Save size={12} />}
-              >
-                Save {reviewSelected.size}
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() => {
-                  const sid = reviewPending.sessionId;
-                  setReviewId(null);
-                  setReviewSelected(new Set());
-                  navigate(`/chat/${sid}`);
-                }}
-              >
-                Open chat
-              </Button>
-            </>
-          ) : null
-        }
-      >
-        {reviewPending && (
-          <ul className="space-y-2">
-            {reviewPending.facts.map((f, i) => (
-              <li key={i} className="bg-surface-1 border border-border rounded-md p-3">
-                <label className="flex items-start gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={reviewSelected.has(i)}
-                    onChange={(e) => {
-                      const next = new Set(reviewSelected);
-                      if (e.target.checked) next.add(i);
-                      else next.delete(i);
-                      setReviewSelected(next);
-                    }}
-                    className="accent-[var(--color-accent)] mt-1"
-                  />
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span
-                        className={`inline-block text-[10px] uppercase tracking-wider font-medium px-1.5 py-0.5 rounded border ${
-                          KIND_COLOR[f.kind] || KIND_COLOR.skill
-                        }`}
-                      >
-                        {KIND_LABEL[f.kind as KindFilter] || f.kind}
-                      </span>
-                      {f.title && <span className="text-xs font-medium text-text">{f.title}</span>}
-                    </div>
-                    <div className="text-xs text-text-muted leading-relaxed">{f.content}</div>
-                    {f.tags && (
-                      <div className="flex flex-wrap gap-1 mt-1.5">
-                        {f.tags.split(",").map((t) => t.trim()).filter(Boolean).map((t, j) => (
-                          <span
-                            key={j}
-                            className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border border-border bg-surface-2 text-text-subtle"
-                          >
-                            <Tag size={8} /> {t}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </label>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Modal>
       <ConfirmDialog
         open={deleteMemoryId !== null}
         onClose={() => setDeleteMemoryId(null)}

@@ -2,6 +2,11 @@
 import { api } from "../../lib/api";
 import { ChatMessage } from "../../lib/api";
 import { toast } from "../../stores/toasts";
+import {
+  acquireResendLock,
+  releaseResendLock,
+  type ResendLock,
+} from "../../stores/chatStream";
 import type { ChatContextMenuState } from "./types";
 
 interface ChatContextMenuProps {
@@ -14,7 +19,32 @@ interface ChatContextMenuProps {
   setCollapsedThinking: React.Dispatch<React.SetStateAction<Set<number>>>;
   setEditingMessageId: (id: string | null) => void;
   chatReload: () => Promise<void>;
-  chatSend: (text: string) => Promise<void>;
+  chatSend: (text: string, options?: {
+    attachmentsJson?: string | null;
+    resendSnapshot?: ChatMessage[];
+    resendLock?: ResendLock;
+  }) => Promise<boolean | void>;
+  canRegenerate?: boolean;
+}
+
+async function restoreResendSnapshot(
+  sessionId: string,
+  messages: ChatMessage[],
+  reload: () => Promise<void>,
+): Promise<{ saveError: unknown | null; reloadError: unknown | null }> {
+  let saveError: unknown | null = null;
+  let reloadError: unknown | null = null;
+  try {
+    await api.saveMessages(sessionId, messages);
+  } catch (error) {
+    saveError = error;
+  }
+  try {
+    await reload();
+  } catch (error) {
+    reloadError = error;
+  }
+  return { saveError, reloadError };
 }
 
 export function ChatContextMenu({
@@ -27,6 +57,7 @@ export function ChatContextMenu({
   setEditingMessageId,
   chatReload,
   chatSend,
+  canRegenerate = true,
 }: ChatContextMenuProps) {
   return (
     <div
@@ -79,21 +110,59 @@ export function ChatContextMenu({
           <button
             role="menuitem"
             type="button"
+            disabled={!canRegenerate}
+            title={!canRegenerate ? "Stop the current response before regenerating" : undefined}
             onClick={async () => {
+              if (!canRegenerate) {
+                toast.warn("Stop the current response before regenerating.");
+                return;
+              }
               setContextMenu(null);
               if (contextMenu.msgIndex === null) return;
               const i = contextMenu.msgIndex;
               let userMsgIdx = i - 1;
               while (userMsgIdx >= 0 && chatMessages[userMsgIdx].role !== "user") userMsgIdx--;
               if (userMsgIdx < 0) return;
-              const userText = chatMessages[userMsgIdx].content;
+              const userMessage = chatMessages[userMsgIdx];
+              const userText = userMessage.content;
+              const resendLock = acquireResendLock(sessionId);
+              if (!resendLock) {
+                toast.warn("Another resend or recovery is already in progress.");
+                return;
+              }
+              const snapshot = chatMessages.slice();
+              let truncated = false;
+              let sendStarted = false;
               try {
-                await api.truncateMessages(sessionId, chatMessages[userMsgIdx].id);
+                await api.truncateMessages(sessionId, userMessage.id);
+                truncated = true;
                 await chatReload();
-                await chatSend(userText);
-              } catch (e) { console.error(e); }
+                sendStarted = true;
+                await chatSend(userText, {
+                  attachmentsJson: userMessage.attachments_json,
+                  resendSnapshot: snapshot,
+                  resendLock,
+                });
+              } catch (e) {
+                if (!truncated) {
+                  toast.error(`Regenerate failed. ${String(e)}`);
+                  return;
+                }
+                if (sendStarted) {
+                  // The store owns recovery once the replacement send starts.
+                  toast.error(`Regenerate failed. ${String(e)}`);
+                  return;
+                }
+                const recovery = await restoreResendSnapshot(sessionId, snapshot, chatReload);
+                const recoveryMessage = recovery.saveError || recovery.reloadError
+                  ? ` The original history could not be fully restored. ${String(recovery.saveError ?? recovery.reloadError)}`
+                  : " The original history was restored.";
+                toast.error(`Regenerate failed.${recoveryMessage} ${String(e)}`);
+              } finally {
+                releaseResendLock(resendLock);
+              }
             }}
-            className="w-full text-left px-3 py-1.5 text-xs text-text-muted hover:bg-surface-2 hover:text-text"
+            className="w-full text-left px-3 py-1.5 text-xs text-text-muted hover:bg-surface-2 hover:text-text disabled:opacity-50 disabled:cursor-not-allowed"
           >
             Regenerate
           </button>
@@ -142,7 +211,9 @@ export function ChatContextMenu({
            try {
              await api.deleteMessage(sessionId, chatMessages[idx].id);
              await chatReload();
-          } catch (e) { console.error(e); }
+          } catch (e) {
+            toast.error(`Delete failed. ${String(e)}`);
+          }
         }}
         className="w-full text-left px-3 py-1.5 text-xs text-error hover:bg-surface-2"
       >

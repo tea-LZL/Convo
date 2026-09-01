@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { recallMemories } from "../chatStream";
 import { useMemoryStore } from "../memory";
 import { preferenceItem, factItem, skillItem } from "../../test/fixtures/memory";
+import * as memoryRecall from "../../lib/memoryRecall";
 
 const mockedInvoke = vi.mocked(invoke);
 
@@ -14,10 +15,22 @@ beforeEach(() => {
 describe("recallMemories", () => {
   it("returns empty string when memory list is empty", async () => {
     mockedInvoke.mockResolvedValueOnce([] as never);
-    expect(await recallMemories("hello world", "")).toBe("");
+    expect(await recallMemories("hello world")).toBe("");
   });
 
-  it("matches memory content against query words and returns a relevant block", async () => {
+  it("formats recalled memories with the shared formatter", async () => {
+    mockedInvoke.mockResolvedValueOnce([preferenceItem] as never);
+    const formatter = vi.spyOn(memoryRecall, "formatMemoryRecallBlock");
+
+    try {
+      await recallMemories("please be concise");
+      expect(formatter).toHaveBeenCalledWith([preferenceItem]);
+    } finally {
+      formatter.mockRestore();
+    }
+  });
+
+  it("matches an identity title when the user asks what they are called", async () => {
     const nickname = {
       ...preferenceItem,
       id: "nickname",
@@ -26,13 +39,13 @@ describe("recallMemories", () => {
     };
     mockedInvoke.mockResolvedValue([nickname, preferenceItem, factItem] as never);
 
-    const block = await recallMemories("what is my nickname", "");
+    const block = await recallMemories("what should I be called?");
     expect(block).toMatch(/^<memory-context>/);
     expect(block).toContain("Relevant facts you MUST use");
     expect(block).toContain(nickname.content);
 
-    expect(await recallMemories("xyzzy plover", "")).toBe("");
-    expect(await recallMemories("please be concise", "")).toContain(preferenceItem.content);
+    expect(await recallMemories("xyzzy plover")).toBe("");
+    expect(await recallMemories("please be concise")).toContain(preferenceItem.content);
   });
 
   it("does not recall unrelated memory through stop words", async () => {
@@ -40,7 +53,7 @@ describe("recallMemories", () => {
       { ...factItem, content: "This is my project." },
     ] as never);
 
-    expect(await recallMemories("what is my nickname", "")).toBe("");
+    expect(await recallMemories("what is my nickname")).toBe("");
   });
 
   it("does not recall disabled memory", async () => {
@@ -48,24 +61,18 @@ describe("recallMemories", () => {
       { ...preferenceItem, title: "Nickname", content: "Nickname is Kevin.", is_enabled: false },
     ] as never);
 
-    expect(await recallMemories("what is my nickname", "")).toBe("");
+    expect(await recallMemories("what is my nickname")).toBe("");
   });
 
-  it("skips items already in the always-on block", async () => {
+  it("keeps relevant items in the recall block", async () => {
     mockedInvoke.mockResolvedValueOnce([
       preferenceItem,
       factItem,
     ] as never);
-    const block = await recallMemories(
-      "what's the tone like?",
-      // preferenceItem.content is already in the always-on block,
-      // so the recall block must not duplicate it.
-      `${preferenceItem.content}`
-    );
-    expect(block).not.toContain(preferenceItem.content);
-    // factItem ("Convo is built with React…") doesn't match "tone"
-    // so the recall block is empty.
-    expect(block).toBe("");
+    const block = await recallMemories("what's the tone like?");
+
+    expect(block).toContain("Relevant facts you MUST use");
+    expect(block).toContain(preferenceItem.content);
   });
 
   it("caps at three items and prefers higher keyword overlap", async () => {
@@ -74,7 +81,7 @@ describe("recallMemories", () => {
     const C = { ...skillItem, id: "c", content: "cake and fork", is_enabled: true };
     const D = { ...preferenceItem, id: "d", content: "unrelated work" };
     mockedInvoke.mockResolvedValueOnce([A, B, C, D] as never);
-    const block = await recallMemories("tea cake", "");
+    const block = await recallMemories("tea cake");
     // All three (A, B, C) match, D does not. Top 3 by overlap.
     expect(block).toContain(A.content);
     expect(block).toContain(B.content);
@@ -84,13 +91,13 @@ describe("recallMemories", () => {
 
   it("returns empty string on backend error without throwing", async () => {
     mockedInvoke.mockRejectedValueOnce(new Error("boom"));
-    expect(await recallMemories("anything", "")).toBe("");
+    expect(await recallMemories("anything")).toBe("");
   });
 
   it("ignores single-letter tokens and pure punctuation", async () => {
     mockedInvoke.mockResolvedValueOnce([preferenceItem] as never);
     // "a e i o u t" — every token is 1 char or non-alpha, all dropped.
-    const block = await recallMemories("a e i o u t", "");
+    const block = await recallMemories("a e i o u t");
     expect(block).toBe("");
   });
 });

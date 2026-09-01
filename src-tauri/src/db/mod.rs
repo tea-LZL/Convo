@@ -14,6 +14,8 @@ const MIGRATION_V002: &str = include_str!("../../migrations/V002__fts_and_skills
 const MIGRATION_V003: &str = include_str!("../../migrations/V003__drop_presets.sql");
 const MIGRATION_V004: &str = include_str!("../../migrations/V004__memory_reviews.sql");
 const MIGRATION_V005: &str = include_str!("../../migrations/V005__search_keyring.sql");
+const MIGRATION_V006: &str = include_str!("../../migrations/V006__memory_review_watermark.sql");
+const MIGRATION_V007: &str = include_str!("../../migrations/V007__memory_review_attempts.sql");
 
 fn migrations() -> Migrations<'static> {
     Migrations::new(vec![
@@ -22,6 +24,8 @@ fn migrations() -> Migrations<'static> {
         M::up(MIGRATION_V003),
         M::up(MIGRATION_V004),
         M::up(MIGRATION_V005),
+        M::up(MIGRATION_V006),
+        M::up(MIGRATION_V007),
     ])
 }
 
@@ -104,5 +108,108 @@ mod tests {
             .unwrap();
         assert_eq!(table, "pending_memory_reviews");
         assert_eq!(session, "Existing");
+    }
+
+    #[test]
+    fn migrates_pre_v006_memory_review_without_losing_data() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        Migrations::new(vec![
+            M::up(MIGRATION_V001),
+            M::up(MIGRATION_V002),
+            M::up(MIGRATION_V003),
+            M::up(MIGRATION_V004),
+            M::up(MIGRATION_V005),
+        ])
+        .to_latest(&mut conn)
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, title) VALUES ('existing', 'Existing')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO pending_memory_reviews
+             (id, session_id, facts_json, status, error, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                "legacy-review",
+                "existing",
+                r#"[{"kind":"user_pref","content":"Uses metric units."}]"#,
+                "pending",
+                "legacy error",
+                "2026-01-01T00:00:00.000Z",
+            ],
+        )
+        .unwrap();
+
+        migrations().to_latest(&mut conn).unwrap();
+
+        let row: (String, String, Option<String>, String, i64, String) = conn
+            .query_row(
+                "SELECT facts_json, status, error, created_at,
+                        evaluated_assistant_count, updated_at
+                 FROM pending_memory_reviews WHERE id = 'legacy-review'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            (
+                r#"[{"kind":"user_pref","content":"Uses metric units."}]"#.into(),
+                "pending".into(),
+                Some("legacy error".into()),
+                "2026-01-01T00:00:00.000Z".into(),
+                0,
+                "2026-01-01T00:00:00.000Z".into(),
+            )
+        );
+    }
+
+    #[test]
+    fn migrates_memory_review_attempt_generation_for_existing_rows() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        Migrations::new(vec![
+            M::up(MIGRATION_V001),
+            M::up(MIGRATION_V002),
+            M::up(MIGRATION_V003),
+            M::up(MIGRATION_V004),
+            M::up(MIGRATION_V005),
+            M::up(MIGRATION_V006),
+        ])
+        .to_latest(&mut conn)
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, title) VALUES ('existing', 'Existing')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO pending_memory_reviews
+             (id, session_id, facts_json, status, created_at, evaluated_assistant_count, updated_at)
+             VALUES ('legacy-review', 'existing', '[]', 'reviewed', '2026-01-01T00:00:00.000Z', 100, '2026-01-01T00:00:00.000Z')",
+            [],
+        )
+        .unwrap();
+
+        migrations().to_latest(&mut conn).unwrap();
+
+        let attempt: i64 = conn
+            .query_row(
+                "SELECT attempt FROM pending_memory_reviews WHERE id = 'legacy-review'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(attempt, 1);
     }
 }

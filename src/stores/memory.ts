@@ -3,9 +3,27 @@
  * exposes builders for the system prompt to inject.
  */
 import { create } from "zustand";
-import { api, MemoryItem, MemoryReview } from "../lib/api";
+import {
+  api,
+  ExtractedFact,
+  MemoryItem,
+  MemoryReview,
+  MemoryReviewReservation,
+} from "../lib/api";
 
 let refreshPromise: Promise<void> | null = null;
+
+function deduplicateExtractedFacts(facts: ExtractedFact[]): ExtractedFact[] {
+  const normalizedContentByKind = new Map<string, Set<string>>();
+  return facts.filter((fact) => {
+    const normalizedContent = fact.content.trim().replace(/\s+/g, " ").toLowerCase();
+    const seenContent = normalizedContentByKind.get(fact.kind) ?? new Set<string>();
+    if (seenContent.has(normalizedContent)) return false;
+    seenContent.add(normalizedContent);
+    normalizedContentByKind.set(fact.kind, seenContent);
+    return true;
+  });
+}
 
 async function refreshAfterMutation(refresh: () => Promise<void>) {
   if (refreshPromise) await refreshPromise;
@@ -13,19 +31,36 @@ async function refreshAfterMutation(refresh: () => Promise<void>) {
 }
 
 async function extractReview(
-  id: string,
+  reservation: MemoryReviewReservation,
   sessionId: string,
   modelId?: string,
   providerId?: string,
 ) {
+  const extractionSessionId = reservation.sessionId ?? sessionId;
+  let facts: ExtractedFact[];
   try {
-    const facts = modelId || providerId
-      ? await api.extractFactsFromSession(sessionId, modelId, providerId)
-      : await api.extractFactsFromSession(sessionId);
-    await api.finishMemoryReview(id, facts);
+    facts = modelId || providerId
+      ? await api.extractFactsFromSession(extractionSessionId, modelId, providerId)
+      : await api.extractFactsFromSession(extractionSessionId);
   } catch (error) {
-    await api.failMemoryReview(id, error instanceof Error ? error.message : String(error));
+    try {
+      await api.failMemoryReview(
+        reservation.reviewId,
+        reservation.attempt,
+        error instanceof Error ? error.message : String(error),
+      );
+    } catch (failureError) {
+      console.error("Failed to persist memory review failure:", failureError);
+      throw failureError;
+    }
+    return;
   }
+
+  await api.finishMemoryReview(
+    reservation.reviewId,
+    reservation.attempt,
+    deduplicateExtractedFacts(facts),
+  );
 }
 
 interface MemoryState {
@@ -60,14 +95,16 @@ export const useMemoryStore = create<MemoryState>((set, get) => ({
     set({ reviews: await api.listMemoryReviews() });
   },
   queueReview: async (sessionId, modelId, providerId) => {
-    const id = await api.queueMemoryReview(sessionId);
-    if (!id) return;
-    await extractReview(id, sessionId, modelId, providerId);
+    const reservation = await api.queueMemoryReview(sessionId);
+    if (!reservation) return;
+    await extractReview(reservation, sessionId, modelId, providerId);
     await get().refreshReviews();
   },
   retryReview: async (id) => {
-    const sessionId = await api.retryMemoryReview(id);
-    await extractReview(id, sessionId);
+    const reservation = await api.retryMemoryReview(id);
+    const sessionId = reservation.sessionId;
+    if (!sessionId) throw new Error("Memory review reservation is missing its session");
+    await extractReview(reservation, sessionId);
     await get().refreshReviews();
   },
   markReviewReviewed: async (id) => {

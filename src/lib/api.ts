@@ -205,6 +205,12 @@ export interface MemoryReview {
   createdAt: string;
 }
 
+export interface MemoryReviewReservation {
+  reviewId: string;
+  attempt: number;
+  sessionId?: string;
+}
+
 export interface Document {
   id: string;
   title: string;
@@ -228,6 +234,21 @@ export interface SearchResult {
   title: string;
   url: string;
   snippet: string;
+}
+
+export interface SlashCommand {
+  id: string;
+  name: string;
+  description: string | null;
+  body: string;
+  created_at: string;
+}
+
+export interface SlashCommandInput {
+  id?: string;
+  name: string;
+  description?: string | null;
+  body: string;
 }
 
 export interface AppInfo {
@@ -513,12 +534,13 @@ export const api = {
     }),
   listMemoryReviews: () => invoke<MemoryReview[]>("list_memory_reviews"),
   queueMemoryReview: (sessionId: string) =>
-    invoke<string | null>("queue_memory_review", { sessionId }),
-  finishMemoryReview: (id: string, facts: ExtractedFact[]) =>
-    invoke<void>("finish_memory_review", { id, facts }),
-  failMemoryReview: (id: string, error: string) =>
-    invoke<void>("fail_memory_review", { id, error }),
-  retryMemoryReview: (id: string) => invoke<string>("retry_memory_review", { id }),
+    invoke<MemoryReviewReservation | null>("queue_memory_review", { sessionId }),
+  finishMemoryReview: (id: string, attempt: number, facts: ExtractedFact[]) =>
+    invoke<void>("finish_memory_review", { id, attempt, facts }),
+  failMemoryReview: (id: string, attempt: number, error: string) =>
+    invoke<void>("fail_memory_review", { id, attempt, error }),
+  retryMemoryReview: (id: string) =>
+    invoke<MemoryReviewReservation>("retry_memory_review", { id }),
   markMemoryReviewReviewed: (id: string) =>
     invoke<void>("mark_memory_review_reviewed", { id }),
 
@@ -584,8 +606,8 @@ export const api = {
   getCompareRun: (id: string) => invoke<CompareRunSummary>("get_compare_run", { id }),
 
   // Slash commands
-  listSlashCommands: () => invoke<Array<{ id: string; name: string; description: string | null; body: string; created_at: string }>>("list_slash_commands"),
-  upsertSlashCommand: (cmd: { id?: string; name: string; description?: string; body: string }) =>
+  listSlashCommands: () => invoke<SlashCommand[]>("list_slash_commands"),
+  upsertSlashCommand: (cmd: SlashCommandInput) =>
     invoke<string>("upsert_slash_command", { cmd }),
   deleteSlashCommand: (id: string) => invoke<void>("delete_slash_command", { id }),
 

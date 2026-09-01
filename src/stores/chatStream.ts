@@ -20,13 +20,20 @@
 import { create } from "zustand";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { api, ChatMessage } from "../lib/api";
+import { formatMemoryRecallBlock, rankMemoryRecall } from "../lib/memoryRecall";
+import {
+  formatMessageResources,
+  parseMessageResources,
+  sourceCharBudget,
+  type MessageResource,
+} from "../lib/messageResources";
 import { useMemoryStore } from "./memory";
 import { playDoneSound, playSendSound } from "../utils/sounds";
 import { sendNotification } from "@tauri-apps/plugin-notification";
 import { toast } from "./toasts";
 
 /** Default system prompt used when no memory context or override is set. */
-const DEFAULT_SYSTEM = [
+export const DEFAULT_SYSTEM = [
   "You are a helpful, concise assistant. Give direct, accurate answers.",
   "Avoid rambling, repetition, and filler.",
   "If you don't know something, say so honestly.",
@@ -35,28 +42,88 @@ const DEFAULT_SYSTEM = [
     "projects, or environment, answer from the provided context.",
 ].join(" ");
 
-const RECALL_STOP_WORDS = new Set([
-  "a", "an", "and", "are", "about", "do", "does", "for", "in", "is",
-  "me", "my", "of", "on", "or", "please", "the", "to", "what", "who",
-]);
+function imageDataForResources(resources: readonly MessageResource[]): string[] {
+  return resources.flatMap((resource) => {
+    if (
+      resource.sourceType !== "file"
+      || resource.kind !== "image"
+      || typeof resource.dataBase64 !== "string"
+      || resource.dataBase64.trim().length === 0
+    ) {
+      return [];
+    }
+    return [resource.dataBase64];
+  });
+}
 
-function imageDataForMessage(message: ChatMessage): string[] {
-  if (!message.attachments_json) return [];
-  try {
-    const attachments: unknown = JSON.parse(message.attachments_json);
-    if (!Array.isArray(attachments)) return [];
-    return attachments
-      .filter((attachment): attachment is { kind?: string; mime?: string; dataBase64?: string } =>
-        typeof attachment === "object" && attachment !== null
-      )
-      .filter((attachment) =>
-        (attachment.kind === "image" || attachment.mime?.startsWith("image/"))
-        && typeof attachment.dataBase64 === "string"
-      )
-      .map((attachment) => attachment.dataBase64!);
-  } catch {
-    return [];
-  }
+function hasSourceText(resources: readonly MessageResource[]): boolean {
+  return resources.some((resource) =>
+    typeof resource.agentText === "string" && resource.agentText.length > 0
+  );
+}
+
+export interface ProviderMessage {
+  role: ChatMessage["role"];
+  content: string;
+  thinking?: string;
+  images?: string[];
+}
+
+function buildProviderMessageFromResources(
+  message: ChatMessage,
+  resources: readonly MessageResource[],
+  contextLength?: number | null,
+  sourceTextBudget?: number,
+): ProviderMessage {
+  const sourceContext = message.role === "user" && resources.length > 0
+    ? formatMessageResources(resources, contextLength, sourceTextBudget)
+    : "";
+  const images = imageDataForResources(resources);
+
+  return {
+    role: message.role,
+    content: sourceContext ? `${message.content}\n\n${sourceContext}` : message.content,
+    ...(message.thinking ? { thinking: message.thinking } : {}),
+    ...(images.length > 0 ? { images } : {}),
+  };
+}
+
+/**
+ * Assemble one persisted message for the provider boundary. Source snapshots
+ * are reference data for user turns only; the persisted message stays raw.
+ */
+export function buildProviderMessage(
+  message: ChatMessage,
+  contextLength?: number | null,
+): ProviderMessage {
+  return buildProviderMessageFromResources(
+    message,
+    parseMessageResources(message.attachments_json),
+    contextLength,
+  );
+}
+
+export function buildProviderMessages(
+  messages: readonly ChatMessage[],
+  contextLength?: number | null,
+): ProviderMessage[] {
+  const resourcesByMessage = messages.map((message) =>
+    parseMessageResources(message.attachments_json)
+  );
+  const sourceTextByMessage = messages.map((message, index) =>
+    message.role === "user" && hasSourceText(resourcesByMessage[index])
+  );
+  const sourceBearingMessageCount = sourceTextByMessage.filter(Boolean).length;
+  const perMessageSourceTextBudget = sourceBearingMessageCount > 0
+    ? Math.floor(sourceCharBudget(contextLength) / sourceBearingMessageCount)
+    : undefined;
+
+  return messages.map((message, index) => buildProviderMessageFromResources(
+    message,
+    resourcesByMessage[index],
+    contextLength,
+    sourceTextByMessage[index] ? perMessageSourceTextBudget : undefined,
+  ));
 }
 
 export function composeSystemPrompt(parts: {
@@ -111,7 +178,48 @@ const EMPTY: SessionState = {
 };
 
 const stateBySession = new Map<string, SessionState>();
+const resendLocks = new Map<string, ResendLock>();
+const clearLocks = new Set<string>();
+let nextResendLockToken = 0;
 const terminalStreams = new Set<string>();
+const invalidatedStreams = new Set<string>();
+
+export interface ResendLock {
+  readonly cid: string;
+  readonly token: number;
+}
+
+const RESEND_BUSY_MESSAGE = "A resend or recovery is already in progress.";
+
+export function isResendLocked(cid: string): boolean {
+  return resendLocks.has(cid);
+}
+
+export function acquireResendLock(cid: string): ResendLock | null {
+  if (resendLocks.has(cid) || clearLocks.has(cid)) return null;
+  if (getOrCreate(cid).streaming) return null;
+  const lock: ResendLock = { cid, token: ++nextResendLockToken };
+  resendLocks.set(cid, lock);
+  return lock;
+}
+
+export function isClearLocked(cid: string): boolean {
+  return clearLocks.has(cid);
+}
+
+export function releaseResendLock(lock: ResendLock): void {
+  if (resendLocks.get(lock.cid)?.token === lock.token) {
+    resendLocks.delete(lock.cid);
+  }
+}
+
+function ownsResendLock(lock: ResendLock): boolean {
+  return resendLocks.get(lock.cid)?.token === lock.token;
+}
+
+function resendBusyError(): Error {
+  return new Error(RESEND_BUSY_MESSAGE);
+}
 
 function isConversationOpen(cid: string): boolean {
   if (typeof window === "undefined") return false;
@@ -131,7 +239,7 @@ export function shouldNotifyForCompletedConversation(cid: string): boolean {
 
 export function evictSessionState(cid: string): void {
   const state = stateBySession.get(cid);
-  if (state?.streaming) return;
+  if (state?.streaming || resendLocks.has(cid) || clearLocks.has(cid)) return;
   stateBySession.delete(cid);
   pendingDeltas.forEach((pending, key) => {
     if (pending.cid === cid) pendingDeltas.delete(key);
@@ -158,16 +266,29 @@ function isCurrentStream(s: SessionState, streamId: string): boolean {
 
 export function acceptTerminalEvent(cid: string, streamId: string): boolean {
   const key = eventStreamKey(cid, streamId);
-  if (terminalStreams.has(key)) return false;
+  if (terminalStreams.has(key) || invalidatedStreams.has(key)) return false;
+  tombstoneStream(cid, streamId, false);
+  return true;
+}
+
+function tombstoneStream(cid: string, streamId: string, discardPending = true): void {
+  if (!streamId) return;
+  const key = eventStreamKey(cid, streamId);
   terminalStreams.add(key);
   if (terminalStreams.size > 256) {
-    const oldest = terminalStreams.values().next().value;
-    if (oldest) terminalStreams.delete(oldest);
+    const oldestTerminal = terminalStreams.values().next().value;
+    if (oldestTerminal) terminalStreams.delete(oldestTerminal);
   }
-  return true;
+  invalidatedStreams.add(key);
+  if (discardPending) pendingDeltas.delete(key);
+  if (invalidatedStreams.size > 512) {
+    const oldest = invalidatedStreams.values().next().value;
+    if (oldest) invalidatedStreams.delete(oldest);
+  }
 }
 const unlisteners: UnlistenFn[] = [];
 let listenersReady = false;
+let listenersPromise: Promise<void> | null = null;
 
 /** Sessions we've already auto-titled (one-shot, never re-fire). */
 const autoTitled = new Set<string>();
@@ -232,9 +353,26 @@ interface StreamEventBase {
 }
 
 function isCurrentEvent(s: SessionState, event: StreamEventBase): boolean {
-  return isCurrentStream(s, event.stream_id)
+  const key = eventStreamKey(event.conversation_id, event.stream_id);
+  return !terminalStreams.has(key)
+    && !invalidatedStreams.has(key)
+    && isCurrentStream(s, event.stream_id)
     && !!s._assistantMessageId
     && s._assistantMessageId === event.assistant_message_id;
+}
+
+function ignoreTerminalAfterStop(
+  cid: string,
+  s: SessionState,
+  event: StreamEventBase,
+): boolean {
+  const generation = s._streamGeneration;
+  if (generation === undefined || s._cancelRequestedGeneration !== generation) return false;
+  const key = eventStreamKey(cid, event.stream_id);
+  tombstoneStream(cid, event.stream_id);
+  const resendAttempt = pendingResends.get(key);
+  if (resendAttempt) rejectResendAttempt(resendAttempt, new Error("Response cancelled"));
+  return true;
 }
 
 function appendAssistantMessage(
@@ -264,18 +402,32 @@ function appendAssistantMessage(
   ];
 }
 
-async function ensureListeners() {
-  if (listenersReady) return;
-  listenersReady = true;
+function ensureListeners(): Promise<void> {
+  if (listenersReady) return Promise.resolve();
+  if (listenersPromise) return listenersPromise;
+  const promise = registerListeners();
+  listenersPromise = promise;
+  void promise.catch(() => {
+    if (listenersPromise === promise) {
+      listenersPromise = null;
+      listenersReady = false;
+    }
+  });
+  return promise;
+}
 
-  // chat-thinking
-  unlisteners.push(
+async function registerListeners(): Promise<void> {
+  const registered: UnlistenFn[] = [];
+  try {
+
+  registered.push(
     await listen<StreamEventBase & { delta: string }>(
       "chat-thinking",
       (e) => {
         const cid = e.payload.conversation_id;
         const s = getOrCreate(cid);
         if (!isCurrentEvent(s, e.payload)) return;
+        if (s.status === "stopping" && s._cancelRequestedGeneration === s._streamGeneration) return;
         const key = eventStreamKey(cid, e.payload.stream_id);
         const pending = pendingDeltas.get(key) ?? {
           cid,
@@ -293,13 +445,14 @@ async function ensureListeners() {
   );
 
   // chat-chunk — frame-batched deltas; avoid resending the accumulated prefix.
-  unlisteners.push(
+  registered.push(
     await listen<StreamEventBase & { delta: string }>(
       "chat-chunk",
       (e) => {
         const cid = e.payload.conversation_id;
         const s = getOrCreate(cid);
         if (!isCurrentEvent(s, e.payload)) return;
+        if (s.status === "stopping" && s._cancelRequestedGeneration === s._streamGeneration) return;
         const key = eventStreamKey(cid, e.payload.stream_id);
         const pending = pendingDeltas.get(key) ?? {
           cid,
@@ -317,7 +470,7 @@ async function ensureListeners() {
   );
 
   // chat-done
-  unlisteners.push(
+  registered.push(
     await listen<StreamEventBase & {
       prompt_tokens: number | null;
       output_tokens: number | null;
@@ -326,7 +479,9 @@ async function ensureListeners() {
       const cid = e.payload.conversation_id;
       const s = getOrCreate(cid);
       if (!isCurrentEvent(s, e.payload)) return;
+      if (ignoreTerminalAfterStop(cid, s, e.payload)) return;
       if (!acceptTerminalEvent(cid, e.payload.stream_id)) return;
+      const resendAttempt = pendingResends.get(eventStreamKey(cid, e.payload.stream_id));
       clearStopTimer(cid);
       drainPendingFor(cid, e.payload.stream_id);
       const thinking = (s.streamThinking || "").trim() || null;
@@ -349,15 +504,12 @@ async function ensureListeners() {
       // presentation state, so navigation cannot lose a completed turn.
       maybeAutoTitle(cid, s.messages);
 
-      const gen = s._streamGeneration ?? 0;
       const lastModel = s._lastModel;
       const lastProvider = s._lastProviderId;
-      if (gen >= 2) {
-        import("../stores/settings").then(({ useSettingsStore }) => {
-          if (!useSettingsStore.getState().memoryAutoEvaluate) return;
-          void useMemoryStore.getState().queueReview(cid, lastModel, lastProvider).catch(console.error);
-        }).catch(console.error);
-      }
+      import("../stores/settings").then(({ useSettingsStore }) => {
+        if (!useSettingsStore.getState().memoryAutoEvaluate) return;
+        void useMemoryStore.getState().queueReview(cid, lastModel, lastProvider).catch(console.error);
+      }).catch(console.error);
 
       playDoneSound(false);
       if (shouldNotifyForCompletedConversation(cid)) {
@@ -366,18 +518,23 @@ async function ensureListeners() {
         } catch { /* ignore */ }
       }
       bump(cid);
+      if (resendAttempt) {
+        resolveResendTerminal(resendAttempt);
+      }
     })
   );
 
   // chat-error
-  unlisteners.push(
+  registered.push(
     await listen<StreamEventBase & { error: string; completed_at: string }>(
       "chat-error",
       (e) => {
         const cid = e.payload.conversation_id;
         const s = getOrCreate(cid);
         if (!isCurrentEvent(s, e.payload)) return;
+        if (ignoreTerminalAfterStop(cid, s, e.payload)) return;
         if (!acceptTerminalEvent(cid, e.payload.stream_id)) return;
+        const resendAttempt = pendingResends.get(eventStreamKey(cid, e.payload.stream_id));
         clearStopTimer(cid);
         drainPendingFor(cid, e.payload.stream_id);
         const thinking = (s.streamThinking || "").trim() || null;
@@ -398,16 +555,20 @@ async function ensureListeners() {
         s.streamThinking = "";
         toast.error(e.payload.error, "Chat error");
         bump(cid);
+        if (resendAttempt) {
+          rejectResendAttempt(resendAttempt, new Error(e.payload.error));
+        }
       }
     )
   );
 
   // chat-cancelled
-  unlisteners.push(
+  registered.push(
     await listen<StreamEventBase & { completed_at: string }>("chat-cancelled", (e) => {
       const cid = e.payload.conversation_id;
       const s = getOrCreate(cid);
       if (!isCurrentEvent(s, e.payload)) return;
+      const resendAttempt = pendingResends.get(eventStreamKey(cid, e.payload.stream_id));
       const streamGeneration = s._streamGeneration ?? 0;
       const cancelRequestedGeneration = s._cancelRequestedGeneration ?? -1;
       // Ignore stale chat-cancelled events caused by an old Rust
@@ -436,8 +597,19 @@ async function ensureListeners() {
       s.streamContent = "";
       s.streamThinking = "";
       bump(cid);
+      if (resendAttempt) {
+        rejectResendAttempt(resendAttempt, new Error("Response cancelled"));
+      }
     })
   );
+  unlisteners.push(...registered);
+  listenersReady = true;
+} catch (error) {
+  await Promise.allSettled(registered.map((unlisten) =>
+    Promise.resolve().then(() => unlisten())
+  ));
+  throw error;
+}
 }
 
 function getOrCreate(id: string): SessionState {
@@ -477,13 +649,53 @@ const stopTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 function clearStopTimer(cid: string) {
   const timer = stopTimers.get(cid);
-  if (timer) clearTimeout(timer);
+  if (timer !== undefined) clearTimeout(timer);
   stopTimers.delete(cid);
+}
+
+function scheduleStopTimer(cid: string, streamId: string, streamGeneration: number): void {
+  clearStopTimer(cid);
+  let timer: ReturnType<typeof setTimeout>;
+  timer = setTimeout(() => {
+    if (stopTimers.get(cid) !== timer) return;
+    stopTimers.delete(cid);
+    const current = getOrCreate(cid);
+    if (
+      current.status !== "stopping"
+      || current._streamId !== streamId
+      || current._streamGeneration !== streamGeneration
+      || current._cancelRequestedGeneration !== streamGeneration
+    ) return;
+    const resendAttempt = pendingResends.get(eventStreamKey(cid, streamId));
+    tombstoneStream(cid, streamId);
+    const thinking = (current.streamThinking || "").trim() || null;
+    appendAssistantMessage(
+      current,
+      cid,
+      current._assistantMessageId ?? crypto.randomUUID(),
+      current.streamContent ? `${current.streamContent} [stopped]` : "",
+      thinking,
+      null,
+      null,
+      new Date().toISOString(),
+    );
+    current.streaming = false;
+    current.status = "stopped";
+    current.error = "Stop request timed out";
+    current.streamContent = "";
+    current.streamThinking = "";
+    bump(cid);
+    if (resendAttempt) {
+      rejectResendAttempt(resendAttempt, new Error("Response stop timed out"));
+    }
+  }, 5000);
+  stopTimers.set(cid, timer);
 }
 
 export async function loadSessionMessages(cid: string): Promise<ChatMessage[]> {
   await ensureListeners();
   const s = getOrCreate(cid);
+  if (isClearLocked(cid)) return s.messages;
   if (s.messages.length > 0 && !s.loadingMessages) {
     return s.messages;
   }
@@ -494,7 +706,7 @@ export async function loadSessionMessages(cid: string): Promise<ChatMessage[]> {
     bump(cid);
     try {
       const msgs = (await api.listMessages(cid)) ?? [];
-      if (s.messages.length === 0 && !s.streaming) s.messages = msgs;
+      if (!isClearLocked(cid) && s.messages.length === 0 && !s.streaming) s.messages = msgs;
       return s.messages;
     } finally {
       s.loadingMessages = false;
@@ -506,18 +718,29 @@ export async function loadSessionMessages(cid: string): Promise<ChatMessage[]> {
   return load;
 }
 
-export async function reloadSessionMessages(cid: string): Promise<ChatMessage[]> {
+export async function reloadSessionMessages(
+  cid: string,
+  expectedResendLock?: ResendLock,
+): Promise<ChatMessage[]> {
   await ensureListeners();
   const s = getOrCreate(cid);
+  if (isClearLocked(cid)) return s.messages;
+  if (expectedResendLock && !ownsResendLock(expectedResendLock)) return s.messages;
   s.loadingMessages = true;
   bump(cid);
   try {
     const msgs = (await api.listMessages(cid)) ?? [];
+    if (expectedResendLock && !ownsResendLock(expectedResendLock)) {
+      throw new Error("Resend recovery was superseded.");
+    }
+    if (isClearLocked(cid)) return s.messages;
     s.messages = msgs;
     return msgs;
   } finally {
-    s.loadingMessages = false;
-    bump(cid);
+    if (!expectedResendLock || ownsResendLock(expectedResendLock)) {
+      s.loadingMessages = false;
+      bump(cid);
+    }
   }
 }
 
@@ -525,26 +748,53 @@ export function getSessionState(cid: string): SessionState {
   return stateBySession.get(cid) ?? EMPTY;
 }
 
-export async function clearSessionMessages(cid: string) {
-  await ensureListeners();
-  const s = getOrCreate(cid);
-  s.messages = [];
-  s.status = "idle";
-  s.streaming = false;
-  s.streamContent = "";
-  s.streamThinking = "";
-  s.error = null;
-  s._streamId = undefined;
-  s._assistantMessageId = undefined;
-  pendingDeltas.forEach((pending, key) => {
-    if (pending.cid === cid) pendingDeltas.delete(key);
-  });
-  clearStopTimer(cid);
-  bump(cid);
+export async function clearSessionMessages(cid: string): Promise<boolean> {
+  if (clearLocks.has(cid)) {
+    toast.warn("A message clear is already in progress.");
+    return false;
+  }
+  const current = getOrCreate(cid);
+  if (current.streaming || isResendLocked(cid)) {
+    toast.warn("Stop the current response or wait for resend recovery before clearing messages.");
+    return false;
+  }
+  clearLocks.add(cid);
   try {
-    await api.clearMessages(cid);
-  } catch (e) {
-    console.error("clearSessionMessages:", e);
+    await ensureListeners();
+    const s = getOrCreate(cid);
+    if (s.streaming || isResendLocked(cid)) {
+      toast.warn("Stop the current response or wait for resend recovery before clearing messages.");
+      return false;
+    }
+    const beforeClear: SessionState = {
+      ...s,
+      messages: s.messages.slice(),
+    };
+    s.messages = [];
+    s.status = "idle";
+    s.streaming = false;
+    s.streamContent = "";
+    s.streamThinking = "";
+    s.error = null;
+    s._streamId = undefined;
+    s._assistantMessageId = undefined;
+    pendingDeltas.forEach((pending, key) => {
+      if (pending.cid === cid) pendingDeltas.delete(key);
+    });
+    clearStopTimer(cid);
+    bump(cid);
+    try {
+      await api.clearMessages(cid);
+      return true;
+    } catch (e) {
+      Object.assign(s, beforeClear, { messages: beforeClear.messages.slice() });
+      bump(cid);
+      console.error("clearSessionMessages:", e);
+      toast.error(`Unable to clear messages. ${describeError(e)}`, "Clear failed");
+      return false;
+    }
+  } finally {
+    clearLocks.delete(cid);
   }
 }
 
@@ -552,10 +802,363 @@ export interface SendOpts {
   systemOverride?: string;
   attachmentsJson?: string | null;
   temperature?: number;
+  contextLength?: number | null;
+  /** Exact pre-truncate history to restore if this resend fails. */
+  resendSnapshot?: ChatMessage[];
+  /** Lock acquired before a UI resend truncates history. */
+  resendLock?: ResendLock;
   /** Provider id backing `model`. Tracked on SessionState so the
    * auto-eval hook can request facts extraction using the same
    * model that just answered. */
   providerId?: string;
+}
+
+interface ResendRecoveryResult {
+  errors: string[];
+  superseded?: boolean;
+}
+
+interface ResendAttempt {
+  cid: string;
+  snapshot: ChatMessage[];
+  replacementUserId: string;
+  streamId: string;
+  assistantMessageId: string;
+  lock: ResendLock;
+  terminalPromise: Promise<void>;
+  resolveTerminal: () => void;
+  rejectTerminal: (reason?: unknown) => void;
+  recoveryPromise?: Promise<ResendRecoveryResult>;
+  failureError?: unknown;
+  terminalSettled?: boolean;
+  failureFinalized?: boolean;
+}
+
+const pendingResends = new Map<string, ResendAttempt>();
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function createResendAttempt(
+  cid: string,
+  snapshot: ChatMessage[],
+  replacementUserId: string,
+  streamId: string,
+  assistantMessageId: string,
+  lock: ResendLock,
+): ResendAttempt {
+  let resolveTerminal!: () => void;
+  let rejectTerminal!: (reason?: unknown) => void;
+  const terminalPromise = new Promise<void>((resolve, reject) => {
+    resolveTerminal = resolve;
+    rejectTerminal = reject;
+  });
+  // A terminal event can arrive before the provider-start promise returns;
+  // keep an observer attached until sendMessage awaits this promise.
+  void terminalPromise.catch(() => undefined);
+  const attempt: ResendAttempt = {
+    cid,
+    snapshot: snapshot.slice(),
+    replacementUserId,
+    streamId,
+    assistantMessageId,
+    lock,
+    terminalPromise,
+    resolveTerminal,
+    rejectTerminal,
+  };
+  pendingResends.set(eventStreamKey(cid, streamId), attempt);
+  return attempt;
+}
+
+function isCurrentResendAttempt(attempt: ResendAttempt): boolean {
+  const s = getOrCreate(attempt.cid);
+  return ownsResendLock(attempt.lock)
+    && s._streamId === attempt.streamId
+    && s._assistantMessageId === attempt.assistantMessageId;
+}
+
+function resolveResendTerminal(attempt: ResendAttempt): void {
+  if (attempt.terminalSettled) return;
+  attempt.terminalSettled = true;
+  if (pendingResends.get(eventStreamKey(attempt.cid, attempt.streamId)) === attempt) {
+    pendingResends.delete(eventStreamKey(attempt.cid, attempt.streamId));
+  }
+  releaseResendLock(attempt.lock);
+  attempt.resolveTerminal();
+}
+
+function rejectResendTerminal(attempt: ResendAttempt, error: unknown): void {
+  if (attempt.terminalSettled) return;
+  attempt.terminalSettled = true;
+  if (pendingResends.get(eventStreamKey(attempt.cid, attempt.streamId)) === attempt) {
+    pendingResends.delete(eventStreamKey(attempt.cid, attempt.streamId));
+  }
+  releaseResendLock(attempt.lock);
+  attempt.rejectTerminal(error);
+}
+
+async function recoverResendAttempt(attempt: ResendAttempt): Promise<ResendRecoveryResult> {
+  const errors: string[] = [];
+  const replacementIds = [...new Set([
+    attempt.replacementUserId,
+    attempt.assistantMessageId,
+  ].filter((id) => id.length > 0))];
+
+  // The snapshot save command upserts non-empty rows, so remove both IDs
+  // first. Continue through every cleanup step even when one fails.
+  for (const messageId of replacementIds) {
+    if (!ownsResendLock(attempt.lock)) {
+      return { errors: ["resend recovery was superseded"], superseded: true };
+    }
+    try {
+      await api.deleteMessage(attempt.cid, messageId);
+    } catch (error) {
+      errors.push(`delete ${messageId}: ${describeError(error)}`);
+    }
+  }
+  if (!ownsResendLock(attempt.lock)) {
+    return { errors: ["resend recovery was superseded"], superseded: true };
+  }
+  try {
+    await api.saveMessages(attempt.cid, attempt.snapshot);
+  } catch (error) {
+    errors.push(`save snapshot: ${describeError(error)}`);
+  }
+  if (!ownsResendLock(attempt.lock)) {
+    return { errors: ["resend recovery was superseded"], superseded: true };
+  }
+  try {
+    await reloadSessionMessages(attempt.cid, attempt.lock);
+  } catch (error) {
+    errors.push(`reload history: ${describeError(error)}`);
+  }
+
+  if (!isCurrentResendAttempt(attempt)) {
+    return { errors: ["resend recovery was superseded"], superseded: true };
+  }
+  const s = getOrCreate(attempt.cid);
+  pendingDeltas.delete(eventStreamKey(attempt.cid, attempt.streamId));
+  clearStopTimer(attempt.cid);
+  // Keep the in-memory view exact even when the final reload failed. The
+  // recovery error is reported separately so callers retain the original
+  // provider error.
+  s.messages = attempt.snapshot.slice();
+  s.streaming = false;
+  s.status = "failed";
+  s.streamContent = "";
+  s.streamThinking = "";
+  s._streamId = undefined;
+  s._assistantMessageId = undefined;
+  s._cancelRequestedGeneration = undefined;
+  bump(attempt.cid);
+  return { errors };
+}
+
+function applyFallbackResendState(attempt: ResendAttempt): void {
+  if (!isCurrentResendAttempt(attempt)) return;
+  const s = getOrCreate(attempt.cid);
+  pendingDeltas.delete(eventStreamKey(attempt.cid, attempt.streamId));
+  clearStopTimer(attempt.cid);
+  s.messages = attempt.snapshot.slice();
+  s.streaming = false;
+  s.status = "failed";
+  s.streamContent = "";
+  s.streamThinking = "";
+  s._streamId = undefined;
+  s._assistantMessageId = undefined;
+  s._cancelRequestedGeneration = undefined;
+  bump(attempt.cid);
+}
+
+function finalizeResendFailure(
+  attempt: ResendAttempt,
+  result: ResendRecoveryResult,
+): void {
+  if (attempt.failureFinalized) {
+    rejectResendTerminal(attempt, attempt.failureError);
+    return;
+  }
+  attempt.failureFinalized = true;
+  try {
+    if (!result.superseded && ownsResendLock(attempt.lock)) {
+      const s = getOrCreate(attempt.cid);
+      const originalError = describeError(attempt.failureError);
+      s.error = result.errors.length > 0
+        ? `${originalError} Resend recovery incomplete: ${result.errors.join("; ")}`
+        : originalError;
+      if (result.errors.length > 0) {
+        toast.error(
+          `Resend recovery incomplete: ${result.errors.join("; ")}`,
+          "Resend failed"
+        );
+      }
+      bump(attempt.cid);
+    }
+  } finally {
+    rejectResendTerminal(attempt, attempt.failureError);
+  }
+}
+
+function beginResendRecovery(
+  attempt: ResendAttempt,
+  error: unknown,
+): Promise<ResendRecoveryResult> {
+  if (attempt.recoveryPromise) return attempt.recoveryPromise;
+  attempt.failureError = attempt.failureError ?? error;
+  pendingResends.delete(eventStreamKey(attempt.cid, attempt.streamId));
+  attempt.recoveryPromise = recoverResendAttempt(attempt)
+    .catch((recoveryError) => {
+      applyFallbackResendState(attempt);
+      return {
+        errors: [`recovery: ${describeError(recoveryError)}`],
+      };
+    })
+    .then((result) => {
+      finalizeResendFailure(attempt, result);
+      return result;
+    });
+  return attempt.recoveryPromise;
+}
+
+function rejectResendAttempt(attempt: ResendAttempt, error: unknown): void {
+  void beginResendRecovery(attempt, error).catch((finalizationError) => {
+    attempt.failureError = attempt.failureError ?? finalizationError;
+    applyFallbackResendState(attempt);
+    finalizeResendFailure(attempt, {
+      errors: [`recovery: ${describeError(finalizationError)}`],
+    });
+  });
+}
+
+function isSendCurrent(
+  s: SessionState,
+  generation: number,
+  streamId: string,
+  assistantMessageId: string,
+  resendLock?: ResendLock,
+): boolean {
+  return s.streaming
+    && s.status === "sending"
+    && s._streamGeneration === generation
+    && s._cancelRequestedGeneration !== generation
+    && s._streamId === streamId
+    && s._assistantMessageId === assistantMessageId
+    && (!resendLock || ownsResendLock(resendLock));
+}
+
+function finishSupersededNormalSend(
+  cid: string,
+  s: SessionState,
+  generation: number,
+  streamId: string,
+): void {
+  if (s._streamGeneration !== generation || s._streamId !== streamId) return;
+  tombstoneStream(cid, streamId);
+  if (s._cancelRequestedGeneration === generation
+    && s.status !== "failed"
+    && s.status !== "stopped"
+    && s.status !== "complete") {
+    s.streaming = false;
+    s.status = "stopped";
+  } else if (s.status === "sending" || s.status === "stopping") {
+    s.streaming = false;
+    s.status = "failed";
+    s.error = "Send was superseded before the response started.";
+  } else {
+    s.streaming = false;
+  }
+  s.streamContent = "";
+  s.streamThinking = "";
+  bump(cid);
+}
+
+function finishNormalSendFailure(
+  cid: string,
+  s: SessionState,
+  generation: number,
+  streamId: string,
+  error: unknown,
+  removeMessageId?: string,
+): void {
+  if (s._streamGeneration !== generation || s._streamId !== streamId) return;
+  const cancellationRequested = s._cancelRequestedGeneration === generation
+    || s.status === "stopping"
+    || s.status === "stopped";
+  tombstoneStream(cid, streamId);
+  if (removeMessageId) {
+    s.messages = s.messages.filter((message) => message.id !== removeMessageId);
+  }
+  s.streaming = false;
+  if (!cancellationRequested) {
+    s.status = "failed";
+    s.error = describeError(error);
+    toast.error(describeError(error), "Send failed");
+  } else if (s.status === "sending" || s.status === "stopping" || s.status === "streaming") {
+    s.status = "stopped";
+  }
+  s.streamContent = "";
+  s.streamThinking = "";
+  bump(cid);
+}
+
+function finishNormalSendPreflightFailure(cid: string, error: unknown): false {
+  const s = getOrCreate(cid);
+  const message = describeError(error);
+  if (!s.streaming) {
+    s.status = "failed";
+    s.error = message;
+    bump(cid);
+  }
+  toast.error(message, "Send failed");
+  return false;
+}
+
+async function recoverPreAttemptResend(
+  cid: string,
+  snapshot: ChatMessage[],
+  lock: ResendLock,
+  originalError: unknown,
+): Promise<void> {
+  const errors: string[] = [];
+  if (!ownsResendLock(lock)) return;
+
+  try {
+    await api.saveMessages(cid, snapshot);
+  } catch (error) {
+    errors.push(`save snapshot: ${describeError(error)}`);
+  }
+  if (ownsResendLock(lock)) {
+    try {
+      await reloadSessionMessages(cid, lock);
+    } catch (error) {
+      errors.push(`reload history: ${describeError(error)}`);
+    }
+  }
+  if (!ownsResendLock(lock)) return;
+
+  const s = getOrCreate(cid);
+  pendingDeltas.forEach((pending, key) => {
+    if (pending.cid === cid) pendingDeltas.delete(key);
+  });
+  clearStopTimer(cid);
+  s.messages = snapshot.slice();
+  s.streaming = false;
+  s.status = "failed";
+  s.loadingMessages = false;
+  s.streamContent = "";
+  s.streamThinking = "";
+  s._streamId = undefined;
+  s._assistantMessageId = undefined;
+  s._cancelRequestedGeneration = undefined;
+  s.error = errors.length > 0
+    ? `${describeError(originalError)} Resend recovery incomplete: ${errors.join("; ")}`
+    : describeError(originalError);
+  bump(cid);
+  if (errors.length > 0) {
+    toast.error(`Resend recovery incomplete: ${errors.join("; ")}`, "Resend failed");
+  }
 }
 
 export async function sendMessage(
@@ -563,139 +1166,259 @@ export async function sendMessage(
   text: string,
   model: string,
   opts: SendOpts = {}
-): Promise<void> {
-  await ensureListeners();
-  await loadSessionMessages(cid);
-  const s = getOrCreate(cid);
-  if (s.streaming) return;
-  s.error = null;
-  s.status = "sending";
-  // Single source of truth for the user message: create it here,
-  // not in the calling component. This prevents the double-append
-  // bug where onSend creates a message, saves to DB, then sendMessage
-  // creates a second one with a different UUID.
-  const userMsg: ChatMessage = {
-    id: crypto.randomUUID(),
-    session_id: cid,
-    role: "user",
-    content: text,
-    thinking: null,
-    attachments_json: opts.attachmentsJson ?? null,
-    prompt_tokens: null,
-    output_tokens: null,
-    created_at: new Date().toISOString(),
-  };
-  s.messages = [...s.messages, userMsg];
-  s.streaming = true;
-  s.streamContent = "";
-  s.streamThinking = "";
-  // Increment generation counter so stale chat-cancelled events
-  // from a previous stream are rejected in the handler.
-  s._streamGeneration = (s._streamGeneration ?? 0) + 1;
-  s._cancelRequestedGeneration = undefined;
-  s._streamId = crypto.randomUUID();
-  s._assistantMessageId = crypto.randomUUID();
-  terminalStreams.delete(eventStreamKey(cid, s._streamId));
-  s._lastModel = model;
-  s._lastProviderId = opts.providerId;
-  bump(cid);
-  playSendSound(false);
-
-  // Persist the user message to DB immediately so it survives even
-  // if the stream connection fails before chat-done fires.
-  try {
-    await api.upsertMessage(userMsg);
-  } catch (e) {
-    s.messages = s.messages.filter((message) => message.id !== userMsg.id);
-    s.streaming = false;
-    s.status = "failed";
-    bump(cid);
-    throw e;
+): Promise<boolean> {
+  const isResend = opts.resendSnapshot !== undefined;
+  let resendLock = opts.resendLock;
+  let resendAttempt: ResendAttempt | null = null;
+  if (isClearLocked(cid)) {
+    return isResend ? false : finishNormalSendPreflightFailure(
+      cid,
+      new Error("Message clearing is already in progress."),
+    );
+  }
+  if (isResend) {
+    if (resendLock) {
+      if (!ownsResendLock(resendLock)) throw resendBusyError();
+    } else {
+      resendLock = acquireResendLock(cid) ?? undefined;
+      if (!resendLock) throw resendBusyError();
+    }
+  } else if (isResendLocked(cid)) {
+    return finishNormalSendPreflightFailure(cid, resendBusyError());
   }
 
-  const memoryBlock = await useMemoryStore.getState().buildContextBlock(cid);
-  const recalledBlock = await recallMemories(text, memoryBlock);
-
-  const fullSystem = composeSystemPrompt({
-    override: opts.systemOverride,
-    alwaysOnMemory: memoryBlock,
-    recalledMemory: recalledBlock,
-  });
-  // Truncate conversation history before sending to the LLM.
-  // Keep the last 41 messages (~20 pairs + 1) to avoid context
-  // overflow and model-repetition degredation on long conversations.
-  const MAX_HISTORY = 41;
-  const truncated = s.messages.length > MAX_HISTORY
-    ? s.messages.slice(-MAX_HISTORY)
-    : s.messages;
-  const cleanMessages = truncated.map((m) => ({
-    role: m.role,
-    content: m.content,
-    ...(m.thinking ? { thinking: m.thinking } : {}),
-    ...(() => {
-      const images = imageDataForMessage(m);
-      return images.length > 0 ? { images } : {};
-    })(),
-  }));
-
   try {
-    s.status = "streaming";
+    await ensureListeners();
+    await loadSessionMessages(cid);
+    if (isClearLocked(cid)) {
+      if (isResend) return false;
+      return finishNormalSendPreflightFailure(
+        cid,
+        new Error("Message clearing is already in progress."),
+      );
+    }
+    const s = getOrCreate(cid);
+    if (!isResend && isResendLocked(cid)) throw resendBusyError();
+    if (s.streaming) throw new Error("A response is already in progress.");
+    if (isResend && (!resendLock || !ownsResendLock(resendLock))) {
+      throw resendBusyError();
+    }
+    s.error = null;
+    s.status = "sending";
+    // Single source of truth for the user message: create it here,
+    // not in the calling component. This prevents the double-append
+    // bug where onSend creates a message, saves to DB, then sendMessage
+    // creates a second one with a different UUID.
+    const userMsg: ChatMessage = {
+      id: crypto.randomUUID(),
+      session_id: cid,
+      role: "user",
+      content: text,
+      thinking: null,
+      attachments_json: opts.attachmentsJson ?? null,
+      prompt_tokens: null,
+      output_tokens: null,
+      created_at: new Date().toISOString(),
+    };
+    s.messages = [...s.messages, userMsg];
+    s.streaming = true;
+    s.streamContent = "";
+    s.streamThinking = "";
+    // Increment generation counter so stale chat-cancelled events
+    // from a previous stream are rejected in the handler.
+    s._streamGeneration = (s._streamGeneration ?? 0) + 1;
+    s._cancelRequestedGeneration = undefined;
+    s._streamId = crypto.randomUUID();
+    s._assistantMessageId = crypto.randomUUID();
+    const sendGeneration = s._streamGeneration;
+    const streamId = s._streamId;
+    const assistantMessageId = s._assistantMessageId;
+    terminalStreams.delete(eventStreamKey(cid, streamId));
+    invalidatedStreams.delete(eventStreamKey(cid, streamId));
+    resendAttempt = isResend
+      ? createResendAttempt(
+        cid,
+        opts.resendSnapshot!,
+        userMsg.id,
+        streamId,
+        assistantMessageId,
+        resendLock!,
+      )
+      : null;
+    s._lastModel = model;
+    s._lastProviderId = opts.providerId;
     bump(cid);
-    await api.chatStream({
-      sessionId: cid,
-      model,
-      messages: cleanMessages,
-      system: fullSystem,
-      temperature: opts.temperature ?? 0.7,
-      streamId: s._streamId,
-      assistantMessageId: s._assistantMessageId,
-    });
+    playSendSound(false);
+
+    const checkBeforeProvider = async (): Promise<boolean> => {
+      if (isSendCurrent(s, sendGeneration, streamId, assistantMessageId, resendLock)) return true;
+      const superseded = new Error("Send was superseded before the provider started.");
+      if (resendAttempt) {
+        await beginResendRecovery(resendAttempt, superseded);
+        throw resendAttempt.failureError ?? superseded;
+      }
+      finishSupersededNormalSend(cid, s, sendGeneration, streamId);
+      return false;
+    };
+
+    // Persist the user message to DB immediately so it survives even
+    // if the stream connection fails before chat-done fires.
+    try {
+      await api.upsertMessage(userMsg);
+    } catch (e) {
+      if (resendAttempt) {
+        await beginResendRecovery(resendAttempt, e);
+        throw e;
+      }
+      finishNormalSendFailure(cid, s, sendGeneration, streamId, e, userMsg.id);
+      return false;
+    }
+    if (!await checkBeforeProvider()) return false;
+
+    let fullSystem: string;
+    let cleanMessages: ProviderMessage[];
+    try {
+      const memoryBlock = await useMemoryStore.getState().buildContextBlock(cid);
+      if (!await checkBeforeProvider()) return false;
+      const recalledBlock = await recallMemories(text);
+      if (!await checkBeforeProvider()) return false;
+
+      fullSystem = composeSystemPrompt({
+        override: opts.systemOverride,
+        alwaysOnMemory: memoryBlock,
+        recalledMemory: recalledBlock,
+      });
+      // Truncate conversation history before sending to the LLM.
+      // Keep the last 41 messages (~20 pairs + 1) to avoid context
+      // overflow and model-repetition degredation on long conversations.
+      const MAX_HISTORY = 41;
+      const truncated = s.messages.length > MAX_HISTORY
+        ? s.messages.slice(-MAX_HISTORY)
+        : s.messages;
+      cleanMessages = buildProviderMessages(truncated, opts.contextLength);
+      if (!await checkBeforeProvider()) return false;
+    } catch (e) {
+      if (resendAttempt) {
+        await beginResendRecovery(resendAttempt, e);
+        throw e;
+      }
+      finishNormalSendFailure(cid, s, sendGeneration, streamId, e);
+      return false;
+    }
+
+    try {
+      if (!isSendCurrent(s, sendGeneration, streamId, assistantMessageId, resendLock)) {
+        const superseded = new Error("Send was superseded before the provider started.");
+        if (resendAttempt) {
+          await beginResendRecovery(resendAttempt, superseded);
+          throw resendAttempt.failureError ?? superseded;
+        }
+        finishSupersededNormalSend(cid, s, sendGeneration, streamId);
+        return false;
+      }
+      s.status = "streaming";
+      bump(cid);
+      await api.chatStream({
+        sessionId: cid,
+        model,
+        messages: cleanMessages,
+        system: fullSystem,
+        temperature: opts.temperature ?? 0.7,
+        streamId,
+        assistantMessageId,
+      });
+      if (!resendAttempt && (
+        s._streamGeneration !== sendGeneration
+        || s._streamId !== streamId
+        || s._assistantMessageId !== assistantMessageId
+        || s._cancelRequestedGeneration === sendGeneration
+        || (s.status as ChatStatus) === "stopping"
+        || (s.status as ChatStatus) === "stopped"
+        || (s.status as ChatStatus) === "failed"
+      )) {
+        return false;
+      }
+      if (resendAttempt) await resendAttempt.terminalPromise;
+      return true;
+    } catch (e) {
+      if (resendAttempt) {
+        await beginResendRecovery(resendAttempt, e);
+        throw e;
+      }
+      finishNormalSendFailure(cid, s, sendGeneration, streamId, e);
+      return false;
+    }
   } catch (e) {
-    s.streaming = false;
-    s.status = "failed";
-    s.error = String(e);
-    toast.error(String(e), "Send failed");
-    bump(cid);
+    if (isResend && resendAttempt === null && resendLock) {
+      await recoverPreAttemptResend(cid, opts.resendSnapshot!, resendLock, e);
+    }
+    if (isResend) throw e;
+    return finishNormalSendPreflightFailure(cid, e);
+  } finally {
+    if (resendLock) releaseResendLock(resendLock);
   }
 }
 
 export async function stopStream(cid: string) {
   const s = getOrCreate(cid);
-  if (!s.streaming || !s._streamId) return;
-  s._cancelRequestedGeneration = s._streamGeneration ?? 0;
+  const streamId = s._streamId;
+  const streamGeneration = s._streamGeneration ?? 0;
+  if (!s.streaming || !streamId) return;
+  if (s.status === "stopping" && s._cancelRequestedGeneration === streamGeneration) return;
+  s._cancelRequestedGeneration = streamGeneration;
   s.status = "stopping";
   bump(cid);
+  scheduleStopTimer(cid, streamId, streamGeneration);
   try {
-    await api.cancelChat(cid, s._streamId);
-    clearStopTimer(cid);
-    stopTimers.set(cid, setTimeout(() => {
-      const current = getOrCreate(cid);
-      if (current.status !== "stopping") return;
-      const thinking = (current.streamThinking || "").trim() || null;
-      appendAssistantMessage(
-        current,
-        cid,
-        current._assistantMessageId ?? crypto.randomUUID(),
-        current.streamContent ? `${current.streamContent} [stopped]` : "",
-        thinking,
-        null,
-        null,
-        new Date().toISOString(),
-      );
-      current.streaming = false;
-      current.status = "stopped";
-      current.error = "Stop request timed out";
-      current.streamContent = "";
-      current.streamThinking = "";
-      bump(cid);
-      stopTimers.delete(cid);
-    }, 5000));
+    await api.cancelChat(cid, streamId);
+    if (
+      s._streamId !== streamId
+      || s._streamGeneration !== streamGeneration
+      || s.status !== "stopping"
+      || invalidatedStreams.has(eventStreamKey(cid, streamId))
+    ) return;
   } catch (e) {
+    if (
+      s._streamId !== streamId
+      || s._streamGeneration !== streamGeneration
+      || s.status !== "stopping"
+      || s._cancelRequestedGeneration !== streamGeneration
+      || invalidatedStreams.has(eventStreamKey(cid, streamId))
+    ) return;
+    const resendAttempt = pendingResends.get(eventStreamKey(cid, streamId));
+    tombstoneStream(cid, streamId);
+    clearStopTimer(cid);
+    s.streaming = false;
     s.status = "failed";
-    s.error = String(e);
+    s.error = describeError(e);
+    s.streamContent = "";
+    s.streamThinking = "";
     bump(cid);
     console.error("cancelChat:", e);
+    if (resendAttempt) {
+      rejectResendAttempt(resendAttempt, e);
+    }
   }
+}
+
+async function restoreRetrySnapshot(
+  cid: string,
+  messages: ChatMessage[],
+  resendLock?: ResendLock,
+): Promise<{ saveError: unknown | null; reloadError: unknown | null }> {
+  let saveError: unknown | null = null;
+  let reloadError: unknown | null = null;
+  try {
+    await api.saveMessages(cid, messages);
+  } catch (error) {
+    saveError = error;
+  }
+  try {
+    await reloadSessionMessages(cid, resendLock);
+  } catch (error) {
+    reloadError = error;
+  }
+  return { saveError, reloadError };
 }
 
 export async function retryLastMessage(
@@ -703,88 +1426,65 @@ export async function retryLastMessage(
   model: string,
   opts: SendOpts = {},
 ): Promise<void> {
-  const s = getOrCreate(cid);
-  if (s.streaming) return;
-  const lastUser = [...s.messages].reverse().find((message) => message.role === "user");
-  if (!lastUser) return;
-  await api.truncateMessages(cid, lastUser.id);
-  await reloadSessionMessages(cid);
-  await sendMessage(cid, lastUser.content, model, {
-    ...opts,
-    attachmentsJson: opts.attachmentsJson ?? lastUser.attachments_json,
-  });
+  const current = getOrCreate(cid);
+  const resendLock = acquireResendLock(cid);
+  if (!resendLock) {
+    toast.warn(current.streaming
+      ? "Stop the current response before retrying."
+      : "Another resend or recovery is already in progress.");
+    return;
+  }
+  try {
+    const s = getOrCreate(cid);
+    const lastUser = [...s.messages].reverse().find((message) => message.role === "user");
+    if (!lastUser) return;
+    const snapshot = s.messages.slice();
+    let truncated = false;
+    let sendStarted = false;
+    try {
+      await api.truncateMessages(cid, lastUser.id);
+      truncated = true;
+      await reloadSessionMessages(cid, resendLock);
+      sendStarted = true;
+      await sendMessage(cid, lastUser.content, model, {
+        ...opts,
+        attachmentsJson: opts.attachmentsJson ?? lastUser.attachments_json,
+        resendSnapshot: snapshot,
+        resendLock,
+      });
+    } catch (error) {
+      if (!truncated) {
+        toast.error(`Retry failed. Your original history was kept. ${String(error)}`);
+        return;
+      }
+      if (sendStarted) {
+        // sendMessage owns recovery once the replacement has been created.
+        toast.error(`Retry failed. ${String(error)}`);
+        return;
+      }
+      const recovery = await restoreRetrySnapshot(cid, snapshot, resendLock);
+      const recoveryMessage = recovery.saveError || recovery.reloadError
+        ? ` The original history could not be fully restored. ${String(recovery.saveError ?? recovery.reloadError)}`
+        : " The original history was restored.";
+      toast.error(`Retry failed.${recoveryMessage} ${String(error)}`);
+    }
+  } finally {
+    releaseResendLock(resendLock);
+  }
 }
 
 /**
- * Recall: find memories whose content or title shares words with the
- * user's message. Uses keyword overlap (similar to Odysseus's BM25)
- * rather than FTS5 AND matching — FTS5 requires ALL query tokens to
- * appear, which fails for queries like "what's my name" when the
- * memory is "User's nickname is tea".
- *
- * Returns "" when there are no matches or when listing memory fails.
- * Always-on items (already in `alwaysOnContent`) are skipped to avoid
- * sending duplicates to the model. Exported so unit tests can exercise
- * it without the listener wiring.
- *
- * Why this exists: small local models (gemma3 4B, etc.) often ignore
- * a "USER CONTEXT" line buried deep in the always-on block. Booting
- * a dedicated, short, prominent recall block into the system prompt
- * dramatically improves their recall rate. The recall block ALWAYS
- * ends with an explicit instruction to use the provided facts.
+ * Builds a short, prominent recall block for the current query. Ranking stays
+ * pure in `memoryRecall`; this wrapper owns memory-store loading and prompt
+ * formatting so recall remains best-effort and error-safe.
  */
-export async function recallMemories(
-  query: string,
-  alwaysOnContent: string
-): Promise<string> {
+export async function recallMemories(query: string): Promise<string> {
   try {
     const memoryState = useMemoryStore.getState();
     if (!memoryState.loaded) await memoryState.refresh();
-    let allItems = useMemoryStore.getState().items.filter((item) => item.is_enabled);
-    if (allItems.length === 0) return "";
-    const queryWords = query
-      .toLowerCase()
-      .split(/[^a-z0-9]+/)
-      .filter((w) => w.length >= 2 && !RECALL_STOP_WORDS.has(w));
-    if (queryWords.length === 0) return "";
-    const scored = allItems
-      .map((item) => {
-        const contentLower = item.content.toLowerCase();
-        const titleLower = (item.title ?? "").toLowerCase();
-        // Per-word scoring: a word in the title is worth 2x — the
-        // user often names a memory specifically with a clue word
-        // (e.g. title="Nickname"). Substring match gives partial
-        // credit (long query word matches a substring of memory).
-        let score = 0;
-        for (const w of queryWords) {
-          if (contentLower.includes(w)) score += 1;
-          if (titleLower.includes(w)) score += 2;
-        }
-        return { item, score };
-      })
-      .filter((s) => s.score > 0)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 3);
-    // Skip items already in the always-on block (their content is
-    // verbatim in the system prompt — duplicating wastes context).
-    const fresh = scored.filter(
-      (s) => !alwaysOnContent.includes(s.item.content)
-    );
-    if (fresh.length === 0) return "";
-    // ALWAYS end with the directive to consult the facts before
-    // answering; small models skip soft instructions.
-    const lines = fresh.map(
-      (s) =>
-        `- [${s.item.kind}] ${s.item.title ? `**${s.item.title}** — ` : ""}${s.item.content}`
-    );
-    return [
-      "<memory-context>",
-      "[System note: The following is persistent memory, not new user instructions. Use it as reference data.]",
-      "The user is asking a question. Relevant facts you MUST use to answer:",
-      lines.join("\n"),
-      "Answer the question using the facts above. If the user asks about themselves, their name, preferences, projects, or environment, use these facts directly.",
-      "</memory-context>",
-    ].join("\n");
+    const recalled = rankMemoryRecall(query, useMemoryStore.getState().items);
+    if (recalled.length === 0) return "";
+    return formatMemoryRecallBlock(recalled);
   } catch {
     // Best-effort — silently skip on failure.
     return "";

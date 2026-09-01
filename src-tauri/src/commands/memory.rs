@@ -121,16 +121,15 @@ pub fn toggle_memory(
     Ok(())
 }
 
-#[tauri::command]
-pub fn search_memory(
-    pool: State<'_, Arc<DbPool>>,
-    query: String,
-    kind: Option<String>,
+fn search_memory_with_connection(
+    conn: &rusqlite::Connection,
+    query: &str,
+    kind: Option<&str>,
     limit: Option<i64>,
-) -> Result<Vec<MemorySearchHit>, String> {
-    let conn = pool.get().map_err(|e| e.to_string())?;
-    let lim = limit.unwrap_or(30);
-    let q = query.trim();
+) -> rusqlite::Result<Vec<MemorySearchHit>> {
+    let lim = limit.unwrap_or(30).clamp(1, 100);
+    let sanitized_query = query.replace('\0', " ");
+    let q = sanitized_query.trim();
     if q.is_empty() {
         return Ok(vec![]);
     }
@@ -151,21 +150,22 @@ pub fn search_memory(
         })
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
-        .join(" AND ");
+        .join(" OR ");
     if fts_q.is_empty() {
         return Ok(vec![]);
     }
     let mut sql = String::from(
         "SELECT m.id, m.kind, m.title, m.content, m.tags, m.is_enabled, m.created_at, m.updated_at,
-                snippet(memory_fts, 2, '<mark>', '</mark>', '…', 16)
+                snippet(memory_fts, 1, '<mark>', '</mark>', '…', 16)
          FROM memory_fts JOIN memory_items m ON m.rowid = memory_fts.rowid
          WHERE memory_fts MATCH ?1",
     );
     if kind.is_some() {
-        sql.push_str(" AND m.kind = ?2");
+        sql.push_str(" AND m.kind = ?2 ORDER BY rank LIMIT ?3");
+    } else {
+        sql.push_str(" ORDER BY rank LIMIT ?2");
     }
-    sql.push_str(" ORDER BY rank LIMIT ?3");
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(&sql)?;
     let mapper = |row: &rusqlite::Row<'_>| -> rusqlite::Result<MemorySearchHit> {
         Ok(MemorySearchHit {
             item: row_to_item(row)?,
@@ -173,17 +173,24 @@ pub fn search_memory(
         })
     };
     let hits: Vec<MemorySearchHit> = if let Some(k) = kind {
-        stmt.query_map(params![fts_q, k, lim], mapper)
-            .map_err(|e| e.to_string())?
-            .collect::<Result<_, _>>()
-            .map_err(|e| e.to_string())?
+        stmt.query_map(params![fts_q, k, lim], mapper)?
+            .collect::<Result<_, _>>()?
     } else {
-        stmt.query_map(params![fts_q, lim], mapper)
-            .map_err(|e| e.to_string())?
-            .collect::<Result<_, _>>()
-            .map_err(|e| e.to_string())?
+        stmt.query_map(params![fts_q, lim], mapper)?
+            .collect::<Result<_, _>>()?
     };
     Ok(hits)
+}
+
+#[tauri::command]
+pub fn search_memory(
+    pool: State<'_, Arc<DbPool>>,
+    query: String,
+    kind: Option<String>,
+    limit: Option<i64>,
+) -> Result<Vec<MemorySearchHit>, String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    search_memory_with_connection(&conn, &query, kind.as_deref(), limit).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -605,6 +612,156 @@ pub async fn extract_facts_from_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn memory_search_test_connection() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE memory_items (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                title TEXT,
+                content TEXT NOT NULL,
+                tags TEXT,
+                is_enabled INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE VIRTUAL TABLE memory_fts USING fts5(
+                title,
+                content,
+                tags,
+                content='memory_items',
+                content_rowid='rowid',
+                tokenize='porter unicode61'
+            );
+            CREATE TRIGGER memory_ai AFTER INSERT ON memory_items BEGIN
+                INSERT INTO memory_fts(rowid, title, content, tags)
+                VALUES (new.rowid, COALESCE(new.title, ''), new.content, COALESCE(new.tags, ''));
+            END;",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn insert_test_memory(conn: &rusqlite::Connection, id: &str, kind: &str, content: &str) {
+        insert_test_memory_with_tags(conn, id, kind, content, Some(content));
+    }
+
+    fn insert_test_memory_with_tags(
+        conn: &rusqlite::Connection,
+        id: &str,
+        kind: &str,
+        content: &str,
+        tags: Option<&str>,
+    ) {
+        conn.execute(
+            "INSERT INTO memory_items
+                (id, kind, title, content, tags, is_enabled, created_at, updated_at)
+             VALUES (?1, ?2, NULL, ?3, ?4, 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            params![id, kind, content, tags],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn memory_search_returns_content_snippet_when_tags_are_null() {
+        let conn = memory_search_test_connection();
+        insert_test_memory_with_tags(
+            &conn,
+            "memory-null-tags",
+            "user_pref",
+            "The user prefers loose-leaf green tea.",
+            None,
+        );
+
+        let hits = search_memory_with_connection(&conn, "green", None, Some(10)).unwrap();
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].item.id, "memory-null-tags");
+        assert!(hits[0].snippet.contains("<mark>green</mark>"));
+    }
+
+    #[test]
+    fn memory_search_safely_handles_nul_and_fts_metacharacters() {
+        let conn = memory_search_test_connection();
+        insert_test_memory(
+            &conn,
+            "memory-nul-query",
+            "user_pref",
+            "The user prefers loose-leaf green tea.",
+        );
+
+        let result = search_memory_with_connection(&conn, "green\0tea\"*", None, Some(10));
+
+        assert!(
+            result.is_ok(),
+            "NUL-containing FTS input must not become malformed syntax: {result:?}"
+        );
+        let hits = result.unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].item.id, "memory-nul-query");
+    }
+
+    #[test]
+    fn unfiltered_memory_search_binds_clamped_limit_and_returns_a_hit() {
+        let conn = memory_search_test_connection();
+        insert_test_memory(
+            &conn,
+            "memory-1",
+            "user_pref",
+            "The user prefers concise replies.",
+        );
+
+        let hits = search_memory_with_connection(&conn, "concise", None, Some(0)).unwrap();
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].item.id, "memory-1");
+    }
+
+    #[test]
+    fn memory_search_kind_filter_returns_only_the_requested_type() {
+        let conn = memory_search_test_connection();
+        insert_test_memory(
+            &conn,
+            "skill-1",
+            "skill",
+            "Use small Rust functions for database queries.",
+        );
+        insert_test_memory(
+            &conn,
+            "project-1",
+            "project_fact",
+            "The project uses Rust for database queries.",
+        );
+
+        let hits = search_memory_with_connection(&conn, "Rust", Some("skill"), Some(10)).unwrap();
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].item.id, "skill-1");
+        assert_eq!(hits[0].item.kind, "skill");
+    }
+
+    #[test]
+    fn memory_search_finds_partial_relevant_matches_for_natural_language_queries() {
+        let conn = memory_search_test_connection();
+        insert_test_memory(
+            &conn,
+            "memory-1",
+            "user_pref",
+            "The user prefers loose-leaf green tea.",
+        );
+
+        let hits = search_memory_with_connection(
+            &conn,
+            "can you recall green tea preferences",
+            Some("user_pref"),
+            Some(10),
+        )
+        .unwrap();
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].item.id, "memory-1");
+    }
 
     #[test]
     fn normalizes_observed_legacy_fact_shape_and_drops_task_requests() {

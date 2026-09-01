@@ -1,7 +1,8 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-const host = process.env.TAURI_DEV_HOST;
+const configuredHost = process.env.TAURI_DEV_HOST;
+const host = configuredHost === "localhost" || configuredHost === "127.0.0.1" ? configuredHost : undefined;
 
 export default defineConfig(async () => ({
   plugins: [react()],

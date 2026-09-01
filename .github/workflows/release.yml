@@ -8,33 +8,179 @@ on:
 jobs:
   bundle:
     runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.package_version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
       - name: Install Tauri Linux dependencies
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils file libfuse2
-      - name: Pin AppImage bundler
-        shell: bash
-        run: |
-          tool="$HOME/.cache/tauri/linuxdeploy-x86_64.AppImage"
-          mkdir -p "$(dirname "$tool")"
-          curl --fail --location --retry 3 \
-            --output "$tool" \
-            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
-          echo "421ca71d5c69ea97c6309276232990d43df1dcece0edfaa26bbf926ff96ed12e  $tool" | sha256sum --check
-          chmod +x "$tool"
-          echo "$HOME/.cache/tauri" >> "$GITHUB_PATH"
       - run: npm ci
       - run: npm run check:version
+      - name: Read package version
+        id: package_version
+        shell: bash
+        run: printf 'version=%s\n' "$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
       - run: npm run check:commands
+      - run: npm run typecheck
+      - run: npm run test:run
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+      - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --manifest-path src-tauri/Cargo.toml
+      - name: Verify release tag matches package version
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          PACKAGE_VERSION: ${{ steps.package_version.outputs.version }}
+          TAG_NAME: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -eu
+          tag_version="${TAG_NAME#v}"
+          if [ "$tag_version" != "$PACKAGE_VERSION" ]; then
+            printf '%s\n' "error: release tag $TAG_NAME does not match package/Tauri version $PACKAGE_VERSION" >&2
+            exit 1
+          fi
+      - name: Prefetch and verify Tauri AppImage helpers
+        shell: bash
+        run: |
+          set -eu
+          cache_dir="$HOME/.cache/tauri"
+          mkdir -p "$cache_dir"
+
+          fetch_helper() {
+            helper_name=$1
+            helper_sha256=$2
+            helper_url=$3
+            helper_path="$cache_dir/$helper_name"
+
+            curl --fail --location --retry 3 \
+              --header 'Accept: application/octet-stream' \
+              --output "$helper_path" \
+              "$helper_url"
+            printf '%s  %s\n' "$helper_sha256" "$helper_path" | sha256sum --check
+          }
+
+          fetch_helper \
+            "linuxdeploy-x86_64.AppImage" \
+            "c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d" \
+            "https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage"
+          fetch_helper \
+            "AppRun-x86_64" \
+            "f30140a43a0a59e46db21bdefdf749b9e9f2c6946e92afabbacf98b8ae73fb4f" \
+            "https://api.github.com/repos/tauri-apps/binary-releases/releases/assets/274691722"
+          fetch_helper \
+            "linuxdeploy-plugin-appimage.AppImage" \
+            "992d502a248e14ab185448ddf6f6e7d25558cb84d4623c354c3af350c25fccb3" \
+            "https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/1-alpha-20250213-1/linuxdeploy-plugin-appimage-x86_64.AppImage"
+          fetch_helper \
+            "linuxdeploy-plugin-gstreamer.sh" \
+            "c107b49d84edbffc6ab226ed1007e0626a4f7aa2c3a36b7782bef62351d49e94" \
+            "https://raw.githubusercontent.com/tauri-apps/linuxdeploy-plugin-gstreamer/2a2e67491c32995a3f279ad0ecbe77abd512b42a/linuxdeploy-plugin-gstreamer.sh"
+          fetch_helper \
+            "linuxdeploy-plugin-gtk.sh" \
+            "cb379f9b0733e9ad9f8bd78f8c2fa038aef2478523bb7d4c8e64ff6a1ea3501a" \
+            "https://raw.githubusercontent.com/tauri-apps/linuxdeploy-plugin-gtk/b5eb8d05b4c0ed40107fe2158c5d8527f94568ef/linuxdeploy-plugin-gtk.sh"
+
+          chmod +x \
+            "$cache_dir/linuxdeploy-x86_64.AppImage" \
+            "$cache_dir/AppRun-x86_64" \
+            "$cache_dir/linuxdeploy-plugin-appimage.AppImage" \
+            "$cache_dir/linuxdeploy-plugin-gstreamer.sh" \
+            "$cache_dir/linuxdeploy-plugin-gtk.sh"
+          echo "$cache_dir" >> "$GITHUB_PATH"
       - run: npm run tauri build
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
+      - run: ./scripts/smoke-linux-bundles.sh
       - uses: actions/upload-artifact@v4
         with:
           name: convo-linux
-          path: src-tauri/target/release/bundle/
+          if-no-files-found: error
+          path: |
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/appimage/*.AppImage
+            src-tauri/target/release/bundle/SHA256SUMS
+
+  publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: bundle
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: convo-linux
+          path: release
+      - name: Verify release tag matches package version
+        env:
+          PACKAGE_VERSION: ${{ needs.bundle.outputs.version }}
+          TAG_NAME: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -eu
+          tag_version="${TAG_NAME#v}"
+          if [ "$tag_version" != "$PACKAGE_VERSION" ]; then
+            printf '%s\n' "error: release tag $TAG_NAME does not match package/Tauri version $PACKAGE_VERSION" >&2
+            exit 1
+          fi
+      - name: Verify triggering tag commit
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -eu
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0=http.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: bearer $GH_TOKEN"
+          git fetch \
+            --force --no-tags origin \
+            "refs/tags/$TAG_NAME:refs/tags/$TAG_NAME"
+          tag_sha=$(git rev-parse --verify "refs/tags/$TAG_NAME^{commit}")
+          if [ "$tag_sha" != "$EXPECTED_SHA" ]; then
+            printf '%s\n' "error: remote tag $TAG_NAME resolves to $tag_sha, expected triggering commit $EXPECTED_SHA" >&2
+            exit 1
+          fi
+      - name: Prepare and verify flat release assets
+        shell: bash
+        run: |
+          set -eu
+          release_assets=release-assets
+          rm -rf "$release_assets"
+          mkdir -p "$release_assets"
+          cp release/deb/*.deb "$release_assets/"
+          cp release/appimage/*.AppImage "$release_assets/"
+          cp release/SHA256SUMS "$release_assets/SHA256SUMS"
+          sed -i -E 's#  (deb|appimage)/#  #' "$release_assets/SHA256SUMS"
+          (
+            cd "$release_assets"
+            sha256sum --check SHA256SUMS
+          )
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --generate-notes \
+            release-assets/*.deb \
+            release-assets/*.AppImage \
+            release-assets/SHA256SUMS

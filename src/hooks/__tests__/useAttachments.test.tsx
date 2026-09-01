@@ -4,6 +4,7 @@ import { api } from "../../lib/api";
 import { useAttachments } from "../useAttachments";
 import { ChatInput } from "../../components/chat/ChatInput";
 import { useSettingsStore } from "../../stores/settings";
+import { useSlashCommandsStore } from "../../stores/slashCommands";
 
 function attachmentResult(id: string) {
   return {
@@ -191,6 +192,16 @@ describe("ChatInput attachments", () => {
     isDragging: false,
   };
 
+  beforeEach(() => {
+    useSettingsStore.setState({ enterToSend: true });
+    useSlashCommandsStore.setState({
+      commands: [],
+      loaded: false,
+      loading: false,
+      error: null,
+    });
+  });
+
   it("blocks send while an attachment is uploading", () => {
     const attachments = {
       attachments: [{
@@ -277,5 +288,119 @@ describe("ChatInput attachments", () => {
     expect(onSend).toHaveBeenCalledWith("hello");
     fireEvent.keyDown(input, { key: "Enter", ctrlKey: true, shiftKey: true });
     expect(onSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("expands a custom command into the draft without sending it", async () => {
+    const onSend = vi.fn();
+    const onInputChange = vi.fn();
+    useSlashCommandsStore.setState({
+      commands: [{
+        id: "command-1",
+        name: "summarize",
+        description: "Summarize notes",
+        body: "Summarize {{args}}.",
+        created_at: "2026-08-30T00:00:00Z",
+      }],
+      loaded: true,
+    });
+
+    render(
+      <ChatInput
+        disabled={false}
+        streaming={false}
+        attachments={{ attachments: [], ...baseAttachments }}
+        onSend={onSend}
+        onStop={vi.fn()}
+        onInputChange={onInputChange}
+        slashCtx={{ sessionId: "session-1" }}
+      />,
+    );
+    const input = screen.getByRole("textbox");
+    fireEvent.change(input, { target: { value: "/summarize weekly notes" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => expect(input).toHaveValue("Summarize weekly notes."));
+    expect(onSend).not.toHaveBeenCalled();
+    expect(onInputChange).toHaveBeenLastCalledWith("Summarize weekly notes.");
+  });
+
+  it.each([
+    { body: "/clear", invocation: "/prompt", expansion: "/clear" },
+    { body: "{{args}}", invocation: "/prompt /new", expansion: "/new" },
+  ])("sends an unchanged slash-prefixed custom expansion as text ($body)", async ({ body, invocation, expansion }) => {
+    const onSend = vi.fn().mockResolvedValue(undefined);
+    const clearAll = vi.fn().mockResolvedValue(undefined);
+    const newSession = vi.fn().mockResolvedValue(undefined);
+    useSlashCommandsStore.setState({
+      commands: [{
+        id: "command-1",
+        name: "prompt",
+        description: "Insert a prompt",
+        body,
+        created_at: "2026-08-30T00:00:00Z",
+      }],
+      loaded: true,
+    });
+
+    render(
+      <ChatInput
+        disabled={false}
+        streaming={false}
+        attachments={{ attachments: [], ...baseAttachments }}
+        onSend={onSend}
+        onStop={vi.fn()}
+        onInputChange={vi.fn()}
+        slashCtx={{ sessionId: "session-1", clearAll, newSession }}
+      />,
+    );
+    const input = screen.getByRole("textbox");
+    fireEvent.change(input, { target: { value: invocation } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => expect(input).toHaveValue(expansion));
+    expect(onSend).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith(expansion));
+    expect(clearAll).not.toHaveBeenCalled();
+    expect(newSession).not.toHaveBeenCalled();
+  });
+
+  it("resumes slash parsing after the expanded draft is edited", async () => {
+    const onSend = vi.fn().mockResolvedValue(undefined);
+    const clearAll = vi.fn().mockResolvedValue(undefined);
+    useSlashCommandsStore.setState({
+      commands: [{
+        id: "command-1",
+        name: "prompt",
+        description: "Insert a prompt",
+        body: "{{args}}",
+        created_at: "2026-08-30T00:00:00Z",
+      }],
+      loaded: true,
+    });
+
+    render(
+      <ChatInput
+        disabled={false}
+        streaming={false}
+        attachments={{ attachments: [], ...baseAttachments }}
+        onSend={onSend}
+        onStop={vi.fn()}
+        onInputChange={vi.fn()}
+        slashCtx={{ sessionId: "session-1", clearAll }}
+      />,
+    );
+    const input = screen.getByRole("textbox");
+    fireEvent.change(input, { target: { value: "/prompt /clear" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(input).toHaveValue("/clear"));
+
+    fireEvent.change(input, { target: { value: "/clear edited" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => expect(clearAll).toHaveBeenCalledOnce());
+    expect(onSend).not.toHaveBeenCalled();
   });
 });

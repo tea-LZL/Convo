@@ -21,13 +21,13 @@ export function escapeThinkTags(text: string): string {
 }
 
 const EMPTY_MESSAGES_LIST: ChatMessage[] = [];
+const pendingResendDrafts = new Map<string, string>();
 
 /**
  * Custom comparator: only re-render when the message content itself
- * changes. Function props (setEditingMessageId, setContextMenu,
- * onResend, etc.) are ignored — they all close over `msg` and `i`
- * from the row's props, so a stale closure from the previous
- * render is still valid as long as `msg` and `i` are unchanged.
+ * Function props (setEditingMessageId, setContextMenu, etc.) are ignored;
+ * onResend is stable and reads the current resend state through ChatViewNew's
+ * ref, so a row retained across a stream cannot invoke stale chat state.
  */
 function messageRowAreEqual(prev: MessageRowProps, next: MessageRowProps) {
   const pm = prev.msg;
@@ -39,6 +39,8 @@ function messageRowAreEqual(prev: MessageRowProps, next: MessageRowProps) {
     pm.thinking === nm.thinking &&
     pm.role === nm.role &&
     pm.attachments_json === nm.attachments_json &&
+    pm.prompt_tokens === nm.prompt_tokens &&
+    pm.output_tokens === nm.output_tokens &&
     pm.created_at === nm.created_at &&
     prev.editingMessageId === next.editingMessageId &&
     prev.collapsedThinking === next.collapsedThinking &&
@@ -58,11 +60,17 @@ export const MessageRow = React.memo(function MessageRow({
   onResend,
 }: MessageRowProps) {
   const thinkingOpen = !collapsedThinking.has(i);
-  const [editText, setEditText] = useState(msg.content);
+  const [editText, setEditText] = useState(
+    () => pendingResendDrafts.get(msg.id) ?? msg.content
+  );
   const atts = parseAttachments(msg.attachments_json);
 
   useEffect(() => {
-    if (editingMessageId === msg.id) setEditText(msg.content);
+    if (editingMessageId === msg.id) {
+      setEditText(pendingResendDrafts.get(msg.id) ?? msg.content);
+    } else {
+      pendingResendDrafts.delete(msg.id);
+    }
   }, [editingMessageId, msg.content, msg.id]);
 
   return (
@@ -113,7 +121,10 @@ export const MessageRow = React.memo(function MessageRow({
         <div className="bg-surface-2 border border-border rounded-md p-2">
           <textarea
             value={editText}
-            onChange={(e) => setEditText(e.target.value)}
+            onChange={(e) => {
+              pendingResendDrafts.set(msg.id, e.target.value);
+              setEditText(e.target.value);
+            }}
             rows={Math.max(2, Math.min(10, editText.split("\n").length + 1))}
             className="w-full bg-transparent text-sm text-text focus:outline-none resize-none"
             autoFocus
@@ -126,6 +137,7 @@ export const MessageRow = React.memo(function MessageRow({
               onClick={async () => {
                 const newContent = editText.trim();
                 if (!newContent) return;
+                pendingResendDrafts.set(msg.id, newContent);
                 await onResend(i, newContent);
               }}
               icon={<Check size={12} />}

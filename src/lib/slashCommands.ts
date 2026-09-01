@@ -7,9 +7,10 @@
  *   - perform a side-effect and clear the input (e.g. /new, /clear)
  *   - show an error toast (e.g. /model foo not found)
  */
-import { api, SearchConfig, SearchResult } from "../lib/api";
+import { api, SearchConfig, SearchResult, SlashCommand } from "../lib/api";
 import { toast } from "../stores/toasts";
 import { useSessionsStore } from "../stores/sessions";
+import { useSlashCommandsStore } from "../stores/slashCommands";
 
 export interface ParsedCommand {
   name: string;
@@ -39,19 +40,21 @@ export interface SlashCommandContext {
   newSession?: () => Promise<void>;
 }
 
-export const SLASH_COMMANDS: Array<{
+export interface SlashCommandDescriptor {
   name: string;
   description: string;
   args?: string;
   run: (args: string, ctx: SlashCommandContext) => Promise<SlashCommandResult> | SlashCommandResult;
-}> = [
+}
+
+export const SLASH_COMMANDS: SlashCommandDescriptor[] = [
   {
     name: "help",
     description: "Show available slash commands",
     run: () => {
       const lines = [
         "Available slash commands:",
-        ...SLASH_COMMANDS.map((c) =>
+        ...getAvailableCommands().map((c) =>
           `  /${c.name}${c.args ? " " + c.args : ""}  —  ${c.description}`
         ),
       ];
@@ -64,7 +67,7 @@ export const SLASH_COMMANDS: Array<{
     description: "Start a new chat session",
     run: async (_args: string, ctx: SlashCommandContext) => {
       if (ctx.newSession) await ctx.newSession();
-      else useSessionsStore.getState().create();
+      else await useSessionsStore.getState().create();
       return { clear: true };
     },
   },
@@ -181,7 +184,7 @@ export const SLASH_COMMANDS: Array<{
 
 export function parseCommand(input: string): ParsedCommand | null {
   const trimmed = input.trim();
-  if (!trimmed.startsWith("/")) return null;
+  if (!trimmed.startsWith("/") || trimmed.startsWith("//")) return null;
   const firstSpace = trimmed.indexOf(" ");
   const name = firstSpace === -1 ? trimmed.slice(1) : trimmed.slice(1, firstSpace);
   const args = firstSpace === -1 ? "" : trimmed.slice(firstSpace + 1);
@@ -189,29 +192,98 @@ export function parseCommand(input: string): ParsedCommand | null {
 }
 
 export function findCommand(name: string) {
-  return SLASH_COMMANDS.find((c) => c.name === name);
+  const builtin = findBuiltinCommand(name);
+  if (builtin) return builtin;
+  const normalizedName = normalizeCommandName(name);
+  if (!normalizedName || !useSlashCommandsStore.getState().loaded) return undefined;
+  return getAvailableCommands().find((c) => normalizeCommandName(c.name) === normalizedName);
 }
 
-export function runCommand(parsed: ParsedCommand, ctx: SlashCommandContext): Promise<SlashCommandResult> {
-  const cmd = findCommand(parsed.name);
+export async function runCommand(parsed: ParsedCommand, ctx: SlashCommandContext): Promise<SlashCommandResult> {
+  if (parsed.name.trim().startsWith("/")) {
+    toast.error(`Unknown command: /${parsed.name}. Try /help.`);
+    return { clear: true };
+  }
+  let cmd = findBuiltinCommand(parsed.name);
+  if (!cmd) {
+    const store = useSlashCommandsStore.getState();
+    if (!store.loaded) {
+      try {
+        await store.refresh();
+      } catch {
+        // Persisted commands are optional; the unknown-command result below
+        // keeps built-ins usable when loading fails.
+      }
+    }
+    if (useSlashCommandsStore.getState().loaded) cmd = findCommand(parsed.name);
+  }
   if (!cmd) {
     toast.error(`Unknown command: /${parsed.name}. Try /help.`);
-    return Promise.resolve({ clear: true });
+    return { clear: true };
   }
   try {
-    return Promise.resolve(cmd.run(parsed.args, ctx));
+    return await cmd.run(parsed.args, ctx);
   } catch (e) {
     toast.error(String(e));
-    return Promise.resolve({ clear: true });
+    return { clear: true };
   }
 }
 
-export function filterCommands(query: string) {
+export function filterCommands(query: string, customCommands?: SlashCommand[]) {
   const q = query.replace(/^\//, "").toLowerCase();
-  if (!q) return SLASH_COMMANDS;
-  return SLASH_COMMANDS.filter(
+  const commands = getAvailableCommands(customCommands);
+  if (!q) return commands;
+  return commands.filter(
     (c) =>
       c.name.toLowerCase().includes(q) ||
       c.description.toLowerCase().includes(q)
   );
+}
+
+export function expandCommandBody(body: string, args: string): string {
+  const value = args.trim();
+  if (body.includes("{{args}}")) return body.replace(/\{\{args\}\}/g, () => value);
+  if (!value) return body;
+  return `${body}\n\n${value}`;
+}
+
+function normalizeCommandName(name: string): string {
+  return name.trim().replace(/^\//, "").toLowerCase();
+}
+
+function findBuiltinCommand(name: string): SlashCommandDescriptor | undefined {
+  const normalizedName = normalizeCommandName(name);
+  if (!normalizedName) return undefined;
+  return SLASH_COMMANDS.find((c) => normalizeCommandName(c.name) === normalizedName);
+}
+
+export function isCustomCommand(name: string): boolean {
+  const normalizedName = normalizeCommandName(name);
+  if (!normalizedName || findBuiltinCommand(name)) return false;
+  const state = useSlashCommandsStore.getState();
+  return state.loaded && state.commands.some((command) => normalizeCommandName(command.name) === normalizedName);
+}
+
+function toCustomDescriptor(command: SlashCommand): SlashCommandDescriptor {
+  return {
+    name: normalizeCommandName(command.name),
+    description: command.description?.trim() || "Custom prompt command",
+    run: (args) => ({ text: expandCommandBody(command.body, args) }),
+  };
+}
+
+function getAvailableCommands(
+  customCommands: SlashCommand[] = useSlashCommandsStore.getState().commands,
+): SlashCommandDescriptor[] {
+  const builtinNames = new Set(SLASH_COMMANDS.map((command) => normalizeCommandName(command.name)));
+  const customNames = new Set<string>();
+  const availableCustomCommands = customCommands
+    .map(toCustomDescriptor)
+    .filter((command) => {
+      const name = normalizeCommandName(command.name);
+      if (builtinNames.has(name) || customNames.has(name)) return false;
+      customNames.add(name);
+      return true;
+    });
+  return [...SLASH_COMMANDS, ...availableCustomCommands];
 }
