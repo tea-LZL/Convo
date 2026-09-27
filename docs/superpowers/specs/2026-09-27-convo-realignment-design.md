@@ -374,20 +374,41 @@ Every phase ends with `npm run typecheck`, `npm run test:run` (≥ 252 + new), `
 - [ ] Delete `streamingRenderer.ts`, `streamingSegmenter.ts` and their tests
 - [ ] **Gate:** golden-output parity + all 5 invariants + 60fps perf test
 
-### Phase 2 — Unified index schema
-- [ ] `V006__unified_index.sql` per §5.1
-- [ ] Migration test: V001–V006 against a populated DB, assert no data loss
-- [ ] Backfill in-flight review rows; drop the `session_id UNIQUE` one-shot constraint
-- [ ] Rust `memory/config.rs` with every §6.2 constant
-- [ ] `notes` and `memory_items` share the `memory_fts` index
-- [ ] **Gate:** migration test on a populated DB, typecheck clean
+### Phase 2 — Unified index schema — **complete**
+- [x] `V006__unified_index.sql` — `memory_embeddings`, `memory_events`, `notes_fts` + triggers, revision columns on `memory_items` and `notes`
+- [x] Migration test: V001–V006 against a populated DB, assert no data loss
+- [x] Rebuild `pending_memory_reviews` without `session_id UNIQUE`; add `watermark_message_id`
+- [x] Rust `memory/config.rs` with every §6.2 constant, each settings-overridable
+- [x] `memory/embed.rs` — f32 BLOB codec, cosine, `rows_needing_embedding`, `load_vectors`, `needs_reindex`, `log_event`
+- [x] **Gate:** `cargo test` 103 passing, `cargo clippy -D warnings` clean, 372 TypeScript passing, `git diff --name-only -- src/` empty
 
-### Phase 3 — Provider layer
-- [ ] `ollama-cloud` preset + keyring auth
-- [ ] `/api/embed` for local and cloud
-- [ ] Per-capability model routing in settings and DB
-- [ ] Embedding model reindex-on-change detection
-- [ ] **Gate:** Rust + TS tests, `cargo clippy -D warnings` clean
+**Deviation from §5.2, recorded:** `notes` and `memory_items` do **not** share
+one FTS5 table. An external-content FTS table binds to a single `content=`
+table and the V002 sync triggers are per-table, so one table spanning both
+means a hand-maintained denormalised shadow. Instead there are two tables —
+`memory_fts` and `notes_fts` — with the same column shape and the same
+tokenizer, queried separately and fused with RRF, which is what RRF takes
+ranked lists for. "Unified" is enforced at the retrieval layer, where the
+spec's intent actually lives. A third content type later adds a third table
+and a third RRF route: additive, not a rework.
+
+**Defect the migration test caught:** a migration that creates an FTS table and
+its triggers indexes nothing that already exists, because triggers only fire on
+write. The first V006 draft left every pre-existing note unsearchable, and
+`memory_fts` has had the same defect since V002 — every memory written before
+v0.2 has never been searchable. Both are now backfilled.
+
+### Phase 3 — Provider layer — **complete**
+- [x] `OllamaProvider` honours the `api_key` it was already being handed — every `ollama.com` request previously went out unauthenticated
+- [x] `Ollama Cloud` preset seeded at `https://ollama.com/api`, idempotent, not the default provider
+- [x] `Provider::embed` — `POST /api/embed` and `POST /v1/embeddings`, with a shared post-condition refusing count mismatches, ragged vectors, zero-length vectors, and non-finite values
+- [x] Per-capability model routing: `memory.routing` JSON, each capability parsed independently so one mistyped field costs only itself
+- [x] Embedding reindex-on-change detection via recorded `model` + `dim` per row
+- [x] **Gate:** `cargo test` 103 passing, `cargo clippy -D warnings` clean, 372 TypeScript passing
+
+**Open into Plan 3:** recall degrades to BM25-only when no embedding model is
+configured or the endpoint is unreachable. That degradation path is not built
+yet, because nothing calls `embed` yet.
 
 ### Phase 4 — Retrieval
 - [ ] `memory/index.rs` — embed, store, reindex stale rows
