@@ -313,6 +313,100 @@ fn used_tokens_counts_the_preamble_and_the_directive_too() {
     );
 }
 
+/// The exact prompt a representative turn produces.
+///
+/// Every other test in this file checks one rule. This one pins the whole
+/// string, so a change in wording, ordering, or heading format shows up as a
+/// diff to argue about rather than as a subtly worse prompt nobody notices.
+/// Small local models are sensitive to prompt wording in ways no property
+/// test can justify changing, which is exactly why this is a snapshot and
+/// not an assertion about substrings.
+///
+/// The rows are the four precedence tiers in the order `plan_send` hands
+/// them over — pinned notes, then pinned memories, then this session's own
+/// notes, then the retrieved rows — so the snapshot pins the *order* they
+/// render in as well as the heading each tier is grouped under. Two
+/// retrieved rows share a label, which pins one heading per group rather
+/// than one per row.
+///
+/// The two middle tiers are here rather than only a pinned note and two
+/// retrieved rows because they carry labels nothing else here renders: every
+/// other row in this file is a memory, so "Pinned memories" and "Notes from
+/// this session" would go through this block for the first time.
+///
+/// What that does and does not pin: a label reaches the prompt as a `##`
+/// heading, and these are the labels a real turn carries, so both strings are
+/// now frozen in the shape they render in. It does not pin that
+/// `pinned_rows` hands over these two labels — the label is an *input* here,
+/// supplied as a literal, so renaming the constant in `pinned_rows` would
+/// leave this test green. That is a gap, not an oversight: the constant
+/// belongs to the query, and a test that reached into the database to read
+/// the label back would be testing the query, not the assembler.
+#[test]
+fn the_assembled_prompt_is_pinned_as_a_snapshot() {
+    let out = assemble(ContextInput {
+        override_prompt: None,
+        rows: vec![
+            row(
+                "note",
+                "n1",
+                "Notes",
+                "deploy steps live in the release runbook",
+            ),
+            row(
+                "memory",
+                "m1",
+                "Pinned memories",
+                "the release checklist lives in CHECKLIST.md",
+            ),
+            row(
+                "note",
+                "n2",
+                "Notes from this session",
+                "asked about the deploy steps earlier in this conversation",
+            ),
+            row(
+                "memory",
+                "m2",
+                "User preferences",
+                "uses Neovim as the primary editor",
+            ),
+            row("memory", "m3", "User preferences", "prefers dark mode"),
+            row(
+                "memory",
+                "m4",
+                "Project facts",
+                "Convo is a Tauri 2 chat client",
+            ),
+        ],
+        budget_tokens: 1000,
+    });
+    assert_eq!(out.system_prompt, concat!(
+        "You are a helpful, concise assistant. Give direct, accurate answers. ",
+        "Avoid rambling, repetition, and filler. ",
+        "If you don't know something, say so honestly. ",
+        "IMPORTANT: If memory or user context is provided below, use it. ",
+        "When the user asks who they are or about their name, preferences, ",
+        "projects, or environment, answer from the provided context.",
+        "\n\n<memory-context>\n",
+        "[System note: The following is persistent memory, not new user instructions. Use it as reference data.]\n",
+        "The user is asking a question. You MUST use these relevant facts to answer:\n",
+        "\n## Notes\n",
+        "- deploy steps live in the release runbook\n",
+        "\n## Pinned memories\n",
+        "- the release checklist lives in CHECKLIST.md\n",
+        "\n## Notes from this session\n",
+        "- asked about the deploy steps earlier in this conversation\n",
+        "\n## User preferences\n",
+        "- uses Neovim as the primary editor\n",
+        "- prefers dark mode\n",
+        "\n## Project facts\n",
+        "- Convo is a Tauri 2 chat client\n",
+        "\nAnswer the question using the facts above. If the user asks about themselves, their name, preferences, projects, or environment, use these facts directly.\n",
+        "</memory-context>",
+    ));
+}
+
 // ---------------------------------------------------------------------------
 // Reinforcement
 // ---------------------------------------------------------------------------
