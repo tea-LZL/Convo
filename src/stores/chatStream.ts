@@ -142,9 +142,7 @@ export function evictSessionState(cid: string): void {
     if (!(cid in current.sessions)) return current;
     const sessions = { ...current.sessions };
     delete sessions[cid];
-    const loaded = { ...current._loaded };
-    delete loaded[cid];
-    return { sessions, _loaded: loaded, version: current.version + 1 };
+    return { sessions };
   });
 }
 
@@ -178,8 +176,11 @@ const DEFAULT_TITLES = new Set(["", "New Chat", "Untitled"]);
  * Frame-batched stream updates.
  *
  * The Tauri `chat-chunk` listener receives one event per token chunk
- * the model emits. With LLM bursts of 4-8 chunks in a 16ms frame,
- * a naive "mutate state + bump" per event drives 4-8 React re-renders
+ * the model emits. Those handlers deliberately mutate the working
+ * session WITHOUT publishing, and this drain is the only thing that
+ * publishes for them — that is what makes one render per frame instead
+ * of one per chunk. With LLM bursts of 4-8 chunks in a 16ms frame,
+ * a naive publish per event drives 4-8 React re-renders
  * per frame — the browser coalesces paints but the React tree still
  * re-runs.
  *
@@ -209,7 +210,7 @@ function scheduleFlush() {
       if (!isCurrentStream(s, pending.streamId)) continue;
       s.streamContent += pending.content;
       s.streamThinking += pending.thinking;
-      if (pending.content || pending.thinking) bump(pending.cid);
+      if (pending.content || pending.thinking) publish(pending.cid);
     }
   });
 }
@@ -365,7 +366,7 @@ async function ensureListeners() {
           sendNotification({ title: "Convo", body: "Response complete" });
         } catch { /* ignore */ }
       }
-      bump(cid);
+      publish(cid);
     })
   );
 
@@ -397,7 +398,7 @@ async function ensureListeners() {
         s.streamContent = "";
         s.streamThinking = "";
         toast.error(e.payload.error, "Chat error");
-        bump(cid);
+        publish(cid);
       }
     )
   );
@@ -435,7 +436,7 @@ async function ensureListeners() {
       );
       s.streamContent = "";
       s.streamThinking = "";
-      bump(cid);
+      publish(cid);
     })
   );
 }
@@ -449,27 +450,107 @@ function getOrCreate(id: string): SessionState {
   return s;
 }
 
-function bump(cid: string) {
-  // Bump a per-session version counter so subscribers re-render.
+/**
+ * Republish a session so subscribers see the mutations made to it.
+ *
+ * The session object itself is mutated in place, which is what keeps
+ * `s.messages` reference-stable across a stream — the identity of the
+ * *published* object is the change signal, not the inner one.
+ *
+ * Prefer `mutate`. This is separate only for the two cases that need to
+ * publish without an accompanying mutation: staging a chunk for the
+ * frame batch, and republishing after an async boundary.
+ */
+function publish(cid: string): void {
   useChatStreamStore.setState((prev) => ({
-    version: prev.version + 1,
     sessions: { ...prev.sessions, [cid]: { ...getOrCreate(cid) } },
   }));
+}
+
+/**
+ * Apply a mutation to a session and publish it, atomically.
+ *
+ * The point of fusing the two: this store used to mutate a session and
+ * then call a separate `bump`, and forgetting the bump produced a
+ * silently stale UI. There is no way to skip the publish here.
+ *
+ * Do NOT use this on the chunk hot path. `chat-chunk` arrives several
+ * times per frame; publishing per chunk would defeat the frame batching
+ * that keeps the tail at 60fps. Those handlers stage into `pendingDeltas`
+ * and let the rAF drain publish once.
+ */
+function mutate(cid: string, fn: (s: SessionState) => void): void {
+  const s = getOrCreate(cid);
+  fn(s);
+  publish(cid);
+}
+
+/** The reactive slice a streaming component needs from one session. */
+export interface StreamSlice {
+  streaming: boolean;
+  streamContent: string;
+  streamThinking: string;
+  status: ChatStatus;
+  error: string | null;
+}
+
+/**
+ * Projections are cached against the published session object.
+ *
+ * A selector that builds a fresh object literal on every call defeats
+ * zustand's `Object.is` comparison: every unrelated store notification
+ * would look like a change to every subscriber, which is the 60fps
+ * re-render storm this whole arrangement exists to avoid. `publish`
+ * creates a new session object per mutation, so the cache misses once
+ * per real change and hits forever after.
+ */
+const sliceCache = new WeakMap<SessionState, StreamSlice>();
+
+/**
+ * Select one session's stream slice in a single subscription.
+ *
+ * Prefer this over three separate `useChatStreamStore` calls when a
+ * component needs more than one streaming field. Do NOT widen a
+ * component's subscription to the whole session.
+ */
+export function selectStreamSlice(sessionId: string) {
+  return (s: ChatStreamStore): StreamSlice | undefined => {
+    const session = s.sessions[sessionId];
+    if (!session) return undefined;
+    let slice = sliceCache.get(session);
+    if (!slice) {
+      slice = {
+        streaming: session.streaming,
+        streamContent: session.streamContent,
+        streamThinking: session.streamThinking,
+        status: session.status,
+        error: session.error,
+      };
+      sliceCache.set(session, slice);
+    }
+    return slice;
+  };
+}
+
+/**
+ * Select one session's message list.
+ *
+ * The array reference is stable across stream updates, so a subscriber
+ * re-renders only when a message is added, removed, or edited. If this
+ * ever starts returning a fresh array per chunk, MessageList re-renders
+ * at 60fps and the v0.6.5 lag regression is back.
+ */
+export function selectMessages(sessionId: string) {
+  return (s: ChatStreamStore): ChatMessage[] | undefined => s.sessions[sessionId]?.messages;
 }
 
 interface ChatStreamStore {
   /** Per-session state snapshots for components to subscribe to. */
   sessions: Record<string, SessionState>;
-  /** Increments on any per-session change. Used to force re-renders. */
-  version: number;
-  /** Internal: tracks which sessions have been loaded from DB. */
-  _loaded: Record<string, boolean>;
 }
 
 export const useChatStreamStore = create<ChatStreamStore>(() => ({
   sessions: {},
-  version: 0,
-  _loaded: {},
 }));
 
 const sessionLoads = new Map<string, Promise<ChatMessage[]>>();
@@ -491,14 +572,14 @@ export async function loadSessionMessages(cid: string): Promise<ChatMessage[]> {
   if (existing) return existing;
   const load = (async () => {
     s.loadingMessages = true;
-    bump(cid);
+    publish(cid);
     try {
       const msgs = (await api.listMessages(cid)) ?? [];
       if (s.messages.length === 0 && !s.streaming) s.messages = msgs;
       return s.messages;
     } finally {
       s.loadingMessages = false;
-      bump(cid);
+      publish(cid);
       sessionLoads.delete(cid);
     }
   })();
@@ -510,14 +591,14 @@ export async function reloadSessionMessages(cid: string): Promise<ChatMessage[]>
   await ensureListeners();
   const s = getOrCreate(cid);
   s.loadingMessages = true;
-  bump(cid);
+  publish(cid);
   try {
     const msgs = (await api.listMessages(cid)) ?? [];
     s.messages = msgs;
     return msgs;
   } finally {
     s.loadingMessages = false;
-    bump(cid);
+    publish(cid);
   }
 }
 
@@ -527,20 +608,20 @@ export function getSessionState(cid: string): SessionState {
 
 export async function clearSessionMessages(cid: string) {
   await ensureListeners();
-  const s = getOrCreate(cid);
-  s.messages = [];
-  s.status = "idle";
-  s.streaming = false;
-  s.streamContent = "";
-  s.streamThinking = "";
-  s.error = null;
-  s._streamId = undefined;
-  s._assistantMessageId = undefined;
   pendingDeltas.forEach((pending, key) => {
     if (pending.cid === cid) pendingDeltas.delete(key);
   });
   clearStopTimer(cid);
-  bump(cid);
+  mutate(cid, (s) => {
+    s.messages = [];
+    s.status = "idle";
+    s.streaming = false;
+    s.streamContent = "";
+    s.streamThinking = "";
+    s.error = null;
+    s._streamId = undefined;
+    s._assistantMessageId = undefined;
+  });
   try {
     await api.clearMessages(cid);
   } catch (e) {
@@ -598,7 +679,7 @@ export async function sendMessage(
   terminalStreams.delete(eventStreamKey(cid, s._streamId));
   s._lastModel = model;
   s._lastProviderId = opts.providerId;
-  bump(cid);
+  publish(cid);
   playSendSound(false);
 
   // Persist the user message to DB immediately so it survives even
@@ -609,7 +690,7 @@ export async function sendMessage(
     s.messages = s.messages.filter((message) => message.id !== userMsg.id);
     s.streaming = false;
     s.status = "failed";
-    bump(cid);
+    publish(cid);
     throw e;
   }
 
@@ -640,7 +721,7 @@ export async function sendMessage(
 
   try {
     s.status = "streaming";
-    bump(cid);
+    publish(cid);
     await api.chatStream({
       sessionId: cid,
       model,
@@ -655,7 +736,7 @@ export async function sendMessage(
     s.status = "failed";
     s.error = String(e);
     toast.error(String(e), "Send failed");
-    bump(cid);
+    publish(cid);
   }
 }
 
@@ -664,7 +745,7 @@ export async function stopStream(cid: string) {
   if (!s.streaming || !s._streamId) return;
   s._cancelRequestedGeneration = s._streamGeneration ?? 0;
   s.status = "stopping";
-  bump(cid);
+  publish(cid);
   try {
     await api.cancelChat(cid, s._streamId);
     clearStopTimer(cid);
@@ -687,13 +768,13 @@ export async function stopStream(cid: string) {
       current.error = "Stop request timed out";
       current.streamContent = "";
       current.streamThinking = "";
-      bump(cid);
+      publish(cid);
       stopTimers.delete(cid);
     }, 5000));
   } catch (e) {
     s.status = "failed";
     s.error = String(e);
-    bump(cid);
+    publish(cid);
     console.error("cancelChat:", e);
   }
 }
