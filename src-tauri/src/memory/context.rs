@@ -469,6 +469,12 @@ fn with_title(title: Option<String>, body: String) -> String {
 /// no-op here is invisible at the call site and shows up months later as
 /// boost numbers that never move, which is the failure this whole task
 /// exists to prevent.
+///
+/// Rejected here rather than left to the `memory_events` CHECK, which
+/// happens to forbid the same two types today. Leaning on it would make
+/// this function's behaviour depend on a constraint a later migration is
+/// free to widen, and the day it is widened a forgotten owner type starts
+/// writing recall events for a row whose counter never moved.
 pub fn record_injection(
     conn: &Connection,
     row: &ContextRow,
@@ -476,14 +482,29 @@ pub fn record_injection(
 ) -> Result<(), String> {
     match row.owner_type.as_str() {
         "memory" => {
-            conn.execute(
-                "UPDATE memory_items
-                 SET access_count = access_count + 1,
-                     last_seen_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-                 WHERE id = ?1",
-                params![row.owner_id],
-            )
-            .map_err(|e| e.to_string())?;
+            let reinforced = conn
+                .execute(
+                    "UPDATE memory_items
+                     SET access_count = access_count + 1,
+                         last_seen_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                     WHERE id = ?1",
+                    params![row.owner_id],
+                )
+                .map_err(|e| e.to_string())?;
+            // A row the assembler read can be deleted before it is recorded.
+            // `Ok(0)` is not a success: the counter would stay put while the
+            // event below claimed a recall, and a log that disagrees with
+            // the data it describes is worse than no log. The cost is one
+            // error, and the caller logs it and sends the turn anyway —
+            // `plan_send` never fails on this — so a delete racing a send
+            // costs a warning line, not a message. That is the right trade:
+            // the alternative is a boost that drifts with no way to see why.
+            if reinforced == 0 {
+                return Err(format!(
+                    "cannot reinforce a memory that does not exist: {}",
+                    row.owner_id
+                ));
+            }
         }
         "note" => {} // No counter to bump; the event below is the record.
         other => return Err(format!("unknown context owner type: {}", other)),

@@ -1,3 +1,5 @@
+use rusqlite::Connection;
+
 use super::context::*;
 
 fn row(owner_type: &str, owner_id: &str, label: &str, text: &str) -> ContextRow {
@@ -303,5 +305,132 @@ fn used_tokens_counts_the_preamble_and_the_directive_too() {
         "block {} tokens, rows only {} tokens: the preamble is not being counted",
         out.used_tokens,
         rows_only
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Reinforcement
+// ---------------------------------------------------------------------------
+//
+// These reach the database, so they are here rather than in the pure
+// assembler tests above: what they protect is not a return value but an
+// effect another turn reads. `retrieve::boost` consumes `access_count`, and
+// a reinforcement that silently never fires looks exactly like one that
+// works until someone checks the numbers months later.
+
+/// A connection at the real migrated schema, not a hand-rolled
+/// approximation — the CHECK constraints below are the thing under test.
+fn migrated_conn() -> Connection {
+    let mut conn = Connection::open_in_memory().unwrap();
+    crate::db::migrations_for_tests()
+        .to_latest(&mut conn)
+        .unwrap();
+    conn
+}
+
+/// The unknown-owner-type error must be *ours*, not the schema's.
+///
+/// `memory_events.owner_type` carries `CHECK (owner_type IN ('memory',
+/// 'note'))`, so an implementation that falls through to the event write
+/// instead of rejecting the type still returns `Err` — the database
+/// rejects it. Asserting only `is_err()` therefore pins nothing: the test
+/// goes green against an implementation with no default arm at all, and
+/// the operator who eventually hits it gets a bare constraint violation
+/// instead of the sentence naming what went wrong.
+///
+/// The message is matched on the offending type, not on the whole string,
+/// so the wording can still be improved without breaking this.
+#[test]
+fn an_unknown_owner_type_is_rejected_by_us_and_says_which_one() {
+    let conn = migrated_conn();
+    let result = record_injection(&conn, &row("document", "d1", "Notes", "x"), None);
+
+    assert!(
+        result.is_err(),
+        "an unknown owner type must not be accepted"
+    );
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("document"),
+        "the error must name the owner type it rejected, got: {}",
+        err
+    );
+    // Our wording, not SQLite's. Asserted as an absence rather than by
+    // matching our exact string, so this survives a reword.
+    assert!(
+        !err.contains("CHECK constraint failed") && !err.contains("SQLITE_CONSTRAINT"),
+        "the error came from the schema rather than from record_injection: {}",
+        err
+    );
+}
+
+/// The function's own gate must not lean on the schema's gate, because the
+/// two sets do not have to keep matching. Today `memory_events` rejects
+/// exactly what this function rejects, so a fall-through implementation
+/// looks correct; the day someone widens that CHECK to add an owner type —
+/// a chunk, an embedding, a file — the fall-through starts writing recall
+/// events for a type that was never reinforced, and the counter quietly
+/// stops moving.
+///
+/// Every type the function does not know is named in the error, whatever
+/// the schema would have done with it. The empty string and the wrong-case
+/// spellings are here because a type is a string this module assembled, and
+/// an empty one is what an unset field carries. `contains("")` is trivially
+/// true, so the empty entry rests on `is_err` alone; the others carry the
+/// real weight.
+#[test]
+fn every_owner_type_we_do_not_handle_is_rejected_by_name() {
+    let conn = migrated_conn();
+    for unknown in ["document", "embedding", "file", "MEMORY", "Note", ""] {
+        let result = record_injection(&conn, &row(unknown, "x1", "Notes", "x"), None);
+        assert!(result.is_err(), "owner type {:?} was accepted", unknown);
+        let err = result.unwrap_err();
+        assert!(
+            err.contains(unknown),
+            "the error must name {:?}, got: {}",
+            unknown,
+            err
+        );
+        assert!(
+            !err.contains("CHECK constraint failed"),
+            "owner type {:?} was rejected by the schema, not by us: {}",
+            unknown,
+            err
+        );
+    }
+}
+
+/// A row the assembler read can be gone by the time it is recorded: a
+/// delete landing between the two is a real race, and it must not leave a
+/// `recall` event attached to a memory whose counter never moved. An
+/// injected-and-reinforced pair that disagrees with itself is worse than no
+/// record at all, because the log is what an audit reads.
+///
+/// The error is a nuisance, not a failure: the caller logs it and sends the
+/// turn regardless, so a concurrent delete costs one warning line.
+#[test]
+fn reinforcing_a_memory_that_no_longer_exists_errors_and_logs_nothing() {
+    let conn = migrated_conn();
+    let ghost = row("memory", "m_gone", "Pinned memories", "deleted already");
+
+    let result = record_injection(&conn, &ghost, Some("s1"));
+
+    assert!(result.is_err(), "a missing memory must not report success");
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("m_gone"),
+        "the error must name the id it could not reinforce, got: {}",
+        err
+    );
+    let events: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memory_events WHERE owner_id = 'm_gone'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        events, 0,
+        "an event was logged for a memory that was never reinforced"
     );
 }
