@@ -14,6 +14,11 @@ fn now() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
+/// Every memory reader maps its row through this, so the SELECT list and the
+/// `get` indices are one contract: they must agree, in this order, in every
+/// reader. The unit tests pin that, because a mismatch is not a compile
+/// error — a reordered pair of string columns compiles, runs, and returns
+/// one field's value in the other field's place.
 fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryItem> {
     Ok(MemoryItem {
         id: row.get(0)?,
@@ -24,6 +29,7 @@ fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryItem> {
         is_enabled: row.get::<_, i64>(5)? != 0,
         created_at: row.get(6)?,
         updated_at: row.get(7)?,
+        pinned: row.get::<_, i64>(8)? != 0,
     })
 }
 
@@ -46,17 +52,25 @@ pub fn list_memory(
     kind: Option<String>,
 ) -> Result<Vec<MemoryItem>, String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
-    let (sql, k): (&str, Option<String>) = match &kind {
-        Some(_) => (
-            "SELECT id, kind, title, content, tags, is_enabled, created_at, updated_at
+    list(&conn, kind.as_deref())
+}
+
+/// The query behind `list_memory`, over `&Connection` so its positional
+/// `row.get` chain is testable. `None` lists every kind, which is what the
+/// command passes when the frontend sends no filter.
+pub fn list(conn: &rusqlite::Connection, kind: Option<&str>) -> Result<Vec<MemoryItem>, String> {
+    let (sql, k): (&str, Option<&str>) = if kind.is_some() {
+        (
+            "SELECT id, kind, title, content, tags, is_enabled, created_at, updated_at, pinned
              FROM memory_items WHERE kind = ?1 ORDER BY updated_at DESC",
             kind,
-        ),
-        None => (
-            "SELECT id, kind, title, content, tags, is_enabled, created_at, updated_at
+        )
+    } else {
+        (
+            "SELECT id, kind, title, content, tags, is_enabled, created_at, updated_at, pinned
              FROM memory_items ORDER BY kind, updated_at DESC",
             None,
-        ),
+        )
     };
     let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
     let rows = if let Some(k) = k {
@@ -79,6 +93,10 @@ pub fn upsert_memory(pool: State<'_, Arc<DbPool>>, item: MemoryInput) -> Result<
     let id = item.id.unwrap_or_else(|| Uuid::new_v4().to_string());
     let conn = pool.get().map_err(|e| e.to_string())?;
     if is_update {
+        // `pinned` is deliberately absent from this UPDATE, for the reason
+        // `upsert_note` gives: the editor saves the whole item, so writing an
+        // input's pin back would silently unpin a memory the user pinned
+        // elsewhere. Pin and unpin are `set_pinned`'s job, on purpose.
         conn.execute(
             "UPDATE memory_items SET kind = ?1, title = ?2, content = ?3, tags = ?4, is_enabled = ?5, updated_at = ?6 WHERE id = ?7",
             params![item.kind, item.title, item.content, item.tags, item.is_enabled, now(), id],
@@ -176,7 +194,7 @@ pub fn search(
         // which is tags: every excerpt came from the tag list, and a memory
         // with no tags is a NULL in that column, so the row could not be
         // read at all.
-        "SELECT m.id, m.kind, m.title, m.content, m.tags, m.is_enabled, m.created_at, m.updated_at,
+        "SELECT m.id, m.kind, m.title, m.content, m.tags, m.is_enabled, m.created_at, m.updated_at, m.pinned,
                 snippet(memory_fts, 1, '<mark>', '</mark>', '…', 16)
          FROM memory_fts JOIN memory_items m ON m.rowid = memory_fts.rowid
          WHERE memory_fts MATCH ?1",
@@ -189,7 +207,7 @@ pub fn search(
     let mapper = |row: &rusqlite::Row<'_>| -> rusqlite::Result<MemorySearchHit> {
         Ok(MemorySearchHit {
             item: row_to_item(row)?,
-            snippet: row.get::<_, String>(8)?,
+            snippet: row.get::<_, String>(9)?,
         })
     };
     // `?2` is bound even when its clause is absent. SQLite counts a
@@ -207,9 +225,16 @@ pub fn search(
 #[tauri::command]
 pub fn get_enabled_memory(pool: State<'_, Arc<DbPool>>) -> Result<Vec<MemoryItem>, String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
+    enabled(&conn)
+}
+
+/// The query behind `get_enabled_memory`, over `&Connection` so its positional
+/// `row.get` chain is testable. Disabled rows are excluded, exactly as they
+/// always were; a pin does not re-enable a memory the user turned off.
+pub fn enabled(conn: &rusqlite::Connection) -> Result<Vec<MemoryItem>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, kind, title, content, tags, is_enabled, created_at, updated_at
+            "SELECT id, kind, title, content, tags, is_enabled, created_at, updated_at, pinned
              FROM memory_items WHERE is_enabled = 1 ORDER BY kind, updated_at DESC",
         )
         .map_err(|e| e.to_string())?;
@@ -219,6 +244,38 @@ pub fn get_enabled_memory(pool: State<'_, Arc<DbPool>>) -> Result<Vec<MemoryItem
         .collect::<Result<_, _>>()
         .map_err(|e| e.to_string())?;
     Ok(rows)
+}
+
+/// Set or clear a memory's pin. A pinned memory is injected on every send,
+/// budget permitting, regardless of what retrieval ranks.
+///
+/// A pin on a memory that is not there is an error, not a no-op: `UPDATE`
+/// reports zero rows for an id that does not exist, and returning `Ok(())`
+/// for that is how a pin looks set when it never was.
+pub fn set_pinned(conn: &rusqlite::Connection, id: &str, pinned: bool) -> Result<(), String> {
+    let changed = conn
+        .execute(
+            "UPDATE memory_items
+             SET pinned = ?2,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE id = ?1",
+            params![id, if pinned { 1 } else { 0 }],
+        )
+        .map_err(|e| e.to_string())?;
+    if changed == 0 {
+        return Err(format!("no memory with id {id}"));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_memory_pinned(
+    pool: State<'_, Arc<DbPool>>,
+    id: String,
+    pinned: bool,
+) -> Result<(), String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    set_pinned(&conn, &id, pinned)
 }
 
 #[tauri::command]

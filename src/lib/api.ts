@@ -202,6 +202,12 @@ export interface MemoryItem {
   is_enabled: boolean;
   created_at: string;
   updated_at: string;
+  /**
+   * Set through `setMemoryPinned` only. A pinned memory is injected on
+   * every send, budget permitting, so it is not conditional on what
+   * retrieval happens to rank.
+   */
+  pinned: boolean;
 }
 
 export interface MemorySearchHit {
@@ -576,6 +582,12 @@ export const api = {
     }),
   deleteMemory: (id: string) => invoke<void>("delete_memory", { id }),
   toggleMemory: (id: string, enabled: boolean) => invoke<void>("toggle_memory", { id, enabled }),
+  /**
+   * The deliberate path for a memory's pin. `upsertMemory` does not carry
+   * it: the editor saves the whole item, so writing the draft's pin back
+   * would unpin a memory pinned elsewhere.
+   */
+  setMemoryPinned: (id: string, pinned: boolean) => invoke<void>("set_memory_pinned", { id, pinned }),
   searchMemory: (query: string, kind?: string) =>
     invoke<MemorySearchHit[]>("search_memory", { query, kind: kind ?? null, limit: 30 }),
   getEnabledMemory: () => invoke<MemoryItem[]>("get_enabled_memory"),

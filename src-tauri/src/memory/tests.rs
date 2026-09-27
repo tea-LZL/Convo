@@ -2,6 +2,7 @@ use rusqlite::{params, Connection};
 
 use crate::commands::memory;
 use crate::commands::notes;
+use crate::db::models::MemoryItem;
 
 /// An in-memory `settings` table, matching the real one from V001:
 /// `settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`.
@@ -2782,4 +2783,170 @@ fn a_memory_search_excerpts_the_content_and_survives_a_memory_without_tags() {
         "the excerpt is not the matched content: {}",
         hits[0].snippet
     );
+}
+
+/// A pinned memory is distinguishable from an unpinned one through the
+/// read path, and pinning an unknown id is an error rather than a
+/// silent no-op. The read path is what `pinned_rows` will scan, so a
+/// query that dropped the column would leave the whole precedence tier
+/// permanently empty.
+#[test]
+fn a_pinned_memory_reads_back_pinned_and_an_unknown_id_errors() {
+    let conn = migrated_conn();
+    add_memory_full(
+        &conn,
+        "m1",
+        "user_pref",
+        "Build",
+        "npm run build and then vite build",
+    );
+    conn.execute("INSERT INTO sessions (id, title) VALUES ('s1','S')", [])
+        .unwrap();
+
+    // Default is unpinned.
+    let pinned: i64 = conn
+        .query_row("SELECT pinned FROM memory_items WHERE id = 'm1'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(pinned, 0);
+
+    memory::set_pinned(&conn, "m1", true).unwrap();
+    let after: i64 = conn
+        .query_row("SELECT pinned FROM memory_items WHERE id = 'm1'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_ne!(after, 0, "pin did not take");
+
+    // Unpinning is the same path, not a separate command.
+    memory::set_pinned(&conn, "m1", false).unwrap();
+    let after: i64 = conn
+        .query_row("SELECT pinned FROM memory_items WHERE id = 'm1'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(after, 0, "unpin did not take");
+
+    // A pin on a memory that does not exist is an error, not a no-op that
+    // leaves the UI showing a pin that was never set.
+    let err = memory::set_pinned(&conn, "nope", true).unwrap_err();
+    assert!(err.contains("nope"), "error should name the id: {}", err);
+}
+
+/// Every memory reader maps its row positionally, so a column dropped or
+/// reordered in any one of the three SELECTs is either a runtime error or,
+/// worse, a row read out of the wrong column. `search` is the sharpest case:
+/// it appends the FTS snippet after the item columns, so the pin and the
+/// snippet index have to move together. The search below also runs after a
+/// pin, and every write re-fires the FTS trigger, so it proves a pin does
+/// not knock the memory out of the index.
+#[test]
+fn a_pinned_memory_reads_back_pinned_through_every_reader() {
+    let conn = migrated_conn();
+    add_memory_full(
+        &conn,
+        "m1",
+        "user_pref",
+        "Build",
+        "npm run build and then vite build",
+    );
+    memory::set_pinned(&conn, "m1", true).unwrap();
+
+    let mut readers: Vec<Vec<MemoryItem>> = vec![
+        memory::list(&conn, None).unwrap(),
+        memory::enabled(&conn).unwrap(),
+    ];
+    let hits = memory::search(&conn, "vite", None, 30).unwrap();
+    assert_eq!(hits.len(), 1, "the FTS trigger did not index the memory");
+    // The snippet lives one column past the item, so a `<mark>` in it is the
+    // direct proof that the pin did not shift it.
+    assert!(
+        hits[0].snippet.contains("<mark>"),
+        "snippet column shifted: {}",
+        hits[0].snippet
+    );
+    readers.push(hits.into_iter().map(|hit| hit.item).collect());
+
+    for read in readers {
+        assert_eq!(read.len(), 1);
+        let item = &read[0];
+        assert_eq!(item.id, "m1");
+        assert_eq!(item.kind, "user_pref");
+        assert_eq!(item.title.as_deref(), Some("Build"));
+        assert_eq!(item.content, "npm run build and then vite build");
+        assert_eq!(item.tags, None);
+        assert!(
+            item.is_enabled,
+            "a row that is still enabled read as disabled"
+        );
+        assert!(item.pinned, "the pin did not reach the reader");
+    }
+
+    // The kind filter still filters, on both readers that take one.
+    assert!(memory::list(&conn, Some("skill")).unwrap().is_empty());
+    assert!(memory::search(&conn, "vite", Some("skill"), 30)
+        .unwrap()
+        .is_empty());
+}
+
+/// The nullable `title` sits next to the `NOT NULL` `content`, so nothing but
+/// a title-less row catches the two trading places: swapped, `title` would
+/// hold the content and `content` would fail to read at all.
+#[test]
+fn a_memory_without_a_title_still_reads_its_content() {
+    let conn = migrated_conn();
+    conn.execute(
+        "INSERT INTO memory_items (id, kind, title, content)
+         VALUES ('m1','skill',NULL,'run the linter before every commit')",
+        [],
+    )
+    .unwrap();
+    memory::set_pinned(&conn, "m1", true).unwrap();
+
+    let hits = memory::search(&conn, "linter", None, 30).unwrap();
+    assert_eq!(hits.len(), 1);
+    let readers = vec![
+        memory::list(&conn, None).unwrap(),
+        memory::enabled(&conn).unwrap(),
+        hits.into_iter().map(|hit| hit.item).collect::<Vec<_>>(),
+    ];
+
+    for read in &readers {
+        assert_eq!(read[0].title, None);
+        assert_eq!(read[0].content, "run the linter before every commit");
+        assert!(read[0].pinned);
+    }
+}
+
+/// `created_at` and `updated_at` are adjacent in the SELECT and both are
+/// strings, so nothing but a distinct pair catches them trading places. The
+/// pin is the edit that separates them: it moves `updated_at` forward and
+/// leaves `created_at` alone.
+#[test]
+fn a_pinned_memory_reads_two_distinct_timestamps_in_order() {
+    let conn = migrated_conn();
+    conn.execute(
+        "INSERT INTO memory_items (id, kind, title, content, created_at, updated_at)
+         VALUES ('m1','skill','Lint','run the linter before every commit',
+                 '2024-01-01T00:00:00.000Z','2024-01-02T00:00:00.000Z')",
+        [],
+    )
+    .unwrap();
+    memory::set_pinned(&conn, "m1", true).unwrap();
+
+    let listed = memory::list(&conn, None).unwrap();
+    let enabled = memory::enabled(&conn).unwrap();
+    let hits = memory::search(&conn, "linter", None, 30).unwrap();
+    assert_eq!(hits.len(), 1);
+    let searched = vec![hits.into_iter().next().unwrap().item];
+
+    for read in [&listed, &enabled, &searched] {
+        assert_eq!(read[0].created_at, "2024-01-01T00:00:00.000Z");
+        assert_ne!(
+            read[0].updated_at, "2024-01-02T00:00:00.000Z",
+            "the pin should have moved updated_at forward"
+        );
+        assert!(read[0].updated_at > read[0].created_at);
+    }
 }

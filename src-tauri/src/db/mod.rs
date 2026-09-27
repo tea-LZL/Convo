@@ -16,6 +16,7 @@ const MIGRATION_V004: &str = include_str!("../../migrations/V004__memory_reviews
 const MIGRATION_V005: &str = include_str!("../../migrations/V005__search_keyring.sql");
 const MIGRATION_V006: &str = include_str!("../../migrations/V006__unified_index.sql");
 const MIGRATION_V007: &str = include_str!("../../migrations/V007__extraction_watermark.sql");
+const MIGRATION_V008: &str = include_str!("../../migrations/V008__memory_pin.sql");
 
 fn migrations() -> Migrations<'static> {
     Migrations::new(vec![
@@ -26,6 +27,7 @@ fn migrations() -> Migrations<'static> {
         M::up(MIGRATION_V005),
         M::up(MIGRATION_V006),
         M::up(MIGRATION_V007),
+        M::up(MIGRATION_V008),
     ])
 }
 
@@ -237,6 +239,26 @@ mod tests {
             })
             .unwrap();
         assert_eq!(pinned, 0);
+    }
+
+    #[test]
+    fn v8_backfills_the_memory_pin_onto_existing_rows() {
+        // A memory written before V008 must survive the ALTER and read as
+        // unpinned, not as NULL — a nullable pin is one a reader can silently
+        // treat as false, and one the `WHERE pinned = 1` tier scan would skip
+        // for the wrong reason.
+        let mut conn = populated_v5();
+        migrations().to_latest(&mut conn).unwrap();
+
+        let (pinned, content): (i64, String) = conn
+            .query_row(
+                "SELECT pinned, content FROM memory_items WHERE id = 'mem1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(pinned, 0);
+        assert_eq!(content, "durable");
     }
 
     #[test]

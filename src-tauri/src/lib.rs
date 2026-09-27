@@ -188,6 +188,7 @@ pub fn run() {
             memory_cmd::upsert_memory,
             memory_cmd::delete_memory,
             memory_cmd::toggle_memory,
+            memory_cmd::set_memory_pinned,
             memory_cmd::search_memory,
             memory_cmd::get_enabled_memory,
             memory_cmd::get_session_memory_overrides,
