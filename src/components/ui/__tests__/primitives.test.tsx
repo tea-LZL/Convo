@@ -21,6 +21,22 @@
  * Non-interactive primitives (Panel, EmptyState, Skeleton) have no hover,
  * disabled or focus-visible state, and inventing one to assert would be a
  * test of nothing. They are covered for the states they do have.
+ *
+ * ── Scope of the contrast figures in this file ────────────────────────
+ * Every ratio quoted below — the Switch thumb's, the EmptyState icon's —
+ * was measured on **Default Dark and Default Light only**. Those are the
+ * two themes this file can reason about without a render.
+ *
+ * **Solar, Forest, Mono and High Contrast are unverified.** Contrast is a
+ * property of a *pairing*, not of a token: `--color-text` against
+ * `--color-surface-3` can clear 3:1 on the two defaults and fail on Solar,
+ * and no assertion here would notice. The Switch thumb is the sharpest
+ * case — a 16px circle whose only job is to be found against a filled
+ * track, on a theme whose surface and text values are not these.
+ *
+ * So treat every number in this file as scoped to two of six themes, and
+ * do not cite one as a palette-wide result. Measuring the other four is a
+ * separate piece of work and deliberately not attempted here.
  */
 import { fireEvent, render, screen } from "@testing-library/react";
 import { ListTodo, Pencil } from "lucide-react";
@@ -329,7 +345,8 @@ describe("Switch", () => {
     // The two tracks are opposite in lightness — accent when checked,
     // surface-3 when not — so no single token wins both, and the answer
     // has to be measured rather than reasoned about. Ratios against the
-    // track the thumb actually sits on, from the two default themes:
+    // track the thumb actually sits on, from the two default themes
+    // (see the file header for what these do and do not cover):
     //
     //   white on accent      3.96:1 dark,  6.18:1 light
     //   text  on surface-3  12.37:1 dark, 14.30:1 light
@@ -553,14 +570,31 @@ describe("Panel", () => {
 });
 
 describe("EmptyState", () => {
-  it("sets the icon on a flat surface chip, and the copy on the text tokens", () => {
+  it("sets the icon on a flat surface chip, in a shade that stays legible", () => {
     const { container } = render(
       <EmptyState title="Nothing here" description="Add one." icon={<ListTodo />} action={<Button>Add</Button>} />,
     );
     expect(screen.getByRole("heading", { name: "Nothing here" })).toHaveClass("text-text");
     expect(screen.getByText("Add one.")).toHaveClass("text-text-muted");
-    const iconWrap = container.querySelector<HTMLElement>(".text-text-subtle")!;
-    expect(iconWrap).toHaveClass("bg-surface-2", "rounded-lg");
+    // The chip is the only element painted surface-2 in this tree, which
+    // is what makes the locator unambiguous — the description is the
+    // other muted element and carries no fill.
+    const icon = container.querySelector<HTMLElement>(".bg-surface-2")!;
+    expect(icon, "the icon must sit on a surface chip").not.toBeNull();
+    expect(icon).toHaveClass("rounded-lg");
+    // Measured on the two default themes, chip surface included:
+    //   text-subtle  2.69:1 dark,  2.73:1 light   <- what the chip did
+    //   text-muted    5.49:1 dark,  5.57:1 light   <- what it does now
+    // The bare page background, before the chip existed, was 3.11 and
+    // 2.90 — so the shade moved rather than the surface, and the icon
+    // ends up above 3:1 in both themes where it previously was not.
+    //
+    // This is a fix for a restyle regression, not a rule about the
+    // palette: `text-text-subtle` on a raised surface is common elsewhere
+    // in the app, including this file's own input placeholders. Asserting
+    // it away here would be a rule the codebase does not follow.
+    expect(icon).toHaveClass("text-text-muted");
+    expect(icon).not.toHaveClass("text-text-subtle");
     expect(screen.getByRole("button", { name: "Add" })).toBeInTheDocument();
   });
 });
