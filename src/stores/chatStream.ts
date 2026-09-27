@@ -19,7 +19,7 @@
  */
 import { create } from "zustand";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
-import { api, ChatMessage } from "../lib/api";
+import { api, AppliedRevision, ChatMessage } from "../lib/api";
 import { useMemoryStore } from "./memory";
 import { playDoneSound, playSendSound } from "../utils/sounds";
 import { sendNotification } from "@tauri-apps/plugin-notification";
@@ -216,6 +216,37 @@ function isCurrentEvent(s: SessionState, event: StreamEventBase): boolean {
     && s._assistantMessageId === event.assistant_message_id;
 }
 
+/**
+ * Say what the revision table just did.
+ *
+ * The old path ended with candidates sitting in an inbox for a human to
+ * sort out, so the user could always see what memory wanted. The revision
+ * table writes the confident rows and leaves the ambiguous ones in the
+ * inbox, which means a turn can now change memory without anything on
+ * screen. That is correct and it is also invisible, so it gets one line —
+ * and only when there is something to say: a round that found nothing
+ * durable returns an empty list, and that is the common case, so staying
+ * silent there is what keeps the signal worth reading.
+ *
+ * Three buckets because they are not the same claim. A new row and an
+ * updated one are both "remembered" in the loose sense, but only the new
+ * one is something the user will see appear in the Memory tab, and an
+ * inbox row is not a write at all.
+ */
+export function reportRevisions(applied: AppliedRevision[]) {
+  const count = (effects: AppliedRevision["effect"][]) =>
+    applied.filter((entry) => effects.includes(entry.effect)).length;
+  const parts: string[] = [];
+  const added = count(["added", "superseded"]);
+  const updated = count(["reinforced", "merged"]);
+  const inbox = count(["sentToReview"]);
+  if (added) parts.push(`${added} remembered`);
+  if (updated) parts.push(`${updated} updated`);
+  if (inbox) parts.push(`${inbox} need${inbox === 1 ? "s" : ""} review`);
+  if (!parts.length) return;
+  toast.info(parts.join(", "), "Memory");
+}
+
 function appendAssistantMessage(
   s: SessionState,
   cid: string,
@@ -341,7 +372,10 @@ async function ensureListeners() {
       if (gen >= 2) {
         import("../stores/settings").then(({ useSettingsStore }) => {
           if (!useSettingsStore.getState().memoryAutoEvaluate) return;
-          void useMemoryStore.getState().queueReview(cid, lastModel, lastProvider).catch(console.error);
+          void useMemoryStore.getState()
+            .extractAndRevise(cid, lastModel, lastProvider)
+            .then(reportRevisions)
+            .catch(console.error);
         }).catch(console.error);
       }
 

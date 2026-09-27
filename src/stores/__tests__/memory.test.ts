@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { api } from "../../lib/api";
+import { api, AppliedRevision } from "../../lib/api";
 import { useMemoryStore } from "../memory";
 import { memoryItems, preferenceItem, extractedFacts } from "../../test/fixtures/memory";
 
@@ -38,28 +38,76 @@ describe("useMemoryStore", () => {
     expect(useMemoryStore.getState().reviews).toEqual([review]);
   });
 
-  it("persists automatic extraction before requesting facts", async () => {
+  // The automatic path is one Rust call, and the frontend no longer decides
+  // what is kept. The old code queued a review, asked the model for
+  // candidates and stored them for a human — so the assertions that used to
+  // live here (queueMemoryReview, then extractFactsFromSession, then
+  // finishMemoryReview) described a path the app no longer takes. The
+  // revision table is what applies a round now.
+  it("applies the revision table in Rust on the automatic path", async () => {
+    const applied: AppliedRevision[] = [
+      { effect: "added", id: "mem-1" },
+      { effect: "sentToReview", reviewId: "review-1" },
+    ];
+    vi.spyOn(api, "memoryExtractAndRevise").mockResolvedValue(applied);
     vi.spyOn(api, "queueMemoryReview").mockResolvedValue("review-1");
     vi.spyOn(api, "extractFactsFromSession").mockResolvedValue(extractedFacts);
-    vi.spyOn(api, "finishMemoryReview").mockResolvedValue();
     vi.spyOn(api, "listMemoryReviews").mockResolvedValue([]);
 
-    await useMemoryStore.getState().queueReview("session-1", "model-1", "provider-1");
+    const result = await useMemoryStore
+      .getState()
+      .extractAndRevise("session-1", "model-1", "provider-1");
 
-    expect(api.queueMemoryReview).toHaveBeenCalledWith("session-1");
-    expect(api.extractFactsFromSession).toHaveBeenCalledWith("session-1", "model-1", "provider-1");
-    expect(api.finishMemoryReview).toHaveBeenCalledWith("review-1", extractedFacts);
+    expect(api.memoryExtractAndRevise).toHaveBeenCalledWith("session-1", "model-1", "provider-1");
+    // The model route is the chat's own, so switching from the old call must
+    // not quietly change which provider extracts.
+    expect(api.queueMemoryReview).not.toHaveBeenCalled();
+    expect(api.extractFactsFromSession).not.toHaveBeenCalled();
+    // The caller needs the outcome to report it, so the store hands it back
+    // rather than swallowing it.
+    expect(result).toEqual(applied);
   });
 
-  it("persists automatic extraction failures for retry", async () => {
-    vi.spyOn(api, "queueMemoryReview").mockResolvedValue("review-1");
-    vi.spyOn(api, "extractFactsFromSession").mockRejectedValue(new Error("offline"));
-    vi.spyOn(api, "failMemoryReview").mockResolvedValue();
-    vi.spyOn(api, "listMemoryReviews").mockResolvedValue([]);
+  // A write the user cannot see is a write they will distrust. The list has
+  // to be re-read or the Memory tab shows a stale library until the next
+  // manual refresh, and the inbox has to be re-read or the `sentToReview`
+  // outcomes — rows the revision table just created — are missing.
+  it("refreshes the memory list and the inbox after an automatic round", async () => {
+    const nickname = { ...preferenceItem, content: "The user's nickname is Kevin." };
+    vi.spyOn(api, "memoryExtractAndRevise").mockResolvedValue([
+      { effect: "added", id: nickname.id },
+      { effect: "sentToReview", reviewId: "review-1" },
+    ]);
+    vi.mocked(api.getEnabledMemory).mockResolvedValue([nickname]);
+    const pending = {
+      id: "review-1",
+      sessionId: "session-1",
+      facts: [{ kind: "user_pref", title: "Tone", content: "Prefers concise replies.", tags: null }],
+      status: "pending" as const,
+      error: null,
+      createdAt: "2026-08-02T00:00:00Z",
+    };
+    vi.spyOn(api, "listMemoryReviews").mockResolvedValue([pending]);
 
-    await useMemoryStore.getState().queueReview("session-1");
+    await useMemoryStore.getState().extractAndRevise("session-1");
 
-    expect(api.failMemoryReview).toHaveBeenCalledWith("review-1", "offline");
+    expect(useMemoryStore.getState().items).toEqual([nickname]);
+    await vi.waitFor(() => {
+      expect(useMemoryStore.getState().reviews).toEqual([pending]);
+    });
+  });
+
+  // A round that finds nothing durable returns an empty list, and that is
+  // the common case. It must not surface as a "0 remembered" message, or
+  // the signal stops being worth reading.
+  it("does not fail the round when the inbox refresh fails", async () => {
+    vi.spyOn(api, "memoryExtractAndRevise").mockResolvedValue([{ effect: "added", id: "mem-1" }]);
+    vi.mocked(api.getEnabledMemory).mockResolvedValue([]);
+    vi.spyOn(api, "listMemoryReviews").mockRejectedValue(new Error("inbox unavailable"));
+
+    const result = await useMemoryStore.getState().extractAndRevise("session-1");
+
+    expect(result).toEqual([{ effect: "added", id: "mem-1" }]);
   });
 
   it("retries a failed persisted review", async () => {
@@ -73,6 +121,22 @@ describe("useMemoryStore", () => {
     expect(api.extractFactsFromSession).toHaveBeenCalledWith("session-1");
     expect(api.finishMemoryReview).toHaveBeenCalledWith("review-1", extractedFacts);
     expect(useMemoryStore.getState().reviews).toEqual([]);
+  });
+
+  // The persisted-failure row, still reachable: a retry of a row left in
+  // `failed` by an earlier attempt has to record the new error, or the inbox
+  // keeps showing a failure the user already retried. The automatic path
+  // cannot fail this way any more — Rust owns the round and swallows its own
+  // extraction error — so the assertion moved here rather than being dropped.
+  it("persists extraction failures for retry", async () => {
+    vi.spyOn(api, "retryMemoryReview").mockResolvedValue("session-1");
+    vi.spyOn(api, "extractFactsFromSession").mockRejectedValue(new Error("offline"));
+    vi.spyOn(api, "failMemoryReview").mockResolvedValue();
+    vi.spyOn(api, "listMemoryReviews").mockResolvedValue([]);
+
+    await useMemoryStore.getState().retryReview("review-1");
+
+    expect(api.failMemoryReview).toHaveBeenCalledWith("review-1", "offline");
   });
 
   it("upsert makes the new memory immediately available", async () => {

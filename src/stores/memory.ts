@@ -4,10 +4,12 @@
  * It does not build a prompt. Context assembly happens in Rust, on the
  * send path: the browser sends the user's override and the assembler
  * reads the same rows from the database. What lives here is what the
- * Memory tab renders and what the session-memory modal writes.
+ * Memory tab renders, what the session-memory modal writes, and the
+ * automatic after-a-turn extraction the chat fires when the round is
+ * worth running.
  */
 import { create } from "zustand";
-import { api, MemoryItem, MemoryReview } from "../lib/api";
+import { api, AppliedRevision, MemoryItem, MemoryReview } from "../lib/api";
 
 let refreshPromise: Promise<void> | null = null;
 
@@ -16,17 +18,14 @@ async function refreshAfterMutation(refresh: () => Promise<void>) {
   await refresh();
 }
 
-async function extractReview(
-  id: string,
-  sessionId: string,
-  modelId?: string,
-  providerId?: string,
-) {
+/**
+ * Re-run the split path for a review row that is already persisted. Only
+ * `retryReview` uses this, and it has no model to route with — it retries
+ * the session the row names, on whatever the default provider is.
+ */
+async function extractReview(id: string, sessionId: string) {
   try {
-    const facts = modelId || providerId
-      ? await api.extractFactsFromSession(sessionId, modelId, providerId)
-      : await api.extractFactsFromSession(sessionId);
-    await api.finishMemoryReview(id, facts);
+    await api.finishMemoryReview(id, await api.extractFactsFromSession(sessionId));
   } catch (error) {
     await api.failMemoryReview(id, error instanceof Error ? error.message : String(error));
   }
@@ -38,7 +37,18 @@ interface MemoryState {
   loading: boolean;
   reviews: MemoryReview[];
   refreshReviews: () => Promise<void>;
-  queueReview: (sessionId: string, modelId?: string, providerId?: string) => Promise<void>;
+  /**
+   * The automatic after-a-turn path. Rust runs the extraction, applies the
+   * revision table, writes the high-confidence rows and queues the
+   * ambiguous ones in the inbox. The frontend no longer decides what is
+   * kept — that is the whole point of the revision table — so this returns
+   * what each candidate did and lets the caller say so out loud.
+   */
+  extractAndRevise: (
+    sessionId: string,
+    modelId?: string,
+    providerId?: string,
+  ) => Promise<AppliedRevision[]>;
   retryReview: (id: string) => Promise<void>;
   markReviewReviewed: (id: string) => Promise<void>;
   refresh: () => Promise<void>;
@@ -63,11 +73,20 @@ export const useMemoryStore = create<MemoryState>((set, get) => ({
   refreshReviews: async () => {
     set({ reviews: await api.listMemoryReviews() });
   },
-  queueReview: async (sessionId, modelId, providerId) => {
-    const id = await api.queueMemoryReview(sessionId);
-    if (!id) return;
-    await extractReview(id, sessionId, modelId, providerId);
-    await get().refreshReviews();
+  extractAndRevise: async (sessionId, modelId, providerId) => {
+    const applied = modelId || providerId
+      ? await api.memoryExtractAndRevise(sessionId, modelId, providerId)
+      : await api.memoryExtractAndRevise(sessionId);
+    // Both lists can be stale now, and for different reasons: the round may
+    // have written memory rows and may have queued inbox rows. The list is
+    // awaited so it is fresh by the time this resolves. The inbox refresh is
+    // deliberately not awaited — a read that fails there would reject before
+    // the caller can report what was written, which turns a correct write
+    // into a silent one. The Memory tab re-reads the inbox on open and after
+    // any review action, so a lost refresh heals itself.
+    await get().refresh();
+    void get().refreshReviews().catch(console.error);
+    return applied;
   },
   retryReview: async (id) => {
     const sessionId = await api.retryMemoryReview(id);
