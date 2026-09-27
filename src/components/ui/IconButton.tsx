@@ -27,7 +27,7 @@ export function IconButton({ icon, label, onClick, variant = "ghost", size = "md
       disabled={disabled}
       title={label}
       aria-label={label}
-      className={`inline-flex items-center justify-center rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${SIZES[size]} ${active ? "bg-surface-3 text-text" : VARIANTS[variant]} ${className}`}
+      className={`inline-flex items-center justify-center rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${SIZES[size]} ${active ? "bg-accent/15 text-accent hover:bg-accent/20" : VARIANTS[variant]} ${className}`}
     >
       <span style={{ display: "inline-flex" }}>
         {icon && (() => {

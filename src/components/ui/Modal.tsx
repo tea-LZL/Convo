@@ -112,11 +112,11 @@ export function Modal({
       <div
         ref={dialogRef}
         tabIndex={-1}
-        className={`relative w-full ${SIZES[size]} bg-surface-1 border border-border rounded-2xl shadow-modal animate-scale-in max-h-[85vh] flex flex-col`}
+        className={`relative w-full ${SIZES[size]} bg-surface-1 border border-border rounded-xl shadow-modal animate-scale-in max-h-[85vh] flex flex-col`}
         onClick={(e) => e.stopPropagation()}
       >
         {(title || description) && (
-          <div className="px-5 pt-5 pb-3 flex items-start justify-between border-b border-border/40">
+          <div className="px-5 pt-5 pb-3 flex items-start justify-between border-b border-border">
             <div>
               {title && <h2 id={titleId} className="text-base font-semibold text-text">{title}</h2>}
               {description && <p id={descriptionId} className="text-xs text-text-muted mt-0.5">{description}</p>}
@@ -124,7 +124,7 @@ export function Modal({
             <button
               type="button"
               onClick={onClose}
-              className="text-text-subtle hover:text-text p-1 -mt-1 -mr-1 rounded-md hover:bg-surface-2"
+              className="text-text-subtle hover:text-text p-1 -mt-1 -mr-1 rounded-md hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
               aria-label="Close"
             >
               <X size={16} />
@@ -133,7 +133,7 @@ export function Modal({
         )}
         <div className="flex-1 overflow-y-auto px-5 py-4">{children}</div>
         {footer && (
-          <div className="px-5 py-3 border-t border-border/40 flex items-center justify-end gap-2">
+          <div className="px-5 py-3 border-t border-border flex items-center justify-end gap-2">
             {footer}
           </div>
         )}
