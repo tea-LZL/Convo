@@ -124,6 +124,7 @@ async fn embed_query(
 /// the embedding model changed", because those are different problems with
 /// different fixes and a user staring at one number cannot tell them apart.
 #[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct KnowledgeIndexStatus {
     pub memory_count: i64,
     pub note_count: i64,

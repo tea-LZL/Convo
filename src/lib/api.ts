@@ -219,7 +219,33 @@ export type AppliedRevision =
   | { effect: "reinforced"; id: string; confidence: number }
   | { effect: "superseded"; newId: string; oldId: string }
   | { effect: "merged"; id: string }
-  | { effect: "review"; reviewId: string };
+  | { effect: "sentToReview"; reviewId: string };
+
+/** One ranked recall hit. `reason` is always populated, never empty. */
+export interface RankedMemory {
+  ownerType: "memory" | "note";
+  ownerId: string;
+  kind: string;
+  title: string | null;
+  content: string;
+  score: number;
+  reason: string;
+}
+
+/**
+ * What the index is missing, and why semantic recall may be unavailable.
+ * `semanticNote` is the user-facing explanation and is set whenever recall
+ * is degraded — a null there means both routes are live.
+ */
+export interface KnowledgeIndexStatus {
+  memoryCount: number;
+  noteCount: number;
+  embeddedCount: number;
+  needsEmbedding: number;
+  needsReindex: boolean;
+  embeddingModel: string | null;
+  semanticNote: string | null;
+}
 
 export interface MemoryReview {
   id: string;
@@ -542,6 +568,24 @@ export const api = {
       modelId: modelId ?? null,
       providerId: providerId ?? null,
     }),
+  /**
+   * Hybrid recall: BM25 and cosine fused with RRF, plus reinforcement,
+   * recency and kind boosts. Never errors on a missing embedding model — it
+   * degrades to keyword-only and returns fewer results.
+   */
+  memoryRecall: (
+    query: string,
+    sessionId?: string,
+    topK?: number,
+    kinds?: string[],
+  ) =>
+    invoke<RankedMemory[]>("memory_recall", {
+      query,
+      sessionId: sessionId ?? null,
+      topK: topK ?? null,
+      kinds: kinds ?? null,
+    }),
+  knowledgeIndexStatus: () => invoke<KnowledgeIndexStatus>("knowledge_index_status"),
   /**
    * Embed everything that is missing a vector, and report how many rows
    * were written. `embedNotes` gates the note arm: by default only pinned

@@ -426,7 +426,15 @@ use rusqlite::params;
 
 /// The effect of applying one decision.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
-#[serde(tag = "effect", rename_all = "camelCase")]
+// Two attributes, because serde needs both: `rename_all` renames the
+// variant names, `rename_all_fields` renames the fields inside the struct
+// variants. Setting only the first leaves `new_id` as `new_id`, which the
+// frontend union does not match.
+#[serde(
+    tag = "effect",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum Applied {
     Added { id: String },
     Reinforced { id: String, confidence: f64 },
@@ -548,6 +556,16 @@ impl RevisionDecision {
         // Confidence moves toward the observation, never above what the
         // extractor claimed: re-seeing a fact at 0.95 does not make a 0.7
         // guess into a 0.95 one.
+        //
+        // And never below what is already stored. An average is symmetric,
+        // but only one direction is safe. A candidate at 0.2 confidence
+        // falls below every auto-write gate in the system, so it would
+        // never have become a memory on its own — yet in the reinforce band
+        // it can still walk a confident memory toward 0.2, one restatement
+        // at a time, with no review and nothing in the log. Being seen again
+        // is not evidence a memory is less reliable. A weak restatement
+        // still bumps the counters and unions the tags; it just does not
+        // get a vote on how sure we are.
         let previous: f64 = conn
             .query_row(
                 "SELECT confidence FROM memory_items WHERE id = ?1",
@@ -555,7 +573,11 @@ impl RevisionDecision {
                 |r| r.get(0),
             )
             .map_err(|e| e.to_string())?;
-        let confidence = (previous + candidate.confidence) / 2.0;
+        let confidence = if candidate.confidence > previous {
+            (previous + candidate.confidence) / 2.0
+        } else {
+            previous
+        };
         conn.execute(
             "UPDATE memory_items
              SET access_count = access_count + 1,

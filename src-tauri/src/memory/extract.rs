@@ -447,7 +447,6 @@ pub async fn run_extraction(
     let (provider_id, model) = route.ok_or("no extraction model configured")?;
     let (kind, base_url, api_key) = {
         let conn = pool.get().map_err(|e| e.to_string())?;
-        let _ = &conn;
         let found: Option<(String, String)> = conn
             .query_row(
                 "SELECT kind, COALESCE(base_url, '') FROM providers WHERE id = ?1",

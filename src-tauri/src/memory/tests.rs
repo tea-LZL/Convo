@@ -2394,3 +2394,110 @@ async fn fill_index_skips_content_too_short_to_be_worth_embedding() {
         .unwrap();
     assert_eq!(ids, vec!["long".to_string()]);
 }
+
+/// Reinforcement must never lower a memory's confidence.
+///
+/// The averaging rule exists so a repeated guess cannot ratchet itself
+/// upward: 0.5 + 0.9 lands on 0.7, not 0.9. But the average is symmetric,
+/// and the downward direction is the harmful one. A candidate at 0.2
+/// confidence is one the system would never auto-*write* anywhere — it
+/// falls below every gate — yet in the reinforce band it can drag a
+/// confident memory toward 0.2, one restatement at a time, with no review
+/// and nothing in the log.
+///
+/// Being seen again is not evidence that a memory is less reliable. The
+/// fix is to move toward the observation only when the observation is
+/// stronger than what is stored, and to leave the stored value alone
+/// otherwise. That keeps the anti-ratchet property (an average never
+/// exceeds its larger input) and drops the degradation.
+#[test]
+fn reinforcement_does_not_lower_confidence() {
+    let conn = migrated_conn();
+    conn.execute(
+        "INSERT INTO memory_items (id, kind, title, content, is_enabled, confidence, access_count)
+         VALUES ('m1','user_pref','Build','prefers dark mode',1,0.9,0)",
+        [],
+    )
+    .unwrap();
+
+    // A weak restatement of the same fact, in the reinforce band.
+    let weak = fact("prefers dark mode", 0.2);
+    let decision = revise::decide(&weak, Some(0.80), None);
+    assert_eq!(decision.action, RevisionAction::Reinforce);
+
+    let applied = decision
+        .apply(
+            &conn,
+            "",
+            &weak,
+            Some(&Nearest {
+                row: row_named(&conn, "m1"),
+                score: 0.80,
+            }),
+            None,
+        )
+        .unwrap();
+    assert!(matches!(applied, revise::Applied::Reinforced { .. }));
+
+    let stored: f64 = conn
+        .query_row(
+            "SELECT confidence FROM memory_items WHERE id = 'm1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        (stored - 0.9).abs() < 1e-9,
+        "a 0.2 restatement dragged a 0.9 memory down to {}",
+        stored
+    );
+}
+
+/// The exact JSON each `Applied` variant serializes to.
+///
+/// `Applied` crosses the IPC boundary and `api.ts` narrows it in a
+/// discriminated union on `effect`, so a rename on either side silently
+/// breaks the type check on the frontend: the call still succeeds, it just
+/// stops matching any branch. The TypeScript compiler cannot catch it,
+/// because both sides are independently well-typed. Only this test can.
+///
+/// The value here is that the expected strings are written out in full
+/// rather than derived from the enum, so a serde attribute change shows up
+/// as a diff instead of being silently absorbed.
+#[test]
+fn applied_serializes_to_the_shape_the_frontend_narrows_on() {
+    let cases: Vec<(revise::Applied, &str)> = vec![
+        (
+            revise::Applied::Added { id: "m1".into() },
+            r#"{"effect":"added","id":"m1"}"#,
+        ),
+        (
+            revise::Applied::Reinforced {
+                id: "m1".into(),
+                confidence: 0.75,
+            },
+            r#"{"effect":"reinforced","id":"m1","confidence":0.75}"#,
+        ),
+        (
+            revise::Applied::Superseded {
+                new_id: "m2".into(),
+                old_id: "m1".into(),
+            },
+            r#"{"effect":"superseded","newId":"m2","oldId":"m1"}"#,
+        ),
+        (
+            revise::Applied::Merged { id: "m1".into() },
+            r#"{"effect":"merged","id":"m1"}"#,
+        ),
+        (
+            revise::Applied::SentToReview {
+                review_id: "r1".into(),
+            },
+            r#"{"effect":"sentToReview","reviewId":"r1"}"#,
+        ),
+    ];
+    for (value, expected) in cases {
+        let json = serde_json::to_string(&value).unwrap();
+        assert_eq!(json, expected, "frontend union no longer matches");
+    }
+}

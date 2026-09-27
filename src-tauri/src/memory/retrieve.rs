@@ -42,6 +42,7 @@ pub struct Candidate {
 /// A ranked result, ready to render in the Memory tab and to cross the
 /// IPC boundary, so it is `Serialize` as well as comparable.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RankedMemory {
     pub owner_type: String,
     pub owner_id: String,
