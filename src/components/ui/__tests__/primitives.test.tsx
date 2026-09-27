@@ -61,6 +61,26 @@ function expectNoColourLiteral(root: HTMLElement, where: string) {
  * A focus ring, 2px, derived from a token. Both halves matter: a ring with
  * no colour is invisible, and a colour that is not a token breaks the
  * moment a user switches theme.
+ *
+ * ── Tracked deferral: this pin is wrong for the two filled variants ────
+ * `ring-accent/40` outside a `bg-accent` border box is accent on accent.
+ * On `Button variant="primary"` and `IconButton variant="solid"` the ring
+ * is a 40%-alpha accent band against a full-accent edge, and a keyboard
+ * user tabbing to a filled Save or Send does not get a boundary that
+ * clears WCAG 1.4.11's 3:1.
+ *
+ * It is deferred, not fixed, and the reason is a missing token rather than
+ * missing effort: a ring colour that reads on both a filled accent
+ * background and the four surfaces the primitives sit on does not exist in
+ * the 26 theme keys, and this plan adds none. The available workarounds
+ * were both rejected — `ring-offset-*` means guessing which of `bg` /
+ * `surface-1` / `surface-2` / `surface-3` the control happens to be on,
+ * and a second accent token is a new theme key.
+ *
+ * **So this helper pins the known-imperfect treatment on purpose. When the
+ * fix lands, this pin has to be revisited in the same change** — otherwise
+ * the test will fail on the fix, or worse, be quietly relaxed to match it.
+ * Owner: Task 7's a11y pass.
  */
 function expectTokenFocusRing(el: HTMLElement, where: string) {
   const cls = el.getAttribute("class") ?? "";
@@ -262,10 +282,33 @@ describe("TextArea", () => {
 });
 
 describe("Select", () => {
+  const options = [
+    { value: "dark", label: "Dark" },
+    { value: "light", label: "Light" },
+  ];
+
+  it("is a surface-2 field on a rounded-md, like the other inputs", () => {
+    render(<Select value="dark" onChange={() => {}} options={options} />);
+    // Without this, nothing anywhere pinned the select's base surface: the
+    // old assertion in Form.test.tsx was the only one, and it was
+    // re-targeted at behaviour.
+    expect(screen.getByRole("combobox")).toHaveClass("bg-surface-2", "border-border", "rounded-md");
+  });
+
+  it("suppresses the native arrow, and draws its own indicator instead", () => {
+    const { container } = render(<Select value="dark" onChange={() => {}} options={options} />);
+    const select = screen.getByRole("combobox");
+    // All three halves of one invariant, asserted together because
+    // dropping any one of them is a visible defect: without
+    // `appearance-none` the control shows two arrows, without `pr-8` the
+    // chevron sits on top of the text, and without the chevron there is
+    // no indicator at all.
+    expect(select).toHaveClass("appearance-none", "pr-8");
+    expect(container.querySelector("svg[aria-hidden='true']")).not.toBeNull();
+  });
+
   it("rings focus with a token-derived ring", () => {
-    render(
-      <Select value="dark" onChange={() => {}} options={[{ value: "dark", label: "Dark" }]} />,
-    );
+    render(<Select value="dark" onChange={() => {}} options={options} />);
     expectTokenFocusRing(screen.getByRole("combobox"), "Select");
   });
 });
@@ -282,15 +325,31 @@ describe("Switch", () => {
     expect(screen.getByRole("switch").querySelector("span")).toHaveClass("translate-x-0");
   });
 
-  it("draws the thumb in the theme's own text colour, not a fixed white", () => {
-    render(<Switch checked onChange={() => {}} label="Live" />);
-    const thumb = screen.getByRole("switch").querySelector("span")!;
-    // bg-white would be invisible against the light theme's unchecked
-    // track, and would ignore --color-text in every theme.
-    expect(thumb).toHaveClass("bg-text");
-    expect(thumb).not.toHaveClass("bg-white");
+  it("draws the thumb in a colour that clears 3:1 against whichever track it is on", () => {
+    // The two tracks are opposite in lightness — accent when checked,
+    // surface-3 when not — so no single token wins both, and the answer
+    // has to be measured rather than reasoned about. Ratios against the
+    // track the thumb actually sits on, from the two default themes:
+    //
+    //   white on accent      3.96:1 dark,  6.18:1 light
+    //   text  on surface-3  12.37:1 dark, 14.30:1 light
+    //   text  on accent      3.23:1 dark,  2.76:1 light  <- light fails 1.4.11
+    //   white on surface-3  15.15:1 dark,  1.19:1 light  <- light fails 1.4.11
+    //
+    // So the thumb takes the checked value when checked. Both branches
+    // clear the 3:1 a UI component boundary needs, in both themes.
+    const { rerender } = render(<Switch checked onChange={() => {}} label="Live" />);
+    const thumb = () => screen.getByRole("switch").querySelector("span")!;
+
+    expect(thumb()).toHaveClass("bg-white");
+    expect(thumb()).not.toHaveClass("bg-text");
+
+    rerender(<Switch checked={false} onChange={() => {}} label="Live" />);
+    expect(thumb()).toHaveClass("bg-text");
+    expect(thumb()).not.toHaveClass("bg-white");
+
     // The design is flat: a shadow on a 16px circle is the old language.
-    expect(thumb.getAttribute("class")).not.toMatch(/(^|\s)shadow(\s|$)/);
+    expect(thumb().getAttribute("class")).not.toMatch(/(^|\s)shadow(\s|$)/);
   });
 
   it("rings focus with a token-derived ring", () => {

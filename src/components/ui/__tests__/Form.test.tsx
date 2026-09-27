@@ -9,11 +9,11 @@ const options = [
 
 describe("Select", () => {
   it("exposes its options, reflects the value, and reports the change", () => {
-    // This used to assert four utility classes. They were decoration, and
-    // a restyle that kept the same four would have passed a test that says
-    // nothing. So it says the thing that actually matters instead: a
-    // select is a control that lists choices, shows which one is current,
-    // and reports the one the user picked.
+    // A select lists its choices, shows which one is current, and reports
+    // the one the user picked. The surface treatment and the
+    // native-arrow-suppression pairing live in primitives.test.tsx, which
+    // is where the rest of the Form controls' base state is pinned; this
+    // file stays behavioural.
     const onChange = vi.fn();
     const { container } = render(<Select value="dark" onChange={onChange} options={options} />);
 
@@ -21,10 +21,6 @@ describe("Select", () => {
     expect(screen.getByRole("option", { name: "Dark" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "Light" })).toBeInTheDocument();
     expect(select.value).toBe("dark");
-
-    // `appearance-none` is only meaningful because the component draws its
-    // own indicator. Suppress the native arrow and forget the chevron and
-    // the control loses both.
     expect(container.querySelector("svg[aria-hidden='true']")).not.toBeNull();
 
     fireEvent.change(select, { target: { value: "light" } });

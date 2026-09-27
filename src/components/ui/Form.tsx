@@ -32,7 +32,7 @@ export function Switch({ checked, onChange, label, description, disabled }: Swit
         className={`relative shrink-0 w-9 h-5 rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${checked ? "bg-accent" : "bg-surface-3"}`}
       >
         <span
-          className={`absolute top-0.5 left-0.5 w-4 h-4 bg-text rounded-full transition-transform ${checked ? "translate-x-4" : "translate-x-0"}`}
+          className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full transition-transform ${checked ? "bg-white translate-x-4" : "bg-text translate-x-0"}`}
         />
       </button>
     </div>

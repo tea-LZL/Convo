@@ -7,18 +7,32 @@
  * not an API change. If a primitive seems to need a new prop to express
  * the new look, the design is wrong — not the prop missing.
  *
- * A rule nothing enforces is a rule in a comment. `tsc` covers half of
- * it: if a prop disappears or changes type, this repository's ~200
- * callers stop compiling, and `npm run typecheck` is a gate. But a prop
- * that is merely *added* is backwards-compatible, compiles everywhere,
- * and is exactly the drift the rule exists to stop — so that half needs
- * a tripwire, and here it is. Adding a prop fails this file before it
- * reaches a reviewer.
+ * ── What is actually enforced, stated exactly ─────────────────────────
+ * This file pins the **name** of every prop and whether it is optional. It
+ * fails when a prop is added, removed, renamed, made required, made
+ * optional, or widened through an `extends` clause. `tsc` covers a
+ * different slice: a prop whose type narrows, or whose name callers depend
+ * on, breaks this repository's ~200 call sites.
  *
- * The cost is deliberate and worth naming: the list below is a second
- * copy of each signature. Editing a primitive's props means editing this
- * file too, and doing that on purpose — with the justification written
- * down — is the review this rule is asking for.
+ * **Known gap, tracked rather than papered over: a prop's type can still
+ * widen where the component only consumes it.** Both mutation runs, since
+ * the distinction is the whole content of this paragraph:
+ *
+ *   `IconButton`'s `variant?: "ghost" | "subtle" | "solid"` → `string`
+ *     is caught by `tsc`, because the body indexes `VARIANTS[variant]`
+ *     and a string will not index that record.
+ *   `Slider`'s `formatValue?: (v: number) => string` → `… | null`
+ *     is caught by **nothing**: 55/55 tests green, `tsc` exit 0. Every
+ *     call site is still passing a valid formatter.
+ *
+ * The fix is a full expected-type transcription per primitive plus an
+ * exact-equality check (`ComponentProps<typeof Panel>` against a
+ * hand-written `PanelProps`), which would close retype as well as the
+ * rest with no regex. That was not taken on purpose: it is a second,
+ * hand-maintained copy of every signature in type syntax, and its
+ * *mistakes* are indistinguishable from real findings. A guard that cries
+ * wolf gets deleted, and the whole file goes with it. 14 primitives is
+ * also more transcription than the gap has yet justified.
  *
  * Two shape notes, so a broken parse cannot turn this into a silent pass:
  * the prop list is read out of the source by regex, and an empty list
@@ -48,6 +62,14 @@ interface Declared {
  * declare itself — the HTML attribute interface it extends. Those belong
  * to `React.ButtonHTMLAttributes` and to the DOM, not to this
  * primitive's signature.
+ *
+ * `extendsInterface` is the same asymmetry seen from the other side, and
+ * only `Button` may set it. A primitive that gains
+ * `extends ButtonHTMLAttributes<HTMLButtonElement>` keeps its own parsed
+ * prop list byte-for-byte — the name list this file pins is unchanged —
+ * while silently accepting ~250 extra props. That is the failure this
+ * whole file exists to prevent, reached without touching the pinned list
+ * at all, so it is asserted directly rather than inferred from the list.
  */
 const PRIMITIVES: Array<{
   file: string;
@@ -56,6 +78,8 @@ const PRIMITIVES: Array<{
   /** A prop that must be in the parsed list, so an empty parse cannot pass. */
   sentinel: string;
   inherited?: string[];
+  /** Set only by `Button`, the one primitive with a documented reason. */
+  extendsInterface?: boolean;
 }> = [
   {
     file: "src/components/ui/Button.tsx",
@@ -63,6 +87,7 @@ const PRIMITIVES: Array<{
     props: ["variant?", "size?", "loading?", "icon?", "rightIcon?", "fullWidth?"],
     sentinel: "variant",
     inherited: ["className", "children", "disabled", "ref"],
+    extendsInterface: true,
   },
   {
     file: "src/components/ui/IconButton.tsx",
@@ -144,6 +169,15 @@ const PRIMITIVES: Array<{
     sentinel: "bordered",
   },
   {
+    file: "src/components/ui/EmptyState.tsx",
+    component: "EmptyState",
+    // Declared as an inline type literal rather than an interface, so this
+    // entry exercises the fallback parse path. The one primitive this
+    // commit restyled had no guard at all until now.
+    props: ["title", "description?", "icon?", "action?", "className?"],
+    sentinel: "title",
+  },
+  {
     file: "src/components/ui/Skeleton.tsx",
     component: "Skeleton",
     props: ["width?", "height?", "rounded?", "className?"],
@@ -207,20 +241,31 @@ function balancedFrom(src: string, from: number, what: string): { block: string;
   throw new Error(`${what}: unbalanced block`);
 }
 
+/**
+ * Its own `interface XProps`, where the name shares the component's stem:
+ * `[1]` the interface's name, `[2]` whatever sits between the name and the
+ * body — the `extends` clause, if any — `[3]` the declared body.
+ */
+function ownInterface(src: string, component: string): RegExpExecArray | undefined {
+  return [...src.matchAll(/(?:export\s+)?interface\s+(\w*Props)([^{]*)\{([\s\S]*?)\n\}/g)]
+    .find((m) => m[1].startsWith(component));
+}
+
+/** The interface a primitive declares, or the inline type literal in its signature. */
+function propDeclaration(src: string, component: string): string {
+  const own = ownInterface(src, component);
+  if (own) return own[3];
+  // Otherwise the inline type literal, as EmptyState and Spinner declare
+  // theirs. `balancedFrom` starts after the destructuring block, so the
+  // brace it finds is the type literal's own.
+  const { end } = destructuredBlock(src, component);
+  return balancedFrom(src, end, `${component}'s inline prop type`).block;
+}
+
 /** The props a primitive declares, from its own interface or inline type. */
 function declaredProps(file: string, component: string): Declared[] {
   const src = read(file);
-  const { end } = destructuredBlock(src, component);
-
-  // Its own `interface XProps`, where the name shares the component's
-  // stem — `SelectProps` for `Select`, and so on. `extends` clauses are
-  // skipped over: ButtonProps extends ButtonHTMLAttributes, so the brace
-  // is not the one right after the name.
-  const own = [...src.matchAll(/(?:export\s+)?interface\s+(\w*Props)[^{]*\{([\s\S]*?)\n\}/g)]
-    .find((m) => m[1].startsWith(component));
-  // Otherwise the inline type literal in the signature, as EmptyState and
-  // Spinner declare theirs.
-  const block = own ? own[2] : balancedFrom(src, end, `${component}'s inline prop type`).block;
+  const block = propDeclaration(src, component);
 
   return [...block.matchAll(/^\s*(?:(["'])(.*?)\1|([A-Za-z_$][\w$]*))(\?)?:/gm)]
     .map((m) => {
@@ -248,6 +293,37 @@ describe("no primitive gains or loses a prop", () => {
         declared.map((d) => d.signature).sort(),
         `${p.component} in ${p.file} must keep its prop signature — no prop added, removed, renamed, or made optional. If a prop is genuinely needed, the design is wrong, not the prop missing.`,
       ).toEqual([...p.props].sort());
+    }
+  });
+
+  it("gives no primitive a wider prop surface through extends", () => {
+    // The signature list above cannot see this one. `interface
+    // IconButtonProps extends ButtonHTMLAttributes<HTMLButtonElement>`
+    // leaves IconButtonProps' own body — and therefore every parsed name
+    // — byte-for-byte identical, while the primitive goes on to accept
+    // ~250 props it did not accept before. A pin on the name list alone
+    // would call that clean.
+    for (const p of PRIMITIVES) {
+      const src = read(p.file);
+      const own = ownInterface(src, p.component);
+      if (own) {
+        expect(
+          /\bextends\b/.test(own[2]),
+          `${p.component} must not extend another interface — that widens the prop surface past every name pinned in this file without changing any of them. Only Button has a documented reason, and it sets extendsInterface.`,
+        ).toBe(p.extendsInterface === true);
+        continue;
+      }
+      // A primitive with no interface of its own declares an inline type
+      // literal, which widens the same way through `&` or through
+      // borrowing someone else's interface with `Pick<>`. Both leave the
+      // literal shape, so the literal is checked for being a bare object
+      // type instead.
+      const { end } = destructuredBlock(src, p.component);
+      const raw = src.slice(end + 1, balancedFrom(src, end, `${p.component}'s inline prop type`).end + 1);
+      expect(
+        /^\s*:\s*\{[\s\S]*\}\s*$/.test(raw),
+        `${p.component} declares an inline prop type, so it must be a bare object literal — not an intersection and not a Pick off another interface`,
+      ).toBe(true);
     }
   });
 
