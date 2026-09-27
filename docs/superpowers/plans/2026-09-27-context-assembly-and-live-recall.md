@@ -1387,7 +1387,25 @@ not because coverage was traded away."
 
 ### Task 8: Provenance in the UI, and the phase close-out
 
-Phase 6's second half: the Notes tab shows what a note produced. Thin, because Task 1 already built the data.
+Phase 6's second half (the Notes tab shows what a note produced) **plus the memory pin toggle,
+which this plan cannot ship without**. Thin on the notes side, because Task 1 already built
+the data.
+
+**Why the memory pin toggle is not optional here.** Task 2 added `memory_items.pinned` and
+`set_memory_pinned` so the spec's "pinned memories" precedence tier would exist, because
+Task 7 deletes the always-on context block that used to inject *every* enabled memory. As of
+this task, nothing calls `set_memory_pinned`, so no memory can be pinned, so the tier is
+permanently empty — and every memory that was previously unconditional is now conditional on
+whether retrieval happens to rank it. The capability Ruling 5 was written to preserve is the
+capability this step restores. A command with no caller is also exactly what this repo's
+`fill_index` incident was: dead code that compiles clean because it is `pub`.
+
+**Also note the consequence for existing users**, which is deliberate and should be stated in
+the commit message rather than discovered: the always-on set moves from *every enabled memory,
+session-scoped* to *pinned only*. A user upgrading with memories already stored gets a
+different prompt until they pin what they relied on. That is the design the spec asks for
+(rank, budget, and a pin for the rest), but it is a behaviour change and the user should hear
+it from the commit log.
 
 **Files:**
 - Modify: `src/components/notes/*.tsx` (locate the Notes view before editing)
@@ -1410,7 +1428,19 @@ A checkbox or pin button per note row, calling `api.setNotePinned(id, !note.pinn
 
 Under each note, render its `linked_memories`: title and content, with a superseded one shown struck through and labelled as replaced. Each row gets an unlink control calling `api.unlinkMemoryFromNote`. Use `text-muted` for the label and no hardcoded hex colours — the theme system depends on the CSS variables.
 
-- [ ] **Step 4: Show the reverse direction in the Memory tab**
+- [ ] **Step 4: Add the memory pin toggle to the Memory tab**
+
+`api.setMemoryPinned(id, pinned)` exists and is unwired. Add a pin control to each memory row
+in the Memory tab, alongside the existing enable/disable toggle, calling it and updating local
+state from the result. Read the Memory view first to find where the enable toggle renders; the
+pin control belongs next to it, not in a new surface.
+
+Distinguish the two controls clearly in the UI. "Enabled" means *eligible for retrieval*;
+"pinned" means *always injected regardless of what retrieval ranks*. A user who does not know
+the difference will set the wrong one, and the failure is silent — an unpinned memory they
+expected to be always present simply will not be.
+
+- [ ] **Step 5: Show the reverse direction in the Memory tab**
 
 §5.4 is bidirectional, and the reverse half has no home yet: `memory_items.source_note_id` is populated by nothing and read by nothing. Add `sourceNoteId: string | null` to the `MemoryItem` interface in `src/lib/api.ts` and `source_note_id` to the `SELECT` in `get_enabled_memory` (or `search_memory`, whichever the Memory tab lists through — check both), then render "from note: <title>" on a memory row when it is set.
 
@@ -1418,20 +1448,32 @@ Under each note, render its `linked_memories`: title and content, with a superse
 
 Extraction is what will eventually populate this column — a note-linked memory is a memory extracted from that note — so this task makes the field honest rather than adding a second denormalised copy.
 
-- [ ] **Step 5: Run the gates**
+- [ ] **Step 6: Run the gates**
 
 Run: `npm run typecheck && npm run test:run && cargo test --manifest-path src-tauri/Cargo.toml`
-Expected: 359 TypeScript passing, Rust ≥ 215 passing, `tsc` clean.
+Expected: 359 TypeScript passing, Rust ≥ 260 passing, `tsc` clean. If you added a test for the
+pin toggle, the TypeScript count rises above 359 — that is fine, and say so in the report.
 
-- [ ] **Step 6: Mark the phases complete in the spec**
+- [ ] **Step 7: Mark the phases complete in the spec**
 
 In `docs/superpowers/specs/2026-09-27-convo-realignment-design.md`, change `### Phase 6 — Notes` and `### Phase 7 — Context assembly` to `**complete**` and tick every checkbox. Record the measured TypeScript floor change (372 → 359) in the Phase 7 section, with the reason: the deleted code owned those tests.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add -A src/components src/lib src-tauri docs/superpowers/specs
-git commit -m "feat(notes): pin control and linked memories in the UI
+git add -A src/components src/routes src/lib src-tauri docs/superpowers/specs
+git commit -m "feat(memory,notes): pin controls and provenance in the UI
+
+The memory pin toggle is the load-bearing part. Task 2 added the column
+and the command so the always-on capability would survive Task 7 deleting
+the context block that used to inject every enabled memory; without a
+caller, the tier is permanently empty and everything is conditional on
+retrieval ranking alone. A command nothing calls is what fill_index was.
+
+Behaviour change worth stating: the always-on set moves from every
+enabled memory to pinned only. A user with stored memories gets a
+different prompt until they pin what they relied on. That is the design,
+but they should hear it here rather than notice it.
 
 Phase 6's second half. A pin is the user saying always, and the data was
 already there from V006 with nothing reading it; a note that produced
