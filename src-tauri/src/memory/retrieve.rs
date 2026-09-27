@@ -709,6 +709,25 @@ fn allowlist_json(conn: &rusqlite::Connection, session_id: Option<&str>) -> Stri
     serde_json::to_string(&ids).unwrap_or_else(|_| "[]".to_string())
 }
 
+/// The ids a session's overrides admit, or `None` when they admit all of
+/// them.
+///
+/// `None` and an empty set both mean "no restriction" — the same convention
+/// [`allowlist_json`] documents and `bm25_route` relies on, where the SQL
+/// treats a zero-length array as matching every row. That convention is
+/// load-bearing: `allowlist_json` answers `[]` for every session that has
+/// no override rows, so reading an empty set as "nothing is allowed" would
+/// not fail loudly, it would silently empty the memory of every session in
+/// the library. A malformed array degrades the same way, because a bad
+/// settings-shaped row must never be the reason recall returns nothing.
+fn admitted_ids(allowlist_json: &str) -> Option<std::collections::HashSet<String>> {
+    let ids: Vec<String> = serde_json::from_str(allowlist_json).unwrap_or_default();
+    if ids.is_empty() {
+        return None;
+    }
+    Some(ids.into_iter().collect())
+}
+
 /// `None` and an empty list both mean "every kind", because a filter that
 /// matches nothing is a filter that silently disables recall.
 fn kinds_json(kinds: Option<&Vec<String>>) -> String {
@@ -787,6 +806,29 @@ pub fn recall_with_query_vector(
     for hit in &keyword {
         let key = (hit.row.owner_type.clone(), hit.row.owner_id.clone());
         rows.entry(key).or_insert_with(|| hit.row.clone());
+    }
+
+    // The allowlist is a property of the *result*, not of one route, so it
+    // is enforced here — once, after the merge, keyed on the same
+    // `(owner_type, owner_id)` the merge used. Filtering per route is the
+    // shape that produced this bug: `bm25_route` took the allowlist and
+    // `cosine_route` did not, nothing checked the merged list, and the
+    // vector route handed back whatever the keyword route had filtered out.
+    // A third route would have inherited the same hole, and the next
+    // reviewer would have to know which routes are allowlist-aware.
+    //
+    // The ids alone, with no owner type, because that is what the keyword
+    // route's `id IN (SELECT value FROM json_each(...))` has always
+    // matched on.
+    //
+    // The keyword route keeps its own SQL filter as well. It is a
+    // narrowing optimisation and not redundant: the per-table `LIMIT` is
+    // applied inside those queries, so dropping the filter there would let
+    // an excluded row fill a top-N slot and push an *allowed* row past the
+    // cut. Filtering after the merge is the guarantee; the SQL is what
+    // keeps the guarantee from costing recall.
+    if let Some(admitted) = admitted_ids(&allowlist) {
+        order.retain(|(_, owner_id)| admitted.contains(owner_id));
     }
 
     let mut scored: Vec<(RankedMemory, Option<Vec<f32>>)> = Vec::new();

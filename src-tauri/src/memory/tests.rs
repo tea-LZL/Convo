@@ -935,6 +935,181 @@ fn recall_with_no_overrides_includes_everything() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// The allowlist is a property of the result
+// ---------------------------------------------------------------------------
+//
+// `session_overrides` is a per-session allowlist: one row and every other
+// memory in the library is off for that conversation. It used to be
+// enforced inside the keyword route's SQL, which left the vector route free
+// to bring back anything the keyword route had filtered out — so with
+// embeddings configured, whether a user's exclusion was honoured depended on
+// which route happened to find the memory. These pin it on the merged
+// result, for both arms and for the two shapes that mean "no restriction".
+
+/// The model the fixture vectors are stored under, which is the only thing
+/// `cosine_route` matches on.
+const STUB_MODEL: &str = "stub";
+
+/// A question the keyword route cannot answer. The memory below shares no
+/// token with it, so a hit can only have come from the vector route.
+const SEMANTIC_QUERY: &str = "what is the wifi password";
+
+/// What `SEMANTIC_QUERY` embeds to, and what the fixture memory is stored
+/// under: an exact match, so cosine is 1.0 and well over `REINFORCE_FLOOR`.
+const STUB_VECTOR: &[f32] = &[1.0, 0.0, 0.0];
+
+/// A memory only the vector route can reach. It avoids "wifi" and
+/// "password" on purpose: an earlier fixture in this family said "The wifi
+/// password is hunter2", which the keyword route found, so the test would
+/// have proved nothing.
+fn add_semantic_only_memory(conn: &Connection, id: &str) {
+    add_memory_full(
+        conn,
+        id,
+        "project_fact",
+        "Network",
+        "The SSID is Convo-5G and the passphrase is hunter2",
+    );
+    upsert_embedding(conn, "memory", id, STUB_MODEL, STUB_VECTOR).unwrap();
+}
+
+/// `SEMANTIC_QUERY` with the vector route live and the keyword route
+/// powerless against it.
+fn semantic_opts<'a>(session_id: Option<&'a str>) -> retrieve::RecallOptions<'a> {
+    retrieve::RecallOptions {
+        query: SEMANTIC_QUERY,
+        session_id,
+        embedding_model: Some(STUB_MODEL.to_string()),
+        embedding_dim: Some(3),
+        kinds: None,
+        top_k: config::TOP_K_DEFAULT as usize,
+        lambda: retrieve::DEFAULT_LAMBDA,
+    }
+}
+
+/// Scope a session to `ids`. An empty `ids` is a session that has never
+/// used the feature, which `allowlist_json` reports as an empty list.
+fn scope_session_to(conn: &Connection, session_id: &str, ids: &[&str]) {
+    conn.execute(
+        "INSERT OR IGNORE INTO sessions (id, title) VALUES (?1,'S')",
+        params![session_id],
+    )
+    .unwrap();
+    for id in ids {
+        conn.execute(
+            "INSERT INTO session_overrides (session_id, item_id) VALUES (?1,?2)",
+            params![session_id, id],
+        )
+        .unwrap();
+    }
+}
+
+/// The arm that already worked, pinned anyway: an exclusion the keyword
+/// route enforces has to keep being enforced once the filter that enforces
+/// it lives somewhere else.
+///
+/// Two memories answer this question, so the session is scoped to one of
+/// them and the assertion is both halves — the excluded one is gone and the
+/// allowed one arrived. A filter that dropped everything would pass a
+/// test that only checked the first.
+#[test]
+fn a_memory_the_session_excluded_stays_out_of_the_keyword_result() {
+    let conn = migrated_conn();
+    knowledge_corpus(&conn);
+    scope_session_to(&conn, "s1", &["db-choice"]);
+
+    let mut o = recall_opts("postgres");
+    o.session_id = Some("s1");
+    let hits = retrieve::recall(&conn, &o);
+
+    assert!(
+        ids(&hits).contains(&"db-choice"),
+        "the memory the session allowed should have been recalled: {:?}",
+        ids(&hits)
+    );
+    assert!(
+        !ids(&hits).contains(&"db-pool"),
+        "a memory the session excluded was recalled anyway: {:?}",
+        ids(&hits)
+    );
+}
+
+/// A session scoped to a memory the vector route found. The filter has to
+/// drop the excluded rows without eating the allowed ones — a filter that
+/// removed everything satisfies test 1 as happily as this one.
+#[test]
+fn a_memory_the_session_allowed_survives_the_vector_route() {
+    let conn = migrated_conn();
+    add_semantic_only_memory(&conn, "wifi");
+    scope_session_to(&conn, "s1", &["wifi"]);
+
+    let hits = retrieve::recall_with_query_vector(&conn, &semantic_opts(Some("s1")), STUB_VECTOR);
+
+    assert_eq!(
+        ids(&hits),
+        vec!["wifi"],
+        "an allowlisted memory found by the vector route must survive"
+    );
+    assert!(
+        hits[0].reason.contains("semantic"),
+        "and it must still be reported as the vector route's find: {}",
+        hits[0].reason
+    );
+}
+
+/// No session means no overrides were ever read, so no restriction. A
+/// filter that read "no allowlist" as "nothing admitted" would return an
+/// empty result here rather than failing, which is the worst way for it to
+/// be wrong: the Memory tab would go blank and every send would lose its
+/// memory, with nothing in the logs.
+#[test]
+fn no_session_leaves_a_recall_unrestricted() {
+    let conn = migrated_conn();
+    add_semantic_only_memory(&conn, "wifi");
+    // Another session's overrides must not narrow an unscoped recall.
+    // `session_overrides.item_id` is a foreign key, so the row it names has
+    // to exist for the override to be storable at all.
+    add_memory_full(
+        &conn,
+        "db-choice",
+        "project_fact",
+        "Database choice",
+        "Chose Postgres over MySQL for the multi-tenant billing schema",
+    );
+    scope_session_to(&conn, "s1", &["db-choice"]);
+
+    let hits = retrieve::recall_with_query_vector(&conn, &semantic_opts(None), STUB_VECTOR);
+
+    assert!(
+        ids(&hits).contains(&"wifi"),
+        "a recall with no session was filtered by an allowlist: {:?}",
+        ids(&hits)
+    );
+}
+
+/// An empty override list means "no restriction", and that convention is
+/// load-bearing rather than incidental. `allowlist_json` answers `[]` for
+/// every session that has never touched the feature — which is every
+/// session a user did not go looking for it in — so reading `[]` as
+/// "nothing is allowed" would not fail loudly. It would silently empty the
+/// memory of every session in the library, on every send, and look like a
+/// retrieval bug nobody could reproduce.
+#[test]
+fn an_empty_override_list_leaves_a_recall_unrestricted() {
+    let conn = migrated_conn();
+    add_semantic_only_memory(&conn, "wifi");
+    scope_session_to(&conn, "s1", &[]);
+
+    let hits = retrieve::recall_with_query_vector(&conn, &semantic_opts(Some("s1")), STUB_VECTOR);
+
+    assert!(
+        ids(&hits).contains(&"wifi"),
+        "a session with no overrides was filtered to nothing: {:?}",
+        ids(&hits)
+    );
+}
+
 #[test]
 fn recall_is_deterministic() {
     // Rank comes from a fused score. Two calls over unchanged data must

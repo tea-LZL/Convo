@@ -1123,6 +1123,116 @@ async fn a_memory_with_no_lexical_overlap_reaches_the_prompt_through_the_vector_
     );
 }
 
+/// A memory the user excluded from this conversation must stay out of it,
+/// whichever route finds it.
+///
+/// `session_overrides` is how a user scopes a conversation to a chosen set
+/// of memories: one row for `db-choice` and every other memory in the
+/// library is off for this session. The keyword route honoured that from
+/// the start. The vector route did not — `cosine_route` took no allowlist,
+/// and nothing filtered the two routes after they merged, so a memory the
+/// user had switched off was injected anyway whenever embeddings were
+/// configured and the paraphrase landed close enough. What the user
+/// experiences is the model quoting something they deliberately turned off,
+/// and whether it happens depends on which route happened to find the
+/// memory.
+///
+/// The fixture is the sibling test's, deliberately: the question shares no
+/// token with the memory, so only the query vector can find it. The control
+/// at the end re-asks the same question through the keyword route with no
+/// allowlist at all, which is what makes the first assertion attributable
+/// to the vector route rather than to a lucky keyword match.
+#[tokio::test]
+async fn a_memory_excluded_from_a_session_stays_out_of_it_through_the_vector_route() {
+    let url = serve_once(
+        "200 OK",
+        r#"{"embeddings":[[1.0,0.0,0.0]]}"#,
+        "application/json",
+    )
+    .await;
+    let pool = migrated_pool();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute("INSERT INTO sessions (id, title) VALUES ('s1','S')", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO providers (id, kind, name, base_url)
+             VALUES ('p1','ollama','Loopback',?1)",
+            rusqlite::params![&url],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('memory.routing', ?1)",
+            rusqlite::params![r#"{"embedding":{"provider_id":"p1","model":"stub"}}"#],
+        )
+        .unwrap();
+        // The one memory this session is allowed. It shares no token with
+        // the question either, so it cannot stand in for `wifi` and mask
+        // the assertion below.
+        add_memory(
+            &conn,
+            "db-choice",
+            "project_fact",
+            "Database choice",
+            "Chose Postgres over MySQL for the multi-tenant billing schema",
+        );
+        // Avoids "wifi" and "password", for the reason given above.
+        add_memory(
+            &conn,
+            "wifi",
+            "project_fact",
+            "Network",
+            "The SSID is Convo-5G and the passphrase is hunter2",
+        );
+        upsert_embedding(&conn, "memory", "wifi", "stub", &[1.0, 0.0, 0.0]).unwrap();
+        // The exclusion under test: this session is scoped to `db-choice`.
+        conn.execute(
+            "INSERT INTO session_overrides (session_id, item_id) VALUES ('s1','db-choice')",
+            [],
+        )
+        .unwrap();
+    }
+
+    let plan = plan_send(&pool, "s1", "what is the wifi password", "m", None).await;
+
+    assert!(
+        !plan.system.contains("hunter2"),
+        "a memory excluded from this session reached the model: {}",
+        plan.system
+    );
+    assert_eq!(
+        plan.recalled, 0,
+        "the session is scoped to one memory that does not answer this \
+         question, so nothing should have been recalled at all"
+    );
+
+    // The control. With no allowlist in play, the keyword route genuinely
+    // cannot answer this question — so the row above can only be the
+    // vector route's find, which is the arm that has to enforce the
+    // exclusion.
+    let conn = pool.get().unwrap();
+    let keyword_only = retrieve::recall(
+        &conn,
+        &retrieve::RecallOptions {
+            query: "what is the wifi password",
+            session_id: None,
+            embedding_model: Some("stub".to_string()),
+            embedding_dim: Some(3),
+            kinds: None,
+            top_k: config::TOP_K_DEFAULT as usize,
+            lambda: retrieve::DEFAULT_LAMBDA,
+        },
+    );
+    assert!(
+        keyword_only.is_empty(),
+        "the keyword route answers this on its own, so the vector route is not what found it: {:?}",
+        keyword_only
+            .iter()
+            .map(|h| h.owner_id.as_str())
+            .collect::<Vec<_>>()
+    );
+}
+
 /// `used_tokens` is the whole block, preamble included, and it is **not**
 /// bounded by `budget_tokens`. This pins that on the send path, where a
 /// caller is most tempted to treat the budget as a ceiling: the preamble and
