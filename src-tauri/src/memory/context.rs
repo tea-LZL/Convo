@@ -2,10 +2,11 @@
 //!
 //! This file is split the same way `retrieve.rs` is. [`assemble`] and
 //! [`label_for_kind`] are pure — plain values in, plain values out, no
-//! database and no provider in scope. [`pinned_rows`] is the only function
-//! that touches SQLite, and it does nothing but query: every rule that
-//! decides what a prompt says lives above it, where a test can reach it
-//! without a fixture.
+//! database and no provider in scope. Below them, [`pinned_rows`] is the
+//! only thing that reads SQLite, and it reads nothing but rows: every rule
+//! that decides what a prompt says lives above it, where a test can reach
+//! it without a fixture. [`record_injection`] is the one function here
+//! that writes, and it writes only what the model was shown.
 //!
 //! The rules, in the order they are applied:
 //!
@@ -439,4 +440,53 @@ fn with_title(title: Option<String>, body: String) -> String {
         Some(title) if !title.trim().is_empty() => format!("{}\n\n{}", title.trim(), body),
         _ => body,
     }
+}
+
+// --- Write -------------------------------------------------------------------
+//
+// The read path above ends at a prompt. This is the one function here that
+// changes a row, and it changes it because the model was shown the row, not
+// because retrieval returned it.
+
+/// Record that a row was injected into the prompt.
+///
+/// Written here, at injection, rather than inside `recall`, because the
+/// boost is named for what the model actually saw. A row that ranked
+/// eleventh and was cut by the budget was never injected, and counting it
+/// would make the boost drift toward whatever retrieval happened to return
+/// rather than toward what the model was told. The caller passes
+/// [`AssembledContext::injected`], never the pre-budget candidate list.
+///
+/// A note has no counter to bump, so its `recall` event is the whole
+/// record; a memory gets both, because the boost reads the counter and the
+/// log is what makes the boost auditable afterwards.
+///
+/// `last_seen_at` moves but `updated_at` does not: the row's content did
+/// not change, and pretending it did would reset the recency decay and
+/// reorder the pinned block on every send.
+///
+/// An owner type this build does not know is an error, not a skip. A
+/// no-op here is invisible at the call site and shows up months later as
+/// boost numbers that never move, which is the failure this whole task
+/// exists to prevent.
+pub fn record_injection(
+    conn: &Connection,
+    row: &ContextRow,
+    session_id: Option<&str>,
+) -> Result<(), String> {
+    match row.owner_type.as_str() {
+        "memory" => {
+            conn.execute(
+                "UPDATE memory_items
+                 SET access_count = access_count + 1,
+                     last_seen_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE id = ?1",
+                params![row.owner_id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        "note" => {} // No counter to bump; the event below is the record.
+        other => return Err(format!("unknown context owner type: {}", other)),
+    }
+    crate::memory::embed::log_event(conn, &row.owner_type, &row.owner_id, "recall", session_id)
 }

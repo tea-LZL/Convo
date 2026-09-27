@@ -3090,3 +3090,87 @@ fn a_pinned_memory_that_is_off_or_replaced_is_not_injected() {
         .collect();
     assert_eq!(background, vec!["n_pin".to_string(), "m_on".to_string()]);
 }
+
+// ---------------------------------------------------------------------------
+// Reinforcement
+// ---------------------------------------------------------------------------
+//
+// These reach the database, so they live here rather than in
+// `context_tests.rs`. What they protect is not a return value but an effect
+// that another turn reads: the boost in `retrieve::boost` consumes
+// `access_count`, and a reinforcement that silently never fires looks
+// exactly like one that works until someone checks the numbers.
+
+/// A recall that was actually injected bumps the counter the next turn's
+/// boost reads. If this never fires, the boost is fed only by seeded
+/// data and the feedback loop is open in one direction.
+#[test]
+fn injecting_a_memory_bumps_its_access_count() {
+    let conn = migrated_conn();
+    conn.execute(
+        "INSERT INTO memory_items (id, kind, title, content, is_enabled, access_count)
+         VALUES ('m1','user_pref','Build','npm run build',1,0)",
+        [],
+    )
+    .unwrap();
+    let row = context::ContextRow {
+        owner_type: "memory".into(),
+        owner_id: "m1".into(),
+        label: "User preferences".into(),
+        text: "npm run build".into(),
+    };
+    context::record_injection(&conn, &row, Some("s1")).unwrap();
+    context::record_injection(&conn, &row, Some("s1")).unwrap();
+    let (count, events): (i64, i64) = conn
+        .query_row(
+            "SELECT (SELECT access_count FROM memory_items WHERE id = 'm1'),
+                    (SELECT COUNT(*) FROM memory_events WHERE owner_id = 'm1' AND event = 'recall')",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(count, 2);
+    assert_eq!(events, 2);
+}
+
+/// A note has no `access_count` column, so the event log is the only
+/// record. It must not error trying to update a column that is not there.
+#[test]
+fn injecting_a_note_logs_the_recall_without_touching_a_counter() {
+    let conn = migrated_conn();
+    conn.execute(
+        "INSERT INTO notes (id, title, body) VALUES ('n1','Runbook','step')",
+        [],
+    )
+    .unwrap();
+    let row = context::ContextRow {
+        owner_type: "note".into(),
+        owner_id: "n1".into(),
+        label: "Notes".into(),
+        text: "step".into(),
+    };
+    context::record_injection(&conn, &row, Some("s1")).unwrap();
+    let events: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memory_events WHERE owner_id = 'n1' AND event = 'recall'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(events, 1);
+}
+
+/// An unknown owner type is an error, not a silent no-op. A silently
+/// skipped reinforcement is indistinguishable from a working one until
+/// someone reads the boost numbers months later.
+#[test]
+fn an_unknown_owner_type_is_reported_rather_than_ignored() {
+    let conn = migrated_conn();
+    let row = context::ContextRow {
+        owner_type: "document".into(),
+        owner_id: "d1".into(),
+        label: "Notes".into(),
+        text: "x".into(),
+    };
+    assert!(context::record_injection(&conn, &row, None).is_err());
+}
