@@ -2,7 +2,7 @@ pub mod discovery;
 pub mod ollama;
 pub mod openai_compat;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 pub mod types;
 
 use async_trait::async_trait;

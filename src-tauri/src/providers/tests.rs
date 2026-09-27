@@ -68,7 +68,19 @@ fn openai_sse_fixture_rejects_malformed_payload_for_stream_filter() {
     assert!(parse_sse_payload("not-json").is_err());
 }
 
-async fn serve_once(status: &str, body: &str, content_type: &str) -> String {
+/// Serve one canned HTTP response on an ephemeral loopback port, and return
+/// the base URL to ask for it at. `Connection: close` and a `Content-Length`
+/// so the client reads the body and finishes without the server having to
+/// keep the connection alive.
+///
+/// `pub(crate)` so a test outside this module can serve a real response
+/// instead of stubbing the transport. `memory::context_tests` uses it to
+/// stand up a working embedding endpoint, because the send path's vector
+/// route is only testable end to end against an actual provider — a stub
+/// swapped in at the seam would test a second implementation of provider
+/// resolution rather than this one, and two copies of a loopback server
+/// drift.
+pub(crate) async fn serve_once(status: &str, body: &str, content_type: &str) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let response = format!(

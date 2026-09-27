@@ -3,6 +3,9 @@ use rusqlite::Connection;
 use super::super::commands::chat_stream::plan_send;
 use super::context::*;
 use crate::memory::context::PERSONA;
+use crate::memory::embed::upsert_embedding;
+use crate::memory::{config, retrieve};
+use crate::providers::tests::serve_once;
 
 fn row(owner_type: &str, owner_id: &str, label: &str, text: &str) -> ContextRow {
     ContextRow {
@@ -824,6 +827,162 @@ async fn a_failed_pinned_row_query_still_sends_the_recalled_memory() {
         )
         .unwrap();
     assert_eq!(count, 1);
+}
+
+/// The vector route is load-bearing on the send path, and this is the only
+/// test that proves it is *wired*. Every other embed test in this file
+/// covers a route that fails, because a failing route is what a test can
+/// provoke without a server; a route that works was untested, and the mutant
+/// "never consult the embedding route" passed the whole suite.
+///
+/// A memory sharing no token with the question is injected anyway, because
+/// the query vector found it. That is the whole argument for this subsystem
+/// over the substring scorer it replaced, and it is invisible from the
+/// outside: if the semantic route were dead, every other assertion in this
+/// file would still pass, and the only symptom a user would ever see is
+/// amnesia on a paraphrased question.
+///
+/// Everything here is real. The provider is a real `OllamaProvider`
+/// constructed by `embed_query` from a real `providers` row pointing at a
+/// loopback server, so `embedding_route`, provider resolution and the HTTP
+/// call are the same code a user's send runs. The response shape is
+/// `OllamaEmbedResponse` — `{"embeddings": [[…]]}` — and the vector is
+/// stored under the same model name the routing row names, because
+/// `cosine_route` only reads vectors whose model matches.
+///
+/// The negative control at the end is what makes the assertion honest:
+/// without the query vector, the keyword route genuinely cannot answer this
+/// question, so the memory's presence in the prompt can only have come from
+/// the vector route.
+#[tokio::test]
+async fn a_memory_with_no_lexical_overlap_reaches_the_prompt_through_the_vector_route() {
+    // What `OllamaProvider::embed` asks for: one vector per input, and
+    // `embed_query` sends exactly one input — the query.
+    let url = serve_once(
+        "200 OK",
+        r#"{"embeddings":[[1.0,0.0,0.0]]}"#,
+        "application/json",
+    )
+    .await;
+    let pool = migrated_pool();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute("INSERT INTO sessions (id, title) VALUES ('s1','S')", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO providers (id, kind, name, base_url)
+             VALUES ('p1','ollama','Loopback',?1)",
+            rusqlite::params![&url],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('memory.routing', ?1)",
+            rusqlite::params![r#"{"embedding":{"provider_id":"p1","model":"stub"}}"#],
+        )
+        .unwrap();
+        // Deliberately avoids "wifi" and "password". An earlier version of
+        // this fixture said "The wifi password is hunter2", which of course
+        // the keyword route found — the test then proved nothing.
+        add_memory(
+            &conn,
+            "wifi",
+            "project_fact",
+            "Network",
+            "The SSID is Convo-5G and the passphrase is hunter2",
+        );
+        upsert_embedding(&conn, "memory", "wifi", "stub", &[1.0, 0.0, 0.0]).unwrap();
+    }
+
+    let plan = plan_send(&pool, "s1", "what is the wifi password", "m", None).await;
+
+    assert!(
+        plan.system.contains("hunter2"),
+        "the vector route must reach the prompt: {}",
+        plan.system
+    );
+    assert_eq!(plan.recalled, 1);
+
+    // The control. If this ever returns a hit, the fixture no longer needs
+    // vectors and the assertion above has stopped proving anything.
+    let conn = pool.get().unwrap();
+    let keyword_only = retrieve::recall(
+        &conn,
+        &retrieve::RecallOptions {
+            query: "what is the wifi password",
+            session_id: Some("s1"),
+            embedding_model: Some("stub".to_string()),
+            embedding_dim: Some(3),
+            kinds: None,
+            top_k: config::TOP_K_DEFAULT as usize,
+            lambda: retrieve::DEFAULT_LAMBDA,
+        },
+    );
+    assert!(
+        keyword_only.is_empty(),
+        "the keyword route answers this on its own, so the vector route is not what found it: {:?}",
+        keyword_only
+            .iter()
+            .map(|h| h.owner_id.as_str())
+            .collect::<Vec<_>>()
+    );
+}
+
+/// `used_tokens` is the whole block, preamble included, and it is **not**
+/// bounded by `budget_tokens`. This pins that on the send path, where a
+/// caller is most tempted to treat the budget as a ceiling: the preamble and
+/// the directive are a fixed cost of having memory at all, and a budget
+/// smaller than them still has to produce a block rather than silence.
+///
+/// The numbers are chosen so the two are far apart and the row still fits:
+/// a 200-token window budgets 30 tokens for rows, the one row below costs
+/// about 11, and the emitted block is several times the budget. So the plan
+/// must carry a block roughly four times over its row budget and still count
+/// the row — which it cannot do if anything clamps the total, whether that
+/// clamp is a lie in a log line or a real ceiling that trims the block.
+#[tokio::test]
+async fn a_block_may_exceed_its_row_budget_and_is_still_sent_in_full() {
+    let pool = migrated_pool();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute("INSERT INTO sessions (id, title) VALUES ('s1','S')", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO providers (id, kind, name) VALUES ('p1','ollama','Local')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO models (id, provider_id, name, context_length)
+             VALUES ('p1::small','p1','small',200)",
+            [],
+        )
+        .unwrap();
+        add_memory(&conn, "m1", "user_pref", "Editor", "prefers Neovim");
+    }
+
+    // 200 * 0.15 = 30 tokens of row budget.
+    let plan = plan_send(&pool, "s1", "which editor", "small", None).await;
+
+    assert_eq!(
+        plan.recalled, 1,
+        "the row fits the budget, so it is counted as shown"
+    );
+    let block = plan
+        .system
+        .split_once("<memory-context>")
+        .and_then(|(_, rest)| rest.split_once("</memory-context>"))
+        .map(|(body, _)| format!("<memory-context>{body}</memory-context>"))
+        .expect("a memory block was emitted");
+    let used = estimate_tokens(&block);
+    assert!(
+        used > 30,
+        "the block is {used} tokens against a 30 token row budget: the preamble is \
+         supposed to be on top of the budget, not inside it"
+    );
+    assert!(
+        block.contains("prefers Neovim"),
+        "an over-budget block is still sent whole, not trimmed: {block}"
+    );
 }
 
 /// An unpinned note is not injected by retrieval. `recall` includes notes
