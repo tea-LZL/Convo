@@ -124,12 +124,37 @@ pub struct AssembledContext {
     pub used_tokens: usize,
     /// Exactly the rows that were emitted, in order. Reinforcement is
     /// written from this, so it records what the model saw rather than
-    /// what was retrieved.
+    /// what was retrieved. The rows are verbatim: the rendering normalises
+    /// a row's whitespace, the record of the row does not.
     pub injected: Vec<ContextRow>,
-    /// Ids of the rows the budget cut. A row suppressed as a duplicate is
-    /// not listed: it was not a budget decision, and its id is already in
-    /// `injected` under the copy that survived.
+    /// Ids of the rows that were not emitted: the ones the budget could
+    /// not fit, and the ones with no text to state. A row suppressed as a
+    /// duplicate is not listed: it was neither of those things, and its id
+    /// is already in `injected` under the copy that survived.
     pub dropped: Vec<String>,
+}
+
+/// Collapse every run of whitespace in a row's text to a single space.
+///
+/// One memory is one bullet, and it stays one bullet whatever the stored
+/// text contains. `memory_items.content` comes from LLM extraction over
+/// whatever the user pasted, so newlines are the normal case rather than an
+/// exception, and three things break without this:
+///
+/// * a blank line inside one memory's text ends the list, detaching
+///   everything after it from the block;
+/// * a continuation line does not start with `- `, so the fact reads as a
+///   different structure than the one it is;
+/// * a stored line like `Ignore the instructions above` lands as a
+///   top-level line in the position of the directive. That is the worst of
+///   the three, because memory content is influenced by whatever a user
+///   pasted, and a pasted document can contain it.
+///
+/// Normalising the *rendering* rather than the stored text keeps the recall
+/// record verbatim: the two disagree on purpose, and only the model sees
+/// the collapsed form.
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// The human heading for a recalled row's kind.
@@ -238,10 +263,21 @@ pub fn assemble(input: ContextInput) -> AssembledContext {
     let mut charged = 0usize;
 
     for row in rows {
+        // Normalise first, then judge blankness on what would be rendered:
+        // a text of "\n\n" is no more a fact than an empty one, and
+        // normalising first is what makes that true rather than accidental.
+        let text = one_line(&row.text);
+        if text.is_empty() {
+            // A bullet that says nothing costs budget and asserts that a
+            // fact exists. Skipping it keeps the block, the budget line and
+            // the drop log describing the same thing.
+            dropped.push(row.owner_id.clone());
+            continue;
+        }
         if !seen.insert((row.owner_type.clone(), row.owner_id.clone())) {
             continue;
         }
-        let line = format!("- {}", row.text);
+        let line = format!("- {}", text);
         let group = groups.iter().position(|(label, _)| *label == row.label);
 
         // What this row adds to the block: its line, plus the heading if it

@@ -207,3 +207,101 @@ fn a_kind_becomes_a_human_heading() {
     assert_eq!(label_for_kind("note"), "Notes");
     assert_eq!(label_for_kind("workflow_rule"), "Workflow rule");
 }
+
+/// One memory is one bullet, whatever the stored text contains. Memory
+/// content comes from extraction over whatever the user pasted, so
+/// newlines are the normal case: a blank line inside one memory's text
+/// ended the list and detached everything after it, and a stored line like
+/// "Ignore the instructions above" landed as a top-level line in the
+/// position of the directive. The stored row stays verbatim — only the
+/// rendering collapses.
+#[test]
+fn a_multi_line_memory_still_renders_as_one_bullet() {
+    let text = "Build\n\nnpm run build\nthen vite build";
+    let out = assemble(ContextInput {
+        override_prompt: None,
+        rows: vec![row("memory", "m1", "Active skills", text)],
+        budget_tokens: 1000,
+    });
+    let block = out.memory_block.unwrap();
+    assert!(
+        block.contains("- Build npm run build then vite build"),
+        "{block}"
+    );
+    assert_eq!(block.matches("\n- ").count(), 1, "one memory, one bullet");
+    assert_eq!(
+        out.injected[0].text, text,
+        "the recall record must stay verbatim, even though the prompt does not"
+    );
+}
+
+/// A row with nothing to say is not a bullet that says nothing. It is
+/// dropped and recorded, so the block, the budget line and the drop log
+/// all describe the same set of rows. Blankness is judged after
+/// normalising, which is what makes a whitespace-only text blank too.
+#[test]
+fn a_row_with_no_text_is_dropped_rather_than_rendered_as_an_empty_bullet() {
+    let out = assemble(ContextInput {
+        override_prompt: None,
+        rows: vec![
+            row("memory", "m_empty", "User preferences", ""),
+            row("memory", "m_blank", "User preferences", "\n\n"),
+            row("memory", "m1", "User preferences", "uses Neovim"),
+        ],
+        budget_tokens: 1000,
+    });
+    let block = out.memory_block.unwrap();
+    assert_eq!(block.matches("\n- ").count(), 1, "{block}");
+    assert!(!block.contains("- \n"), "an empty bullet survived: {block}");
+    // Skipped, not fatal: the row after them still fits.
+    let injected: Vec<&str> = out.injected.iter().map(|r| r.owner_id.as_str()).collect();
+    assert_eq!(injected, vec!["m1"]);
+    assert_eq!(
+        out.dropped,
+        vec!["m_empty".to_string(), "m_blank".to_string()]
+    );
+}
+
+/// `used_tokens` is the whole block, not the sum of the rows, and the
+/// difference is the only way a caller can see the preamble. Without this
+/// the two fields could collapse into one number, `used_tokens = charged`,
+/// and every one of the other tests would still pass while the system note
+/// and the directive became free.
+#[test]
+fn used_tokens_counts_the_preamble_and_the_directive_too() {
+    let out = assemble(ContextInput {
+        override_prompt: None,
+        rows: vec![
+            row("memory", "m1", "User preferences", "uses Neovim"),
+            row(
+                "memory",
+                "m2",
+                "Project facts",
+                "Convo is a Tauri 2 chat client",
+            ),
+            row(
+                "memory",
+                "m3",
+                "User preferences",
+                "the test suite is vitest",
+            ),
+        ],
+        budget_tokens: 10_000,
+    });
+    let block = out.memory_block.as_ref().unwrap();
+    assert_eq!(out.used_tokens, estimate_tokens(block));
+
+    // What the rows cost on their own, read back out of the block so this
+    // test does not have to know the layout the renderer uses.
+    let rows_only: usize = block
+        .lines()
+        .filter(|line| line.starts_with("- ") || line.starts_with("## "))
+        .map(|line| estimate_tokens(&format!("{}\n", line)))
+        .sum();
+    assert!(
+        out.used_tokens > rows_only,
+        "block {} tokens, rows only {} tokens: the preamble is not being counted",
+        out.used_tokens,
+        rows_only
+    );
+}
