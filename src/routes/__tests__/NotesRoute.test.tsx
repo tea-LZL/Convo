@@ -102,8 +102,17 @@ describe("NotesRoute pinning and provenance", () => {
     expect(await screen.findByRole("button", { name: "Unpin Release notes" })).toHaveAttribute("aria-pressed", "true");
 
     // The editor's save must not carry the pin back; upsert_note ignores it
-    // on update precisely so it cannot unpin what was set here.
-    expect(api.upsertNote).not.toHaveBeenCalled();
+    // on update precisely so it cannot unpin what was set here. Asserted on
+    // a save that happened — an assertion about a mock that was never
+    // reached holds whether the save would have carried the pin or not.
+    fireEvent.change(await screen.findByDisplayValue("Release notes"), {
+      target: { value: "Release notes v2" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(api.upsertNote).toHaveBeenCalledTimes(1));
+    const saved = vi.mocked(api.upsertNote).mock.calls[0][0] as Record<string, unknown>;
+    expect(saved).toMatchObject({ id: "note-1", title: "Release notes v2" });
+    expect(saved).not.toHaveProperty("pinned");
   });
 
   it("lists the memories a note produced, marking the replaced one, and unlinks one", async () => {

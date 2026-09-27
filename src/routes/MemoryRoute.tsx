@@ -32,10 +32,13 @@ export function MemoryRoute() {
   const [items, setItems] = useState<MemoryItem[]>([]);
   /**
    * memory id → the title of the note that produced it, resolved once per
-   * refresh rather than per row. `list_notes` already returns every note
-   * with the memories it produced, so the reverse direction is one call and
-   * a `Map` lookup at render: a per-row lookup is invisible at ten memories
-   * and obvious at two hundred.
+   * refresh rather than per row. One call, and a `Map` lookup at render: a
+   * per-row lookup is invisible at ten memories and obvious at two hundred.
+   *
+   * `list_note_titles` rather than `list_notes`, and the difference is the
+   * size of the payload: this runs after every pin click, and a note body is
+   * a free-text textarea, so `list_notes` was sending the whole library —
+   * megabytes of pasted documents — to read two short strings per row.
    */
   const [provenance, setProvenance] = useState<Map<string, string>>(new Map());
   const [filter, setFilter] = useState<KindFilter>("all");
@@ -67,17 +70,17 @@ export function MemoryRoute() {
   const navigate = useNavigate();
 
   const refresh = async () => {
-    const [list, withLinks] = await Promise.all([
+    const [list, titles] = await Promise.all([
       api.listMemory(filter === "all" ? undefined : filter),
       // Provenance is decoration. A note library that will not load must not
       // cost the list it decorates, so this failure is swallowed and the
       // rows render without a "from note" line.
-      api.listNotes().catch(() => []),
+      api.listNoteTitles().catch(() => []),
     ]);
     setItems(list);
     setProvenance(new Map(
-      withLinks.flatMap((entry) =>
-        entry.linked_memories.map((link) => [link.id, entry.note.title || "Untitled"] as const),
+      titles.flatMap((note) =>
+        note.memory_ids.map((memoryId) => [memoryId, note.title || "Untitled"] as const),
       ),
     ));
     setSearchHits(null);

@@ -169,6 +169,7 @@ pub fn run() {
             themes_cmd::delete_theme,
             // Notes
             notes_cmd::delete_note,
+            notes_cmd::list_note_titles,
             notes_cmd::list_notes,
             notes_cmd::search_notes,
             notes_cmd::set_note_pinned,

@@ -82,4 +82,28 @@ describe("SessionMemoryModal", () => {
       itemIds: [],
     });
   });
+
+  // The box is an allowlist, not an injection switch. The copy used to say
+  // "Checked items are included in the system prompt for this chat", which
+  // promises the one thing only a pin does: a user who checks a memory then
+  // expects it in every message and gets it only when recall happens to
+  // rank it. The fix that made the vector route honour the allowlist
+  // (d2528ab) is why the sentence was doubly wrong.
+  it("does not promise that a checked item is in the prompt, and points at the pin", async () => {
+    mockedInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "list_memory") return [{ ...preferenceItem, pinned: true }, skillItem];
+      if (cmd === "get_session_memory_overrides") return [];
+      return null;
+    });
+    render(<SessionMemoryModal open onClose={() => {}} sessionId="session-1" />);
+    await waitFor(() => screen.getByText(/Keep responses concise/));
+
+    const copy = document.body.textContent ?? "";
+    expect(copy).not.toMatch(/checked items are included/i);
+    expect(copy).toMatch(/recall may return/i);
+    expect(copy).toMatch(/pinned memory is sent in every chat/i);
+    // The pin is named on the row itself, not only in the paragraph: the
+    // checkbox is what a user is looking at when they decide to trust it.
+    expect(screen.getByText("pinned")).toBeInTheDocument();
+  });
 });

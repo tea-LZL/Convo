@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Brain } from "lucide-react";
+import { Brain, Pin } from "lucide-react";
 import { api, MemoryItem, Session } from "../../lib/api";
 import { Modal } from "../ui/Modal";
 import { Button } from "../ui/Button";
@@ -81,8 +81,10 @@ export function SessionMemoryModal({ open, onClose, sessionId }: SessionMemoryMo
   return (
     <Modal open={open} onClose={onClose} title="Memory for this session" size="md">
       <p className="text-xs text-text-muted mb-3">
-        Checked items are included in the system prompt for this chat.
-        Unchecked items are hidden from this session only.
+        Checked items are the ones recall may return for this chat; unchecking one only changes
+        this chat. Recall sends the ones relevant to what you are asking, so checking is not the
+        same as pinning. A pinned memory is sent in every chat whether it is checked here or not —
+        pin one from the Memory page to always include it.
       </p>
       {loading ? (
         <div className="flex items-center justify-center py-8">
@@ -131,6 +133,17 @@ export function SessionMemoryModal({ open, onClose, sessionId }: SessionMemoryMo
                       {item.title && (
                         <span className="text-xs font-medium text-text truncate">
                           {item.title}
+                        </span>
+                      )}
+                      {/* The checkbox is not what puts a memory in the
+                          prompt, so a pinned row says so where the user is
+                          looking when they are about to trust the box. */}
+                      {item.pinned && (
+                        <span
+                          className="inline-flex items-center gap-0.5 text-[10px] px-1 py-0.5 rounded-full border border-accent/30 text-accent shrink-0"
+                          title="Pinned — sent in every chat whether it is checked here or not. Unpin it on the Memory page."
+                        >
+                          <Pin size={8} /> pinned
                         </span>
                       )}
                     </div>

@@ -1,5 +1,6 @@
-use crate::db::models::{Note, NoteLink, NoteWithLinks};
+use crate::db::models::{Note, NoteLink, NoteTitle, NoteWithLinks};
 use rusqlite::{params, Connection};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::State;
 use uuid::Uuid;
@@ -52,6 +53,64 @@ pub fn all_notes(conn: &Connection) -> Result<Vec<Note>, String> {
         })
         .map_err(|e| e.to_string())?;
     rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_note_titles(pool: State<'_, Arc<DbPool>>) -> Result<Vec<NoteTitle>, String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    all_note_titles(&conn)
+}
+
+/// Every note's id and title, and the memories each produced, newest first —
+/// the same notes and the same order as `all_notes`, without their bodies.
+///
+/// The body is the expensive column and no caller of this one wants it: it is
+/// a free-text textarea, so a single pasted document is megabytes, and the
+/// Memory tab asks for this on every refresh including the one after every
+/// pin click. The notes stay in the database.
+///
+/// The `LEFT JOIN` is why the row is a note with a list rather than a memory
+/// with a title: the link lives on `memory_items.source_note_id`, and this is
+/// the one query that can answer "which note did this memory come from"
+/// without that column being read out of every memory. Rows are folded by
+/// note id through a `HashMap` rather than by comparing neighbours, so a note
+/// with no memories, or one whose memories interleave with another's in the
+/// sort, is still one entry.
+pub fn all_note_titles(conn: &Connection) -> Result<Vec<NoteTitle>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT n.id, n.title, m.id
+             FROM notes n
+             LEFT JOIN memory_items m ON m.source_note_id = n.id
+             ORDER BY n.updated_at DESC, m.updated_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut titles: Vec<NoteTitle> = Vec::new();
+    let mut at: HashMap<String, usize> = HashMap::new();
+    for row in rows {
+        let (id, title, memory_id) = row.map_err(|e| e.to_string())?;
+        let slot = *at.entry(id.clone()).or_insert_with(|| {
+            titles.push(NoteTitle {
+                id: id.clone(),
+                title,
+                memory_ids: Vec::new(),
+            });
+            titles.len() - 1
+        });
+        if let Some(memory_id) = memory_id {
+            titles[slot].memory_ids.push(memory_id);
+        }
+    }
+    Ok(titles)
 }
 
 #[tauri::command]
@@ -271,7 +330,140 @@ pub struct NoteInput {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_note, NoteInput};
+    use super::{all_note_titles, validate_note, NoteInput};
+    use rusqlite::params;
+
+    /// Only the columns this projection reads, plus the `body` it must not
+    /// read. A `body` in the schema and a `body` in the payload are the two
+    /// halves of the same claim: the column exists, and nothing crosses the
+    /// boundary carrying it.
+    fn db() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE notes (
+               id TEXT PRIMARY KEY,
+               title TEXT,
+               body TEXT NOT NULL,
+               updated_at TEXT NOT NULL
+             );
+             CREATE TABLE memory_items (
+               id TEXT PRIMARY KEY,
+               source_note_id TEXT,
+               updated_at TEXT NOT NULL
+             );",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn add_note(conn: &rusqlite::Connection, id: &str, title: Option<&str>, updated_at: &str) {
+        conn.execute(
+            "INSERT INTO notes (id, title, body, updated_at) VALUES (?1, ?2, '', ?3)",
+            params![id, title, updated_at],
+        )
+        .unwrap();
+    }
+
+    fn link(conn: &rusqlite::Connection, memory_id: &str, note_id: &str, updated_at: &str) {
+        conn.execute(
+            "INSERT INTO memory_items (id, source_note_id, updated_at) VALUES (?1, ?2, ?3)",
+            params![memory_id, note_id, updated_at],
+        )
+        .unwrap();
+    }
+
+    /// One entry per note, newest first, with the memories it produced and
+    /// the memories of the other notes kept to their own note. A note with
+    /// no memories is still listed: the caller draws the list, not the
+    /// links.
+    #[test]
+    fn the_title_projection_is_every_note_newest_first_with_its_own_memories() {
+        let conn = db();
+        add_note(
+            &conn,
+            "old",
+            Some("Old runbook"),
+            "2026-01-01T00:00:00.000Z",
+        );
+        add_note(&conn, "new", None, "2026-01-03T00:00:00.000Z");
+        add_note(
+            &conn,
+            "mid",
+            Some("Deploy notes"),
+            "2026-01-02T00:00:00.000Z",
+        );
+        link(&conn, "m-1", "old", "2026-01-01T00:00:01.000Z");
+        link(&conn, "m-2", "mid", "2026-01-02T00:00:01.000Z");
+        link(&conn, "m-3", "mid", "2026-01-02T00:00:02.000Z");
+
+        let titles = all_note_titles(&conn).unwrap();
+
+        let ids: Vec<&str> = titles.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, ["new", "mid", "old"], "same order as list_notes");
+        assert_eq!(titles[0].title, None, "an untitled note is a real row");
+        assert_eq!(titles[1].title.as_deref(), Some("Deploy notes"));
+        assert_eq!(titles[1].memory_ids, ["m-3", "m-2"]);
+        assert_eq!(titles[2].memory_ids, ["m-1"]);
+        assert!(
+            titles[0].memory_ids.is_empty(),
+            "a note that produced nothing carries no memory ids"
+        );
+    }
+
+    /// The reason this command exists. A body is free text, so one pasted
+    /// document is megabytes, and the caller reads two short strings out of
+    /// the row. The payload must not grow with the body.
+    #[test]
+    fn the_title_projection_leaves_note_bodies_in_the_database() {
+        let conn = db();
+        let marker = "BODY-MARKER".repeat(190_000);
+        assert!(
+            marker.len() > 2_000_000,
+            "the fixture has to be a body size that is worth not sending"
+        );
+        conn.execute(
+            "INSERT INTO notes (id, title, body, updated_at) VALUES ('n1','Runbook',?1,'2026-01-01T00:00:00.000Z')",
+            params![&marker],
+        )
+        .unwrap();
+        link(&conn, "m-1", "n1", "2026-01-01T00:00:01.000Z");
+
+        let titles = all_note_titles(&conn).unwrap();
+        assert_eq!(titles[0].title.as_deref(), Some("Runbook"));
+        assert_eq!(titles[0].memory_ids, ["m-1"]);
+
+        let payload = serde_json::to_string(&titles).unwrap();
+        assert!(
+            !payload.contains("BODY-MARKER"),
+            "a 2MB body crossed the projection: {} bytes",
+            payload.len()
+        );
+        assert!(
+            !payload.contains("body"),
+            "the projection grew a body field: {payload}"
+        );
+        // A generous bound on two ids, a title and one link: the point is
+        // that it is orders of magnitude below the body, not the exact size.
+        assert!(
+            payload.len() < 512,
+            "the projection is {} bytes for a 2MB body",
+            payload.len()
+        );
+        // Nothing was moved or truncated: the body is still the note's, and
+        // this read simply did not carry it.
+        let stored: i64 = conn
+            .query_row(
+                "SELECT LENGTH(body) FROM notes WHERE id = 'n1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            stored as usize,
+            marker.len(),
+            "the body is still in the database; the projection only left it there"
+        );
+    }
 
     #[test]
     fn validates_note_sizes_without_rejecting_empty_drafts() {

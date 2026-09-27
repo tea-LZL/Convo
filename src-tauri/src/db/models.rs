@@ -82,6 +82,22 @@ pub struct Note {
     pub pinned: bool,
 }
 
+/// A note's id and title, plus the memories it produced, and nothing else.
+///
+/// The read-side counterpart to [`Note`] for a caller that wants to label
+/// memories with the note they came from. A body is a free-text textarea, so
+/// a pasted document makes one note megabytes; the whole library of those
+/// crossing the IPC boundary on every refresh is a cost no label needs.
+/// `memory_ids` is the reverse of the `source_note_id` the memory already
+/// carries, so the caller can build the mapping in one pass without asking
+/// for anything it does not know yet.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct NoteTitle {
+    pub id: String,
+    pub title: Option<String>,
+    pub memory_ids: Vec<String>,
+}
+
 /// A memory a note produced, as the note sees it. Superseded rows are
 /// included: the note produced them and the correction history is the
 /// point. `source_note_id` is the only record of the link, so this is a

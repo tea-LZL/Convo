@@ -15,7 +15,7 @@ describe("MemoryRoute", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockImplementation(async (command) => {
       if (command === "list_memory") return [];
-      if (command === "list_notes") return [];
+      if (command === "list_note_titles") return [];
       if (command === "list_memory_reviews") return [];
       if (command === "list_extractable_sessions") return sessions;
       return null;
@@ -41,7 +41,7 @@ describe("MemoryRoute", () => {
     let resolveSessions!: (value: unknown[]) => void;
     vi.mocked(invoke).mockImplementation((command) => {
       if (command === "list_memory") return Promise.resolve([]);
-      if (command === "list_notes") return Promise.resolve([]);
+      if (command === "list_note_titles") return Promise.resolve([]);
       if (command === "list_memory_reviews") return Promise.resolve([]);
       if (command === "list_extractable_sessions") {
         return new Promise((resolve) => { resolveSessions = resolve; });
@@ -71,7 +71,7 @@ describe("MemoryRoute", () => {
     ];
     vi.mocked(invoke).mockImplementation(async (command) => {
       if (command === "list_memory") return [];
-      if (command === "list_notes") return [];
+      if (command === "list_note_titles") return [];
       if (command === "list_memory_reviews") return reviews;
       if (command === "retry_memory_review") return "session-2";
       if (command === "extract_facts_from_session") return [];
@@ -118,7 +118,7 @@ describe("MemoryRoute pinning", () => {
     let pinned = false;
     vi.mocked(invoke).mockImplementation(async (command, args) => {
       if (command === "list_memory") return [memory("m-1", { pinned })];
-      if (command === "list_notes") return [];
+      if (command === "list_note_titles") return [];
       if (command === "list_memory_reviews") return [];
       if (command === "set_memory_pinned") pinned = (args as { pinned: boolean }).pinned;
       return null;
@@ -158,19 +158,21 @@ describe("MemoryRoute pinning", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("toggle_memory", { id: "m-1", enabled: false }));
   });
 
-  it("resolves every row's source note in one call, not one per row", async () => {
+  // The provenance labels are worth one call per refresh, not one per row —
+  // and that call must not be `list_notes`, which answers with every note
+  // body in the library. The refresh runs after every pin click, so a pasted
+  // document was crossing the IPC boundary on every click of a button that
+  // has nothing to do with notes.
+  it("resolves every row's source note in one title-only call, not one per row", async () => {
     vi.mocked(invoke).mockImplementation(async (command) => {
       if (command === "list_memory") return [memory("m-1"), memory("m-2"), memory("m-3")];
       if (command === "list_memory_reviews") return [];
       // m-1 and m-3 came from the same note; m-2 came from nowhere. Keyed by
       // memory id, so two notes and three rows are still one query.
-      if (command === "list_notes") return [{
-        note: { id: "n-1", title: "Release notes", body: "", tags: null, source_session_id: null, source_message_id: null, created_at: "now", updated_at: "now", pinned: false },
-        linked_memories: [
-          { id: "m-1", title: "Pref m-1", content: "Concise replies", is_enabled: true, superseded_by: null },
-          { id: "m-3", title: "Pref m-3", content: "Concise replies", is_enabled: true, superseded_by: null },
-        ],
-      }];
+      if (command === "list_note_titles") return [
+        { id: "n-1", title: "Release notes", memory_ids: ["m-1", "m-3"] },
+        { id: "n-2", title: "Roadmap", memory_ids: [] },
+      ];
       return null;
     });
 
@@ -184,7 +186,30 @@ describe("MemoryRoute pinning", () => {
     // The row with no source note is not labelled, and the query that
     // resolves the labels is not issued per row.
     expect(screen.getAllByRole("button", { name: /^(Pin|Unpin) Pref m-2/ })).toHaveLength(1);
-    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "list_notes")).toHaveLength(1);
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "list_note_titles")).toHaveLength(1);
+    // The bodies stay in the database. A route that reached for
+    // `list_notes` here would render identically and cost megabytes.
+    expect(invoke).not.toHaveBeenCalledWith("list_notes", expect.anything());
+  });
+
+  it("still renders the list when the note projection fails", async () => {
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "list_memory") return [memory("m-1")];
+      if (command === "list_memory_reviews") return [];
+      if (command === "list_note_titles") throw new Error("notes offline");
+      return null;
+    });
+
+    render(
+      <MemoryRouter>
+        <MemoryRoute />
+      </MemoryRouter>,
+    );
+
+    // Provenance is decoration; a note library that will not load must not
+    // cost the list it decorates.
+    expect(await screen.findByRole("button", { name: /Pin Pref m-1/ })).toBeInTheDocument();
+    expect(screen.queryByText(/from note:/)).not.toBeInTheDocument();
   });
 });
 

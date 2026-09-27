@@ -182,6 +182,18 @@ export interface NoteWithLinks {
   linked_memories: NoteLink[];
 }
 
+/**
+ * A note's id and title plus the memories it produced — the whole note
+ * library without the bodies. A body is a free-text textarea, so a pasted
+ * document makes one note megabytes, and a caller that only labels rows with
+ * the note they came from must not pay for that on every read.
+ */
+export interface NoteTitle {
+  id: string;
+  title: string | null;
+  memory_ids: string[];
+}
+
 export interface Task {
   id: string;
   title: string;
@@ -531,6 +543,10 @@ export const api = {
 
   // Notes
   listNotes: () => invoke<NoteWithLinks[]>("list_notes"),
+  // Ids and titles, not notes. `list_notes` sends every body in the library,
+  // which is megabytes of pasted text for a caller that reads two short
+  // strings per row.
+  listNoteTitles: () => invoke<NoteTitle[]>("list_note_titles"),
   upsertNote: (note: Partial<Note> & { body: string }) => invoke<string>("upsert_note", {
     note: {
       id: note.id ?? null,
