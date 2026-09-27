@@ -380,7 +380,7 @@ Every phase ends with `npm run typecheck`, `npm run test:run` (≥ 252 + new), `
 - [x] Rebuild `pending_memory_reviews` without `session_id UNIQUE`; add `watermark_message_id`
 - [x] Rust `memory/config.rs` with every §6.2 constant, each settings-overridable
 - [x] `memory/embed.rs` — f32 BLOB codec, cosine, `rows_needing_embedding`, `load_vectors`, `needs_reindex`, `log_event`
-- [x] **Gate:** `cargo test` 103 passing, `cargo clippy -D warnings` clean, 372 TypeScript passing, `git diff --name-only -- src/` empty
+- [x] **Gate:** `cargo test` 105 passing, `cargo clippy -D warnings` clean, 372 TypeScript passing, `git diff --name-only -- src/` empty
 
 **Deviation from §5.2, recorded:** `notes` and `memory_items` do **not** share
 one FTS5 table. An external-content FTS table binds to a single `content=`
@@ -391,6 +391,12 @@ tokenizer, queried separately and fused with RRF, which is what RRF takes
 ranked lists for. "Unified" is enforced at the retrieval layer, where the
 spec's intent actually lives. A third content type later adds a third table
 and a third RRF route: additive, not a rework.
+
+**Second defect, caught by the final review:** the first backfill was
+ over every row, which adds a second posting to rows the V002
+triggers had already indexed — doubling their term frequency and inflating their
+BM25 rank. Measured at -1.73 → -2.46 for one row. Both backfills now use
+.
 
 **Defect the migration test caught:** a migration that creates an FTS table and
 its triggers indexes nothing that already exists, because triggers only fire on
@@ -404,7 +410,7 @@ v0.2 has never been searchable. Both are now backfilled.
 - [x] `Provider::embed` — `POST /api/embed` and `POST /v1/embeddings`, with a shared post-condition refusing count mismatches, ragged vectors, zero-length vectors, and non-finite values
 - [x] Per-capability model routing: `memory.routing` JSON, each capability parsed independently so one mistyped field costs only itself
 - [x] Embedding reindex-on-change detection via recorded `model` + `dim` per row
-- [x] **Gate:** `cargo test` 103 passing, `cargo clippy -D warnings` clean, 372 TypeScript passing
+- [x] **Gate:** `cargo test` 105 passing, `cargo clippy -D warnings` clean, 372 TypeScript passing
 
 **Open into Plan 3:** recall degrades to BM25-only when no embedding model is
 configured or the endpoint is unreachable. That degradation path is not built

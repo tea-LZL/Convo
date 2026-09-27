@@ -11,7 +11,7 @@ Rust: `cargo check --manifest-path src-tauri/Cargo.toml` (long first compile; wa
 ```bash
 cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
-cargo test --manifest-path src-tauri/Cargo.toml   # 103 tests, must be 0 failures
+cargo test --manifest-path src-tauri/Cargo.toml   # 105 tests, must be 0 failures
 ```
 
 ## Theming

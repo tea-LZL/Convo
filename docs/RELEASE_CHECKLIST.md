@@ -14,7 +14,7 @@
 - [x] `npm run build`
 - [x] `cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check`
 - [x] `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings`
-- [x] `cargo test --manifest-path src-tauri/Cargo.toml` (35 tests on 2026-08-09; 103 on 2026-09-27)
+- [x] `cargo test --manifest-path src-tauri/Cargo.toml` (35 tests on 2026-08-09; 105 on 2026-09-27)
 - [x] `npm run tauri build` (Debian + AppImage, with the pinned linuxdeploy path)
 
 ## Fresh Install
