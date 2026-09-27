@@ -32,7 +32,7 @@ Not vibes. Gates, in this order of priority:
 | Recall honesty | Every recalled item explains why it was recalled |
 | Stream smoothness | One markdown parse per frozen block; a settled message list commits zero times during a stream. Enforced in `src/components/chat/__tests__/streamPerformance.test.tsx` |
 | Autonomy | Extraction + revision run without user action; only genuine ambiguities surface |
-| Test floor | Suite never drops below **369** passing tests (measured 2026-09-27, after the streaming rewrite) |
+| Test floor | Suite never drops below **372** passing tests (measured 2026-09-27, after the streaming rewrite) |
 
 ---
 
