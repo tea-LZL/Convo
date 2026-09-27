@@ -27,7 +27,12 @@ export function NotesRoute() {
     setLoading(true);
     setError(null);
     try {
-      const n = query.trim() ? await api.searchNotes(query) : await api.listNotes();
+      // list_notes returns each note with the memories it produced; search
+      // returns plain notes. The list is what the editor works on, so the
+      // links are unwrapped here rather than threaded through every read.
+      const n = query.trim()
+        ? await api.searchNotes(query)
+        : (await api.listNotes()).map((linked) => linked.note);
       setNotes(n);
       const next = n.find((note) => note.id === activeId) ?? n[0];
       if (next && !activeId) {

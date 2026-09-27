@@ -168,10 +168,12 @@ pub fn run() {
             themes_cmd::save_theme,
             themes_cmd::delete_theme,
             // Notes
-            notes_cmd::list_notes,
-            notes_cmd::upsert_note,
             notes_cmd::delete_note,
+            notes_cmd::list_notes,
             notes_cmd::search_notes,
+            notes_cmd::set_note_pinned,
+            notes_cmd::unlink_memory_from_note,
+            notes_cmd::upsert_note,
             // Tasks
             tasks_cmd::list_tasks,
             tasks_cmd::upsert_task,

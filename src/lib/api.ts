@@ -160,6 +160,26 @@ export interface Note {
   source_message_id: string | null;
   created_at: string;
   updated_at: string;
+  pinned: boolean;
+}
+
+/**
+ * A memory a note produced. `source_note_id` on the memory is the only
+ * record of the link, so this list is a query result: a deleted memory
+ * disappears from it rather than leaving a dangling id. Superseded rows
+ * stay listed — the note produced them and the history is the point.
+ */
+export interface NoteLink {
+  id: string;
+  title: string | null;
+  content: string;
+  is_enabled: boolean;
+  superseded_by: string | null;
+}
+
+export interface NoteWithLinks {
+  note: Note;
+  linked_memories: NoteLink[];
 }
 
 export interface Task {
@@ -504,7 +524,7 @@ export const api = {
   deleteTheme: (id: string) => invoke<void>("delete_theme", { id }),
 
   // Notes
-  listNotes: () => invoke<Note[]>("list_notes"),
+  listNotes: () => invoke<NoteWithLinks[]>("list_notes"),
   upsertNote: (note: Partial<Note> & { body: string }) => invoke<string>("upsert_note", {
     note: {
       id: note.id ?? null,
@@ -513,10 +533,17 @@ export const api = {
       tags: note.tags ?? null,
       sourceSessionId: note.source_session_id ?? null,
       sourceMessageId: note.source_message_id ?? null,
+      // Honoured on create, ignored on update: the editor's save carries the
+      // whole note, so writing it back would unpin a note pinned elsewhere.
+      // setNotePinned is the deliberate path.
+      pinned: note.pinned ?? false,
     },
   }),
   deleteNote: (id: string) => invoke<void>("delete_note", { id }),
   searchNotes: (query: string) => invoke<Note[]>("search_notes", { query }),
+  setNotePinned: (id: string, pinned: boolean) => invoke<void>("set_note_pinned", { id, pinned }),
+  unlinkMemoryFromNote: (noteId: string, memoryId: string) =>
+    invoke<void>("unlink_memory_from_note", { noteId, memoryId }),
 
   // Tasks
   listTasks: () => invoke<Task[]>("list_tasks"),

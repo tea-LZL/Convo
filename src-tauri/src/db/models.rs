@@ -79,6 +79,28 @@ pub struct Note {
     pub source_message_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    pub pinned: bool,
+}
+
+/// A memory a note produced, as the note sees it. Superseded rows are
+/// included: the note produced them and the correction history is the
+/// point. `source_note_id` is the only record of the link, so this is a
+/// query result rather than a stored list.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct NoteLink {
+    pub id: String,
+    pub title: Option<String>,
+    pub content: String,
+    pub is_enabled: bool,
+    pub superseded_by: Option<String>,
+}
+
+/// A note with the memories it produced. Provenance is derived, so the
+/// links cannot outlive a deleted memory the way a stored id list would.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct NoteWithLinks {
+    pub note: Note,
+    pub linked_memories: Vec<NoteLink>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

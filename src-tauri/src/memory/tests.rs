@@ -1,5 +1,7 @@
 use rusqlite::{params, Connection};
 
+use crate::commands::notes;
+
 /// An in-memory `settings` table, matching the real one from V001:
 /// `settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`.
 fn conn_with_settings(pairs: &[(&str, &str)]) -> Connection {
@@ -2500,4 +2502,104 @@ fn applied_serializes_to_the_shape_the_frontend_narrows_on() {
         let json = serde_json::to_string(&value).unwrap();
         assert_eq!(json, expected, "frontend union no longer matches");
     }
+}
+
+#[test]
+fn pinning_a_note_is_visible_to_the_reader() {
+    let conn = migrated_conn();
+    conn.execute(
+        "INSERT INTO notes (id, title, body) VALUES ('n1','Runbook','step one')",
+        [],
+    )
+    .unwrap();
+    notes::set_pinned(&conn, "n1", true).unwrap();
+    let pinned: i64 = conn
+        .query_row("SELECT pinned FROM notes WHERE id = 'n1'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(pinned, 1);
+    // Unpinning is the same path, not a separate command.
+    notes::set_pinned(&conn, "n1", false).unwrap();
+    let pinned: i64 = conn
+        .query_row("SELECT pinned FROM notes WHERE id = 'n1'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(pinned, 0);
+}
+
+/// Reverse provenance is derived from `memory_items.source_note_id`, so it
+/// cannot drift from the memory rows. A superseded memory is still listed
+/// — the note produced it and the history stays readable.
+#[test]
+fn a_note_lists_the_memories_it_produced_including_superseded_ones() {
+    let conn = migrated_conn();
+    conn.execute(
+        "INSERT INTO notes (id, title, body) VALUES ('n1','Runbook','step one')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO memory_items (id, kind, title, content, is_enabled, source_note_id)
+         VALUES ('m1','skill','Build','npm run build',1,'n1')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO memory_items (id, kind, title, content, is_enabled, source_note_id, superseded_by)
+         VALUES ('m2','skill','Old','npm run build:dev',0,'n1','m1')",
+        [],
+    )
+    .unwrap();
+
+    let links = notes::memories_for_note(&conn, "n1").unwrap();
+    assert_eq!(links.len(), 2);
+    assert!(links.iter().any(|l| l.id == "m1" && l.is_enabled));
+    let m2 = links.iter().find(|l| l.id == "m2").unwrap();
+    assert_eq!(m2.superseded_by.as_deref(), Some("m1"));
+}
+
+/// Unlinking clears the memory's `source_note_id` and touches nothing on
+/// the note. With provenance derived rather than stored, there is no second
+/// copy to keep in sync, which is the whole reason for the query in the
+/// previous test.
+#[test]
+fn unlinking_a_memory_removes_it_from_its_notes_list() {
+    let conn = migrated_conn();
+    conn.execute(
+        "INSERT INTO notes (id, title, body) VALUES ('n1','Runbook','step one')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO memory_items (id, kind, title, content, is_enabled, source_note_id)
+         VALUES ('m1','skill','Build','npm run build',1,'n1')",
+        [],
+    )
+    .unwrap();
+    assert_eq!(notes::memories_for_note(&conn, "n1").unwrap().len(), 1);
+
+    notes::unlink(&conn, "m1").unwrap();
+    assert!(notes::memories_for_note(&conn, "n1").unwrap().is_empty());
+
+    // The memory itself survives: unlinking is a claim about origin, not a
+    // delete, and the row is still reachable and still recallable.
+    let content: String = conn
+        .query_row(
+            "SELECT content FROM memory_items WHERE id = 'm1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(content, "npm run build");
+}
+
+/// A note with no memories lists an empty vec, not an error. Every note
+/// starts life with none.
+#[test]
+fn a_note_with_no_memories_lists_no_links() {
+    let conn = migrated_conn();
+    conn.execute(
+        "INSERT INTO notes (id, title, body) VALUES ('n1','Empty','x')",
+        [],
+    )
+    .unwrap();
+    assert!(notes::memories_for_note(&conn, "n1").unwrap().is_empty());
 }

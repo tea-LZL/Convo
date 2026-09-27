@@ -1,10 +1,10 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { api } from "../../lib/api";
+import { api, Note, NoteWithLinks } from "../../lib/api";
 import { NotesRoute } from "../NotesRoute";
 
-const note = {
+const note: Note = {
   id: "note-1",
   title: "Release notes",
   body: "Provider setup",
@@ -13,7 +13,12 @@ const note = {
   source_message_id: null,
   created_at: "now",
   updated_at: "now",
+  pinned: false,
 };
+
+// list_notes answers with the note plus the memories it produced; the route
+// unwraps the note out of that envelope.
+const linked = (n: Note): NoteWithLinks => ({ note: n, linked_memories: [] });
 
 describe("NotesRoute command contract", () => {
   beforeEach(() => {
@@ -33,7 +38,7 @@ describe("NotesRoute command contract", () => {
   });
 
   it("preserves the draft when saving fails and supports tag filtering", async () => {
-    vi.spyOn(api, "listNotes").mockResolvedValue([note]);
+    vi.spyOn(api, "listNotes").mockResolvedValue([linked(note)]);
     vi.spyOn(api, "upsertNote").mockRejectedValue(new Error("disk full"));
 
     render(
