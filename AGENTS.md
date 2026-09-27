@@ -3,7 +3,7 @@
 ## Verification trio
 ```bash
 npm run typecheck   # tsc --noEmit
-npm run test:run    # vitest run (263 tests, must be 0 failures — floor; never drops)
+npm run test:run    # vitest run (369 tests, must be 0 failures — floor; never drops)
 npm run build       # tsc + vite build
 ```
 Rust: `cargo check --manifest-path src-tauri/Cargo.toml` (long first compile; warm cache afterwards).

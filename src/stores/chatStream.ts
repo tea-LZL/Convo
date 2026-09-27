@@ -208,6 +208,9 @@ function scheduleFlush() {
       pendingDeltas.delete(key);
       const s = getOrCreate(pending.cid);
       if (!isCurrentStream(s, pending.streamId)) continue;
+      // Re-check at drain time: a terminal event may have closed the
+      // stream between staging and this frame.
+      if (!s.streaming) continue;
       s.streamContent += pending.content;
       s.streamThinking += pending.thinking;
       if (pending.content || pending.thinking) publish(pending.cid);
@@ -277,6 +280,12 @@ async function ensureListeners() {
         const cid = e.payload.conversation_id;
         const s = getOrCreate(cid);
         if (!isCurrentEvent(s, e.payload)) return;
+        // A closed stream accepts nothing. Without this, a chunk that
+        // arrives after `chat-done` / `chat-cancelled` — which clear
+        // neither _streamId nor _assistantMessageId — passes validation,
+        // sets streaming back to true, and resurrects a phantom tail on a
+        // message that was already saved.
+        if (!s.streaming) return;
         const key = eventStreamKey(cid, e.payload.stream_id);
         const pending = pendingDeltas.get(key) ?? {
           cid,
@@ -301,6 +310,7 @@ async function ensureListeners() {
         const cid = e.payload.conversation_id;
         const s = getOrCreate(cid);
         if (!isCurrentEvent(s, e.payload)) return;
+        if (!s.streaming) return;
         const key = eventStreamKey(cid, e.payload.stream_id);
         const pending = pendingDeltas.get(key) ?? {
           cid,

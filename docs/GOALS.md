@@ -30,9 +30,9 @@ Not vibes. Gates, in this order of priority:
 | Recall precision | ≥ 90% of known-relevant items in top-6 |
 | Recall latency | < 50ms p95 on a 5,000-item corpus |
 | Recall honesty | Every recalled item explains why it was recalled |
-| Stream smoothness | 60fps tail on a 4,000-token stream, zero re-renders of frozen rows |
+| Stream smoothness | One markdown parse per frozen block; a settled message list commits zero times during a stream. Enforced in `src/components/chat/__tests__/streamPerformance.test.tsx` |
 | Autonomy | Extraction + revision run without user action; only genuine ambiguities surface |
-| Test floor | Suite never drops below 263 passing tests (verified 2026-09-27) |
+| Test floor | Suite never drops below **369** passing tests (measured 2026-09-27, after the streaming rewrite) |
 
 ---
 
