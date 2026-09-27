@@ -6,6 +6,8 @@
  * *below* the scroll region rather than inside it, because a user with no
  * embedding model is getting keyword-only recall silently, and a status
  * that scrolls out of sight with the conversation list is not a status.
+ * The 64px rail cannot hold a card, so it holds a dot instead — same
+ * token, same words, and nothing that widens the rail.
  *
  * Width is unchanged. `w-60` is already 240px and the 64px collapsed rail
  * already exists; both are out of scope, and the card's truncation
@@ -34,7 +36,7 @@ import { TextInput } from "../ui/Form";
 import { Button } from "../ui/Button";
 import { api } from "../../lib/api";
 import { errorClass, recordLog } from "../../lib/logger";
-import { StatusCard } from "./StatusCard";
+import { StatusCard, StatusDot } from "./StatusCard";
 
 interface NavItem {
   id: string;
@@ -285,6 +287,14 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
         <Tooltip content="Settings" side="right">
           <IconButton icon={<Settings size={14} />} label="Settings" onClick={() => navigate("/settings")} />
         </Tooltip>
+        {/* The rail's entire memory status. A 6px dot is the smallest
+            thing that carries state in 64px, and it takes the same token
+            and the same words the card would — otherwise collapsing the
+            sidebar would remove the app's only warning that recall is
+            degraded. The rail stays 64px; nothing here widens it. */}
+        <div className="mt-1.5">
+          <StatusDot />
+        </div>
       </aside>
     );
   }

@@ -46,11 +46,18 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { axe } from "vitest-axe";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api, KnowledgeIndexStatus } from "../../../lib/api";
-import { StatusCard } from "../StatusCard";
+import {
+  STATUS_TEXT,
+  STATUS_TONES,
+  StatusCard,
+  StatusDot,
+  type StatusText,
+  type StatusTone,
+} from "../StatusCard";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const read = (rel: string) => readFileSync(resolve(ROOT, rel), "utf8");
@@ -103,39 +110,124 @@ async function renderCard(status: KnowledgeIndexStatus | Error) {
 }
 
 const card = () => screen.queryByRole("region", { name: CARD_NAME });
+const chip = () => screen.getByText(/^(live|indexing|needs reindex|off)$/);
+
+/**
+ * The colour token a rendered element is painted from, read off the class
+ * list. `text-text-subtle` and `bg-text-subtle` are the same token, so a
+ * chip and a dot that report the same token are the same state even though
+ * they use different properties.
+ */
+const tokenOf = (el: Element) =>
+  el.className.match(/(?:^|\s)(?:bg|text)-(success|warn|text-subtle)\b/)?.[1];
+
+/**
+ * The four payloads. Each row carries both vocabularies, because they are
+ * different things and conflating them is how a check ends up comparing
+ * `subtle` against `text-subtle` and failing for no reason:
+ *
+ *   - `tone`  is the tone *name* from `STATUS_TONES` — the vocabulary.
+ *   - `token` is the theme colour it *renders* as — `subtle` paints
+ *     `text-subtle`, and that indirection is the whole of Ruling 2.
+ *
+ * Asserted as one table rather than four separate lookups, because a
+ * fourth payload silently inheriting a neighbour's expectation is exactly
+ * what a per-state test cannot see.
+ */
+const MATRIX: {
+  name: string;
+  status: KnowledgeIndexStatus;
+  tone: StatusTone;
+  token: string;
+  text: StatusText;
+}[] = [
+  { name: "live", status: live, tone: "success", token: "success", text: "live" },
+  {
+    name: "indexing",
+    status: { ...live, embeddedCount: 12, needsEmbedding: 30, semanticNote: "30 row(s) are not embedded yet. Semantic recall will improve as they fill in." },
+    tone: "subtle",
+    token: "text-subtle",
+    text: "indexing",
+  },
+  { name: "needs reindex", status: stale, tone: "warn", token: "warn", text: "reindex" },
+  { name: "off", status: unconfigured, tone: "subtle", token: "text-subtle", text: "off" },
+];
 
 describe("StatusCard states", () => {
   beforeEach(() => {
     vi.spyOn(console, "error").mockImplementation(() => {});
   });
 
-  it("reads `live` when a model is set, the index is current, and nothing is outstanding", async () => {
-    await renderCard(live);
-    expect((await screen.findByRole("region", { name: CARD_NAME }))).toBeInTheDocument();
-    expect(await screen.findByText("live")).toHaveClass("text-success");
+  it.each(MATRIX)("reads `$name` on the $token token", async ({ status, token, text }) => {
+    const label = STATUS_TEXT[text];
+    await renderCard(status);
+    await screen.findByRole("region", { name: CARD_NAME });
+    const el = screen.getByText(label);
+    // The label is looked up rather than typed, so a renamed key fails
+    // here instead of silently comparing a key against rendered prose.
+    expect(el.textContent).toBe(label);
+    expect(tokenOf(el), `${label} must be painted from ${token}`).toBe(token);
+  });
+
+  it("never uses a fourth tone, because none is available", async () => {
+    // Three tones, four labels. `off` and `indexing` are both "not
+    // all-clear" and are therefore the same colour — which is only
+    // honest because the label is the semantic channel. If a fourth tone
+    // ever appears here it means a new token was added, and the whole
+    // reason this file decouples tone from text goes with it.
+    //
+    // All three directions are checked, because a rendered-set comparison
+    // alone only catches one of them: a fourth tone that is *used* shows
+    // up in the rendered tokens; one that is added and left dangling
+    // shows up as a member no payload can reach; and one that reaches a
+    // render at all must be one of the three existing theme colours.
+    const names = new Set(MATRIX.map((row) => row.tone));
+    const tokens = new Set(MATRIX.map((row) => row.token));
+
+    expect([...tokens].sort(), "no colour outside the three existing tokens").toEqual([
+      "success", "text-subtle", "warn",
+    ]);
+    expect(names.size, "every tone must be reachable from a real payload").toBe(STATUS_TONES.length);
+    for (const tone of STATUS_TONES) {
+      expect(names, `${tone} must be reachable from some payload`).toContain(tone);
+    }
+    expect(MATRIX.length, "four payloads, four labels").toBe(4);
+    expect(new Set(MATRIX.map((r) => r.text)).size, "every label is distinct").toBe(4);
+  });
+
+  it("separates `off` from `indexing` by text alone, since they share a tone", async () => {
+    const off = MATRIX.find((r) => r.text === "off")!;
+    const indexing = MATRIX.find((r) => r.text === "indexing")!;
+    expect(off.tone, "both are 'not all-clear'").toBe(indexing.tone);
+    expect(off.token, "and they render the same colour").toBe(indexing.token);
+    expect(off.text).not.toBe(indexing.text);
+
+    // And in a real render, not just in the table.
+    await renderCard(off.status);
+    expect(await screen.findByText("off")).toBeInTheDocument();
+    expect(screen.queryByText("indexing")).not.toBeInTheDocument();
+  });
+
+  it("calls a half-filled index `indexing`, never `live` and never `off`", async () => {
+    // `live` is a false all-clear — rows are still missing. `off` is a
+    // misreport — semantic recall *is* working, just incompletely, and
+    // calling it off would tell the user to go configure a model they
+    // already have.
+    await renderCard(MATRIX[1].status);
+    expect(await screen.findByText("indexing")).toBeInTheDocument();
+    expect(screen.queryByText("live")).not.toBeInTheDocument();
+    expect(screen.queryByText("off")).not.toBeInTheDocument();
+    // And the model is still named, because there is one.
     expect(screen.getByText("nomic-embed-text")).toBeInTheDocument();
-  });
-
-  it("reads `needs reindex` when the model changed, ahead of anything outstanding", async () => {
-    await renderCard(stale);
-    expect(await screen.findByText("needs reindex")).toHaveClass("text-warn");
-    // The reindex state wins even though nothing is outstanding — a
-    // stale index with a full vector store is still stale.
-    expect(stale.needsEmbedding).toBe(0);
-  });
-
-  it("reads `off` when no model is configured, and says why", async () => {
-    await renderCard(unconfigured);
-    expect(await screen.findByText("off")).toHaveClass("text-text-subtle");
   });
 
   it("prefers `off` over `needs reindex` when a payload claims both", async () => {
     // Rust cannot produce this: `needs_reindex` is computed inside the
     // `Some(route)` arm of the same match that yields the model, and the
-    // `None` arm is `(0, false)`. So the two checks in `chipFor` are
-    // observationally equivalent on every payload the backend can send,
-    // and reordering them would not change a single real verdict — which
-    // is exactly why the order needs asserting rather than trusting.
+    // `None` arm is `(0, false)`. So the two checks in `memoryStatus`
+    // are observationally equivalent on every payload the backend can
+    // send, and reordering them would not change a single real verdict —
+    // which is exactly why the order needs asserting rather than trusting.
     //
     // The claim is the conservative one: with no model, semantic recall
     // is off, full stop, and a stale-index flag cannot make it anything
@@ -146,9 +238,11 @@ describe("StatusCard states", () => {
   });
 
   it("does not claim `live` on a full store that still owes embeddings", async () => {
-    // needsEmbedding > 0 with needsReindex false is neither of the two
-    // named states, and `live` would be a false all-clear. Rust has a
-    // third message for it; the card must not invent a fourth verdict.
+    // Retargeted by fix round 1's Ruling 2, and strengthened rather than
+    // relaxed: the premise is unchanged — a half-filled store must not
+    // read as an all-clear — and it now also pins the positive label, so
+    // a regression to `off` (a misreport: the user's model is configured
+    // and recall is working, just incompletely) is caught too.
     await renderCard({
       ...live,
       embeddedCount: 12,
@@ -157,6 +251,8 @@ describe("StatusCard states", () => {
     });
     await screen.findByRole("region", { name: CARD_NAME });
     expect(screen.queryByText("live")).not.toBeInTheDocument();
+    expect(screen.queryByText("off")).not.toBeInTheDocument();
+    expect(screen.getByText("indexing")).toBeInTheDocument();
   });
 
   it("reports embedded rows against memory plus notes, from Rust's own fields", async () => {
@@ -308,6 +404,116 @@ describe("the card is readable", () => {
     await renderCard(stale);
     const cardEl = await screen.findByRole("region", { name: CARD_NAME });
     for (const el of [cardEl, ...Array.from(cardEl.querySelectorAll("*"))]) {
+      expect(el.getAttribute("class") ?? "").not.toMatch(
+        /#[0-9a-f]{3,8}\b|\brgba?\(|\bhsla?\(|\boklch\(/i,
+      );
+    }
+  });
+});
+
+/**
+ * The 64px rail's status dot.
+ *
+ * A 6px dot is the smallest thing that carries state in 64px, but a dot
+ * on its own is colour-only — and a user who cannot separate the three
+ * tones learns nothing from it. So the label is load-bearing, not
+ * decoration, and these tests treat it that way: the dot must be
+ * *findable by name*, and its name must carry the same words the card
+ * would have shown.
+ *
+ * The dot and the card derive from one function, so the interesting
+ * assertion is not "the dot is red when degraded" but "the dot and the
+ * card cannot disagree" — which is checked by rendering both from the
+ * same payload and comparing the token each resolved.
+ */
+describe("StatusDot, the rail's memory status", () => {
+  beforeEach(() => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  async function renderDot(status: KnowledgeIndexStatus) {
+    vi.spyOn(api, "knowledgeIndexStatus").mockResolvedValue(status);
+    render(<StatusDot />);
+    await act(async () => {});
+    return screen.getByRole("img");
+  }
+
+  it("is a 6px dot, so it needs no room the rail does not have", async () => {
+    const dot = await renderDot(stale);
+    const paint = dot.querySelector("[aria-hidden]")!;
+    expect(paint).toHaveClass("w-1.5", "h-1.5", "rounded-full");
+    // The rail's own width is asserted in Sidebar.test.tsx; what matters
+    // here is that nothing about the dot asks for more than 6px.
+    expect(paint.className).not.toMatch(/(?<![\w-])w-(?!1\.5\b)\d/);
+  });
+
+  it("paints from the same token the chip would, for every payload", async () => {
+    for (const row of MATRIX) {
+      const dot = await renderDot(row.status);
+      const paint = dot.querySelector("[aria-hidden]")!;
+      expect(tokenOf(paint), `dot tone for ${row.text}`).toBe(row.token);
+      dot.remove();
+    }
+  });
+
+  it("carries the card's own words in its accessible name", async () => {
+    for (const row of MATRIX) {
+      const dot = await renderDot(row.status);
+      const name = dot.getAttribute("aria-label") ?? "";
+      expect(name, `the name must carry "${STATUS_TEXT[row.text]}"`).toContain(STATUS_TEXT[row.text]);
+      // "Memory index" is the subject; without it the name is a bare
+      // state word with nothing attached.
+      expect(name).toContain("Memory index");
+      dot.remove();
+    }
+  });
+
+  it("shows the same words on hover, through the rail's own Tooltip", async () => {
+    const dot = await renderDot(stale);
+    fireEvent.mouseEnter(dot.parentElement!);
+    const tip = screen.getByText(`Memory index: ${STATUS_TEXT.reindex}`);
+    expect(tip).toBeInTheDocument();
+    // Tooltip content and the accessible name are the same string, by
+    // construction — the label is computed once and used twice.
+    expect(tip.textContent).toBe(dot.getAttribute("aria-label"));
+  });
+
+  it("reports no state at all when the fetch fails, and does not throw", async () => {
+    vi.spyOn(api, "knowledgeIndexStatus").mockRejectedValue(new Error("down"));
+    render(<StatusDot />);
+    await act(async () => {});
+    expect(api.knowledgeIndexStatus).toHaveBeenCalled();
+    // No dot, no dot at the wrong colour, no empty rail — the same
+    // degradation contract the card keeps.
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
+  });
+
+  it("is a labelled indicator, not a control that does nothing", async () => {
+    const dot = await renderDot(stale);
+    // `role="img"` with a name, deliberately rather than a button: there
+    // is nothing to activate. A button here would advertise an action
+    // ("re-index now?") that does not exist, and would be the first thing
+    // a later commit reaches for to make the dot "keyboard reachable" —
+    // at which point it is a dead control, not an improvement.
+    expect(dot.tagName).toBe("SPAN");
+    expect(dot).toHaveAttribute("role", "img");
+    expect(dot).not.toHaveAttribute("tabindex");
+    // Nothing in the subtree is focusable, so the rail adds no tab stop.
+    expect(dot.querySelector("[tabindex]")).toBeNull();
+    expect(dot.querySelector("button")).toBeNull();
+  });
+
+  it("has no accessibility violations, and is not colour-only", async () => {
+    const dot = await renderDot(stale);
+    expect((await axe(dot)).violations).toHaveLength(0);
+    // The negative control for the whole point of the label: a name
+    // exists, so the state is available without perceiving colour.
+    expect(dot).toHaveAccessibleName();
+  });
+
+  it("hardcodes no colour", async () => {
+    const dot = await renderDot(stale);
+    for (const el of [dot, ...Array.from(dot.querySelectorAll("*"))]) {
       expect(el.getAttribute("class") ?? "").not.toMatch(
         /#[0-9a-f]{3,8}\b|\brgba?\(|\bhsla?\(|\boklch\(/i,
       );

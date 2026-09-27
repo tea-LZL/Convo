@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { axe } from "vitest-axe";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -37,11 +37,19 @@ const LIVE_STATUS: KnowledgeIndexStatus = {
   semanticNote: null,
 };
 
+/** Degraded: a model is configured, but the index is stale. */
+const STALE_STATUS: KnowledgeIndexStatus = {
+  ...LIVE_STATUS,
+  needsReindex: true,
+  semanticNote:
+    "The embedding model changed, so existing vectors are not comparable. They will be rebuilt on the next index pass.",
+};
+
 interface SidebarOptions {
   /** Report `prefers-reduced-motion: reduce` to the component. */
   reducedMotion?: boolean;
-  /** How the memory-index status fetch behaves. */
-  status?: "live" | "reject";
+  /** What the memory-index status fetch returns. */
+  status?: KnowledgeIndexStatus | "reject";
   isMac?: boolean;
   /** Sessions to show, so the conversations region exists to order. */
   sessions?: Session[];
@@ -76,7 +84,7 @@ async function renderSidebar(collapsed = false, opts: SidebarOptions = {}) {
   if (opts.status === "reject") {
     vi.spyOn(api, "knowledgeIndexStatus").mockRejectedValue(new Error("down"));
   } else {
-    vi.spyOn(api, "knowledgeIndexStatus").mockResolvedValue(LIVE_STATUS);
+    vi.spyOn(api, "knowledgeIndexStatus").mockResolvedValue(opts.status ?? LIVE_STATUS);
   }
   useShortcutsStore.setState({ isMac: opts.isMac ?? false });
   usePaletteStore.setState({ open: false, query: "" });
@@ -383,5 +391,89 @@ describe("Sidebar vocabulary", () => {
   it("has no accessibility violations", async () => {
     await renderSidebar(false, { sessions: [session("a")] });
     expect((await axe(aside())).violations).toHaveLength(0);
+  });
+});
+
+/**
+ * The 64px rail's memory status, mounted in the rail rather than tested
+ * in isolation.
+ *
+ * The reason this exists at all: collapsing the sidebar used to remove
+ * the app's *only* signal that recall is degraded, and a user on a narrow
+ * window is the user most likely to be looking at the rail. A 6px dot at
+ * the bottom puts it back, and it takes the same token and the same words
+ * the card would have — so the two surfaces cannot drift into disagreeing
+ * about the same fetch.
+ */
+describe("the collapsed rail keeps a memory status", () => {
+  beforeEach(() => {
+    useSessionsStore.setState({ sessions: [], activeId: null, loading: false, error: null });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  const paint = () => screen.getByRole("img").querySelector("[aria-hidden]")!;
+  const tokenOf = (el: Element) =>
+    el.className.match(/(?:^|\s)(?:bg|text)-(success|warn|text-subtle)\b/)?.[1];
+
+  it("dots the rail when the status is degraded, and names the state", async () => {
+    await renderSidebar(true, { status: STALE_STATUS });
+    const dot = screen.getByRole("img");
+    expect(tokenOf(paint()), "a stale index must read as warn").toBe("warn");
+    // The same words the card would have shown, so the state is available
+    // to someone who cannot separate the colours.
+    expect(dot).toHaveAccessibleName();
+    expect(dot.getAttribute("aria-label")).toContain("needs reindex");
+  });
+
+  it("paints the same token the card would, from the same payload", async () => {
+    // The dot and the card render from one derivation, so this is not a
+    // coincidence worth asserting — it is the property that stops them
+    // from drifting. Compared token-to-token rather than as class
+    // strings: the chip is a tinted fill and the dot is the solid token.
+    await renderSidebar(true, { status: STALE_STATUS });
+    const dotToken = tokenOf(paint());
+    cleanup();
+    await renderSidebar(false, { status: STALE_STATUS });
+    const cardEl = await screen.findByRole("region", { name: "Memory index" });
+    const chipEl = within(cardEl).getByText("needs reindex");
+    expect(tokenOf(chipEl), "chip and dot must resolve the same colour token").toBe(dotToken);
+  });
+
+  it("shows a live index as live, so the dot is not always an alarm", async () => {
+    await renderSidebar(true, { status: LIVE_STATUS });
+    expect(tokenOf(paint())).toBe("success");
+    expect(screen.getByRole("img").getAttribute("aria-label")).toContain("live");
+  });
+
+  it("sits at the bottom of the rail and widens nothing", async () => {
+    await renderSidebar(true, { status: STALE_STATUS });
+    // Still 64px, and the dot is its last child — below Settings, where a
+    // status indicator belongs, not up among the section icons where it
+    // would read as a seventh destination.
+    expect(aside()).toHaveClass("w-12");
+    const dot = screen.getByRole("img");
+    expect(dot.parentElement!.parentElement!.parentElement).toBe(aside());
+    // 6px of paint, and no width of its own to negotiate.
+    expect(paint()).toHaveClass("w-1.5", "h-1.5");
+  });
+
+  it("leaves no dot behind when the fetch fails, and the rail still works", async () => {
+    await renderSidebar(true, { status: "reject" });
+    expect(api.knowledgeIndexStatus, "the status fetch must actually be attempted").toHaveBeenCalled();
+    expect(screen.queryByRole("img"), "a failed fetch must leave no dot").not.toBeInTheDocument();
+    // The rail is still a rail: six icons, a New chat, an expander, and
+    // navigation that works.
+    for (const label of NAV_ORDER) {
+      expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Memory" }));
+    expect(screen.getByTestId("path")).toHaveTextContent("/memory");
+  });
+
+  it("queries the index once per sidebar, whichever branch is mounted", async () => {
+    // The card and the dot are in mutually exclusive branches, so this
+    // must not become two round-trips to the backend.
+    await renderSidebar(true, { status: STALE_STATUS });
+    expect(api.knowledgeIndexStatus).toHaveBeenCalledTimes(1);
   });
 });
