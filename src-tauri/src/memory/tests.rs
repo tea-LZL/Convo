@@ -21,6 +21,7 @@ fn conn_with_settings(pairs: &[(&str, &str)]) -> Connection {
 }
 
 use super::config::{self, ModelRoute, ModelRouting};
+use super::context;
 use super::index;
 use super::retrieve;
 
@@ -2949,4 +2950,143 @@ fn a_pinned_memory_reads_two_distinct_timestamps_in_order() {
         );
         assert!(read[0].updated_at > read[0].created_at);
     }
+}
+
+/// Precedence is the SQL's order, not a sort applied afterwards:
+/// pinned notes, then pinned memories, then this session's notes. A
+/// pinned note outranks a pinned memory because a pin is a deliberate
+/// act and a memory is only a candidate.
+#[test]
+fn pinned_rows_come_back_in_precedence_order() {
+    let conn = migrated_conn();
+    conn.execute("INSERT INTO sessions (id, title) VALUES ('s1','S')", [])
+        .unwrap();
+    conn.execute(
+        "INSERT INTO notes (id, title, body, pinned, source_session_id)
+         VALUES ('n_pin','Pinned','pinned note body',1,'s1')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO notes (id, title, body, pinned, source_session_id)
+         VALUES ('n_ses','Session','session note body',0,'s1')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO memory_items (id, kind, title, content, is_enabled)
+         VALUES ('m_pin','skill','Build','npm run build',1)",
+        [],
+    )
+    .unwrap();
+    // Through the write path rather than the column, so this proves the pin
+    // the app actually sets is the pin the query reads.
+    memory::set_pinned(&conn, "m_pin", true).unwrap();
+
+    let rows = context::pinned_rows(&conn, Some("s1")).unwrap();
+    let ids: Vec<&str> = rows.iter().map(|r| r.owner_id.as_str()).collect();
+    assert_eq!(ids, vec!["n_pin", "m_pin", "n_ses"]);
+}
+
+/// Each group is labelled by where it came from, not by kind: the rendered
+/// heading comes from this string, and a snapshot downstream pins it. The
+/// text carries the title as well as the body, in the same shape the index
+/// embeds, so a row whose vector included the title does not reach the
+/// model without it.
+#[test]
+fn pinned_rows_are_labelled_by_the_group_they_come_from() {
+    let conn = migrated_conn();
+    conn.execute("INSERT INTO sessions (id, title) VALUES ('s1','S')", [])
+        .unwrap();
+    conn.execute(
+        "INSERT INTO notes (id, title, body, pinned, source_session_id)
+         VALUES ('n_pin','Pinned','pinned note body',1,'s1')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO notes (id, title, body, pinned, source_session_id)
+         VALUES ('n_ses',NULL,'session note body',0,'s1')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO memory_items (id, kind, title, content, is_enabled)
+         VALUES ('m_pin','skill','Build','npm run build',1)",
+        [],
+    )
+    .unwrap();
+    memory::set_pinned(&conn, "m_pin", true).unwrap();
+
+    let rows = context::pinned_rows(&conn, Some("s1")).unwrap();
+    let by_id: std::collections::HashMap<&str, &context::ContextRow> =
+        rows.iter().map(|r| (r.owner_id.as_str(), r)).collect();
+
+    assert_eq!(by_id["n_pin"].label, "Notes");
+    assert_eq!(by_id["n_pin"].text, "Pinned\n\npinned note body");
+    assert_eq!(by_id["n_pin"].owner_type, "note");
+
+    assert_eq!(by_id["m_pin"].label, "Pinned memories");
+    assert_eq!(by_id["m_pin"].text, "Build\n\nnpm run build");
+    assert_eq!(by_id["m_pin"].owner_type, "memory");
+
+    assert_eq!(by_id["n_ses"].label, "Notes from this session");
+    // An untitled note contributes only its body: an empty heading would be
+    // a title the user never wrote.
+    assert_eq!(by_id["n_ses"].text, "session note body");
+}
+
+/// A pin the user has since switched off, and a fact a newer memory has
+/// replaced, must not reach the prompt through a query that never asks
+/// whether the row is still true. The session filter is the other half:
+/// one session's notes are not another's context, and a call with no
+/// session has no session's notes to read.
+#[test]
+fn a_pinned_memory_that_is_off_or_replaced_is_not_injected() {
+    let conn = migrated_conn();
+    conn.execute(
+        "INSERT INTO sessions (id, title) VALUES ('s1','One'),('s2','Two')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO memory_items (id, kind, content, is_enabled, pinned)
+         VALUES ('m_on','skill','still true',1,1),
+                ('m_off','skill','switched off',0,1),
+                ('m_gone','skill','replaced',1,1),
+                ('m_plain','skill','never pinned',1,0)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE memory_items SET superseded_by = 'm_on' WHERE id = 'm_gone'",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO notes (id, body, pinned, source_session_id)
+         VALUES ('n_pin','pinned',1,NULL),
+                ('n_s1','mine',0,'s1'),
+                ('n_s2','someone else''s',0,'s2')",
+        [],
+    )
+    .unwrap();
+
+    let mine: Vec<String> = context::pinned_rows(&conn, Some("s1"))
+        .unwrap()
+        .into_iter()
+        .map(|r| r.owner_id)
+        .collect();
+    assert_eq!(
+        mine,
+        vec!["n_pin".to_string(), "m_on".to_string(), "n_s1".to_string()],
+        "the off, replaced and unpinned memories, and the other session's note, are all absent"
+    );
+
+    let background: Vec<String> = context::pinned_rows(&conn, None)
+        .unwrap()
+        .into_iter()
+        .map(|r| r.owner_id)
+        .collect();
+    assert_eq!(background, vec!["n_pin".to_string(), "m_on".to_string()]);
 }
