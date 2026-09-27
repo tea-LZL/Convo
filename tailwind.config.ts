@@ -27,6 +27,14 @@ export default {
           hover: "var(--color-accent-hover)",
           muted: "var(--color-accent-muted)",
         },
+        // Composed from existing vars with color-mix, never a new CSS
+        // custom property. All six built-in themes define the same 26
+        // keys, so a new property would be undefined in every theme and a
+        // Solar user would get Solar's palette with default-coloured new
+        // chrome. A Tailwind alias that composes two existing vars is
+        // theme-following by construction and needs no theme to define it.
+        "nav-active": "color-mix(in oklab, var(--color-accent) 14%, var(--color-surface-2))",
+        "group-header": "var(--color-text-subtle)",
         success: "var(--color-success)",
         warn: "var(--color-warn)",
         error: "var(--color-error)",
@@ -42,6 +50,11 @@ export default {
       boxShadow: {
         panel: "var(--shadow-panel)",
         modal: "var(--shadow-modal)",
+        // A right-edge bloom. A colour alias cannot produce a shadow-*
+        // class on its own, so this has to live here and not in `colors`.
+        // Never animate it — it marks the active nav item, which is
+        // re-rendered whenever the selection changes.
+        "nav-glow": "6px 0 20px color-mix(in oklab, var(--color-accent) 45%, transparent)",
       },
       fontFamily: {
         sans: ["var(--font-ui)"],
