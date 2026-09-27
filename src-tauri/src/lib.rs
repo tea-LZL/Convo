@@ -1,5 +1,6 @@
 mod commands;
 mod db;
+pub mod memory;
 mod ollama_setup;
 mod providers;
 mod services;
