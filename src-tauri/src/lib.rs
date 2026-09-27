@@ -2,7 +2,7 @@ mod commands;
 mod db;
 pub mod memory;
 mod ollama_setup;
-mod providers;
+pub mod providers;
 mod services;
 mod state;
 mod streams;

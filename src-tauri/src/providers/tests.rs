@@ -277,3 +277,150 @@ async fn probe_forwards_the_api_key_to_ollama() {
         head
     );
 }
+
+#[tokio::test]
+async fn ollama_embed_parses_the_embeddings_array() {
+    let url = serve_once(
+        "200 OK",
+        r#"{"embeddings":[[1.0,2.0],[3.0,4.0]]}"#,
+        "application/json",
+    )
+    .await;
+    let provider = OllamaProvider::new(url, None);
+    let out = provider
+        .embed("nomic-embed-text", &["a".to_string(), "b".to_string()])
+        .await
+        .unwrap();
+    assert_eq!(out, vec![vec![1.0, 2.0], vec![3.0, 4.0]]);
+}
+
+#[tokio::test]
+async fn ollama_embed_sends_the_key_to_a_cloud_endpoint() {
+    let (url, captured) = serve_echoing_headers().await;
+    let provider = OllamaProvider::new(url, Some("sk-embed".to_string()));
+    // A malformed body is fine; the assertion is on the request head.
+    let _ = provider.embed("gpt-oss:120b", &["hello".to_string()]).await;
+    let head = captured.lock().await.clone().expect("no request captured");
+    assert!(
+        head.contains("authorization: Bearer sk-embed"),
+        "got:\n{}",
+        head
+    );
+    assert!(head.contains("POST /api/embed"), "got:\n{}", head);
+}
+
+#[tokio::test]
+async fn openai_compat_embed_parses_the_data_array() {
+    let url = serve_once(
+        "200 OK",
+        r#"{"data":[{"embedding":[1.0,2.0]}]}"#,
+        "application/json",
+    )
+    .await;
+    let provider = OpenAiCompatProvider::new(url, None);
+    let out = provider.embed("m", &["a".to_string()]).await.unwrap();
+    assert_eq!(out, vec![vec![1.0, 2.0]]);
+}
+
+#[tokio::test]
+async fn openai_compat_embed_sorts_by_the_response_index() {
+    // Ollama's OpenAI-compatible endpoint does not guarantee the response
+    // order matches the request order. RRF fuses by rank, so an
+    // out-of-order response silently pairs a query with the wrong
+    // document rather than erroring.
+    let url = serve_once(
+        "200 OK",
+        r#"{"data":[{"index":1,"embedding":[3.0,4.0]},{"index":0,"embedding":[1.0,2.0]}]}"#,
+        "application/json",
+    )
+    .await;
+    let provider = OpenAiCompatProvider::new(url, None);
+    let out = provider
+        .embed("m", &["first".to_string(), "second".to_string()])
+        .await
+        .unwrap();
+    assert_eq!(out, vec![vec![1.0, 2.0], vec![3.0, 4.0]]);
+}
+
+#[tokio::test]
+async fn embed_reports_a_missing_endpoint_rather_than_failing_opaquely() {
+    let url = serve_once(
+        "404 Not Found",
+        r#"{"error":"not found"}"#,
+        "application/json",
+    )
+    .await;
+    let provider = OllamaProvider::new(url, None);
+    match provider.embed("m", &["a".to_string()]).await {
+        Err(ProviderError::Api { status: 404, .. }) => {}
+        other => panic!("expected a typed 404, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn embed_rejects_a_response_whose_vector_count_does_not_match_its_inputs() {
+    // One vector for two inputs is worse than an error: the caller would
+    // pair inputs with the wrong vectors.
+    let url = serve_once(
+        "200 OK",
+        r#"{"embeddings":[[1.0,2.0]]}"#,
+        "application/json",
+    )
+    .await;
+    let provider = OllamaProvider::new(url, None);
+    match provider
+        .embed("m", &["a".to_string(), "b".to_string()])
+        .await
+    {
+        Err(ProviderError::Parse(_)) => {}
+        other => panic!(
+            "expected a Parse error for a count mismatch, got {:?}",
+            other
+        ),
+    }
+}
+
+#[tokio::test]
+async fn openai_compat_embed_rejects_a_count_mismatch_too() {
+    let url = serve_once(
+        "200 OK",
+        r#"{"data":[{"index":0,"embedding":[1.0]}]}"#,
+        "application/json",
+    )
+    .await;
+    let provider = OpenAiCompatProvider::new(url, None);
+    assert!(matches!(
+        provider
+            .embed("m", &["a".to_string(), "b".to_string()])
+            .await,
+        Err(ProviderError::Parse(_))
+    ));
+}
+
+#[tokio::test]
+async fn embed_of_an_empty_input_list_needs_no_request() {
+    // A provider with nothing to embed must not spend a round trip. The
+    // loopback server would answer nothing and the test would hang.
+    let provider = OllamaProvider::new("http://127.0.0.1:1".to_string(), None);
+    let out = provider.embed("m", &[]).await.unwrap();
+    assert!(out.is_empty());
+}
+
+#[tokio::test]
+async fn embed_rejects_vectors_of_inconsistent_dimension() {
+    // A corpus where one vector is 768-dim and another is 1024-dim cannot
+    // be compared. Catching it here beats a NaN cosine downstream.
+    let url = serve_once(
+        "200 OK",
+        r#"{"embeddings":[[1.0,2.0],[3.0,4.0,5.0]]}"#,
+        "application/json",
+    )
+    .await;
+    let provider = OllamaProvider::new(url, None);
+    assert!(matches!(
+        provider
+            .embed("m", &["a".to_string(), "b".to_string()])
+            .await,
+        Err(ProviderError::Parse(_))
+    ));
+}

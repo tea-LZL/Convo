@@ -135,6 +135,83 @@ impl Provider for OllamaProvider {
             Ok(Box::pin(parsed) as ProviderStream)
         })
     }
+
+    fn embed<'a>(
+        &'a self,
+        model: &'a str,
+        inputs: &'a [String],
+    ) -> ProviderFuture<'a, Vec<Vec<f32>>> {
+        Box::pin(async move {
+            if inputs.is_empty() {
+                return Ok(vec![]);
+            }
+            let resp = self
+                .auth(self.http.post(self.url("api/embed")))
+                .json(&serde_json::json!({ "model": model, "input": inputs }))
+                .send()
+                .await
+                .map_err(|e| ProviderError::Http(e.to_string()))?;
+            if !resp.status().is_success() {
+                let status = resp.status().as_u16();
+                let body = resp.text().await.unwrap_or_default();
+                return Err(ProviderError::Api { status, body });
+            }
+            let body: OllamaEmbedResponse = resp
+                .json()
+                .await
+                .map_err(|e| ProviderError::Parse(e.to_string()))?;
+            validate_embeddings(&body.embeddings, inputs.len())
+        })
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct OllamaEmbedResponse {
+    embeddings: Vec<Vec<f32>>,
+}
+
+/// Shared post-condition for every embedding response, local or cloud.
+///
+/// Retrieval fuses a query vector against document vectors by position, so
+/// a count mismatch, a ragged set, or a NaN would all corrupt ranking
+/// without ever erroring. All three are refused here, at the boundary,
+/// where there is still enough context to say what went wrong.
+pub(crate) fn validate_embeddings(
+    vectors: &[Vec<f32>],
+    expected: usize,
+) -> ProviderResult<Vec<Vec<f32>>> {
+    if vectors.len() != expected {
+        return Err(ProviderError::Parse(format!(
+            "embedding response returned {} vectors for {} inputs",
+            vectors.len(),
+            expected
+        )));
+    }
+    let dim = match vectors.first() {
+        Some(first) => first.len(),
+        // Zero inputs is legal and needs no validation.
+        None => return Ok(vec![]),
+    };
+    if dim == 0 {
+        return Err(ProviderError::Parse(
+            "embedding response returned a zero-length vector".to_string(),
+        ));
+    }
+    for vector in vectors {
+        if vector.len() != dim {
+            return Err(ProviderError::Parse(format!(
+                "embedding response mixed dimensions: {} and {}",
+                dim,
+                vector.len()
+            )));
+        }
+        if vector.iter().any(|v| !v.is_finite()) {
+            return Err(ProviderError::Parse(
+                "embedding response contained a non-finite value".to_string(),
+            ));
+        }
+    }
+    Ok(vectors.to_vec())
 }
 
 pub(crate) fn parse_ollama_line(line: &str) -> ProviderResult<Option<ChatResponseChunk>> {

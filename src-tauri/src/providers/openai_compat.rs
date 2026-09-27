@@ -171,6 +171,63 @@ impl Provider for OpenAiCompatProvider {
             Ok(Box::pin(parsed) as ProviderStream)
         })
     }
+
+    fn embed<'a>(
+        &'a self,
+        model: &'a str,
+        inputs: &'a [String],
+    ) -> ProviderFuture<'a, Vec<Vec<f32>>> {
+        Box::pin(async move {
+            if inputs.is_empty() {
+                return Ok(vec![]);
+            }
+            let resp = self
+                .auth(self.http.post(self.url("v1/embeddings")))
+                .json(&serde_json::json!({ "model": model, "input": inputs }))
+                .send()
+                .await
+                .map_err(|e| ProviderError::Http(e.to_string()))?;
+            if !resp.status().is_success() {
+                let status = resp.status().as_u16();
+                let body = resp.text().await.unwrap_or_default();
+                return Err(ProviderError::Api { status, body });
+            }
+            let body: OpenAiEmbedResponse = resp
+                .json()
+                .await
+                .map_err(|e| ProviderError::Parse(e.to_string()))?;
+
+            // Ollama's OpenAI-compatible endpoint carries an `index` field
+            // precisely because it does not promise response order. Sorting
+            // by it is what makes the result positionally match the inputs.
+            //
+            // `index` is treated as optional because a server that omits it
+            // entirely is still returning a usable response, just without
+            // ordering information. Erroring there would take embeddings off
+            // the table for that provider over a cosmetic omission.
+            let mut data: Vec<(usize, Vec<f32>)> = body
+                .data
+                .into_iter()
+                .enumerate()
+                .map(|(position, d)| (d.index.unwrap_or(position), d.embedding))
+                .collect();
+            data.sort_by_key(|(index, _)| *index);
+            let vectors: Vec<Vec<f32>> = data.into_iter().map(|(_, v)| v).collect();
+            super::ollama::validate_embeddings(&vectors, inputs.len())
+        })
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct OpenAiEmbedResponse {
+    data: Vec<OpenAiEmbedDatum>,
+}
+
+#[derive(serde::Deserialize)]
+struct OpenAiEmbedDatum {
+    embedding: Vec<f32>,
+    #[serde(default)]
+    index: Option<usize>,
 }
 
 fn find_sse_boundary(buf: &[u8]) -> Option<(usize, usize)> {
