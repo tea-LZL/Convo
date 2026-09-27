@@ -1174,7 +1174,30 @@ async fn recall_rows(
 
 Note the `ContextRow.text` composition: title and content together, matching
 what `index.rs::embeddable_text` embeds. A row whose embedded form carried the
-title should not reach the model without it.bash
+title should not reach the model without it.
+
+- [ ] **Step 5: Call it from `chat_stream_v2`**
+
+In `chat_stream_v2`, replace `system: args.system` with a call to `plan_send`, passing
+`args.system` as the override. The recall query is the last `args.messages` entry whose
+`role == "user"`, trimmed to 2000 characters per spec §6.1; if there is no user message, use
+`""` and let recall return nothing. Release the pooled connection before awaiting — the
+existing code already holds `conn` from the provider lookup, so restructure that block into a
+scope that ends before `plan_send` is called.
+
+- [ ] **Step 6: Run the tests to verify they pass**
+
+Run: `cargo test --manifest-path src-tauri/Cargo.toml plan_send`
+Expected: PASS, 4 tests.
+
+- [ ] **Step 7: Run the full gates**
+
+Run: `cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path src-tauri/Cargo.toml && npm run typecheck`
+Expected: all clean; Rust ≥ 215 passing; `tsc` clean.
+
+- [ ] **Step 8: Commit**
+
+```bash
 git add src-tauri/src/commands/chat_stream.rs src-tauri/src/memory/context_tests.rs \
         src-tauri/src/memory/context.rs
 git commit -m "feat(chat): assemble context in Rust on the send path
