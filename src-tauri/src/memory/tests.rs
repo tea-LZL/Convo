@@ -1548,3 +1548,504 @@ fn an_extraction_every_n_of_zero_or_one_never_blocks_extraction() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Applying a revision
+// ---------------------------------------------------------------------------
+
+use super::revise;
+use super::revise::{Applied, Nearest, RevisionAction};
+
+fn fact(content: &str, confidence: f64) -> extract::ExtractedFact {
+    extract::ExtractedFact {
+        kind: "user_pref".into(),
+        title: Some("T".into()),
+        content: content.into(),
+        tags: None,
+        confidence,
+        is_note: false,
+        note_body: None,
+    }
+}
+
+fn row_named(conn: &Connection, id: &str) -> super::embed::KnowledgeRow {
+    conn.query_row(
+        "SELECT kind, title, content, is_enabled, superseded_by, access_count, updated_at
+         FROM memory_items WHERE id = ?1",
+        params![id],
+        |r| {
+            Ok(super::embed::KnowledgeRow {
+                owner_type: "memory".into(),
+                owner_id: id.into(),
+                kind: r.get(0)?,
+                title: r.get(1)?,
+                content: r.get(2)?,
+                is_enabled: r.get::<_, i64>(3)? != 0,
+                superseded_by: r.get(4)?,
+                access_count: r.get(5)?,
+                updated_at: r.get(6)?,
+            })
+        },
+    )
+    .unwrap()
+}
+
+fn count_rows(conn: &Connection, table: &str) -> i64 {
+    conn.query_row(&format!("SELECT COUNT(*) FROM {}", table), [], |r| r.get(0))
+        .unwrap()
+}
+
+#[test]
+fn an_applied_add_writes_its_kind_and_confidence() {
+    let conn = migrated_conn();
+    conn.execute("INSERT INTO sessions (id, title) VALUES ('s1','S')", [])
+        .unwrap();
+    // Above the 0.80 auto-add gate. At 0.77 this is a Review, not an
+    // Add — which is the gate doing its job, and cost this test a
+    // confusing FOREIGN KEY error before it was spotted.
+    let candidate = fact("brand new fact", 0.95);
+    let decision = revise::decide(&candidate, Some(0.1), None);
+    assert_eq!(decision.action, RevisionAction::Add);
+    let applied = decision.apply(&conn, "s1", &candidate, None, None).unwrap();
+    assert!(matches!(applied, Applied::Added { .. }));
+    let (confidence, kind): (f64, String) = conn
+        .query_row("SELECT confidence, kind FROM memory_items", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    assert!((confidence - 0.95).abs() < 1e-9, "got {}", confidence);
+    assert_eq!(kind, "user_pref");
+}
+
+#[test]
+fn a_review_decision_writes_nothing_to_memory_items() {
+    let conn = migrated_conn();
+    conn.execute("INSERT INTO sessions (id, title) VALUES ('s1','S')", [])
+        .unwrap();
+    add_memory_full(&conn, "m1", "user_pref", "T", "existing durable content");
+    let before = count_rows(&conn, "memory_items");
+    // Below the auto-add gate, so this is a review, not a write.
+    let candidate = fact("something new", 0.2);
+    let decision = revise::decide(&candidate, Some(0.1), None);
+    assert_eq!(decision.action, RevisionAction::Review);
+    let applied = decision.apply(&conn, "s1", &candidate, None, None).unwrap();
+    assert!(matches!(applied, Applied::SentToReview { .. }));
+    assert_eq!(
+        count_rows(&conn, "memory_items"),
+        before,
+        "a review decision wrote a memory anyway"
+    );
+}
+
+#[test]
+fn reinforcing_bumps_the_counters_and_unions_tags() {
+    let conn = migrated_conn();
+    add_memory_full(&conn, "m1", "user_pref", "T", "the same durable fact");
+    conn.execute(
+        "UPDATE memory_items SET access_count = 3, tags = 'a,b' WHERE id = 'm1'",
+        [],
+    )
+    .unwrap();
+    let candidate = fact("the same fact", 0.95);
+    let nearest = Nearest {
+        row: row_named(&conn, "m1"),
+        score: 0.80,
+    };
+    let decision = revise::decide(&candidate, Some(0.80), None);
+    let applied = decision
+        .apply(&conn, "s1", &candidate, Some(&nearest), None)
+        .unwrap();
+    assert!(matches!(applied, Applied::Reinforced { .. }));
+    let (count, tags): (i64, Option<String>) = conn
+        .query_row(
+            "SELECT access_count, tags FROM memory_items WHERE id = 'm1'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(count, 4);
+    let tags = tags.unwrap();
+    assert!(
+        tags.contains('a') && tags.contains('b'),
+        "existing tags lost: {}",
+        tags
+    );
+}
+
+#[test]
+fn superseding_keeps_the_old_row_for_history() {
+    let conn = migrated_conn();
+    add_memory_full(&conn, "old", "decision", "T", "the original decision");
+    let candidate = fact("the reversed decision", 0.95);
+    let nearest = Nearest {
+        row: row_named(&conn, "old"),
+        score: 0.97,
+    };
+    let decision = revise::decide(&candidate, Some(0.97), Some(revise::Verdict::Contradicts));
+    assert_eq!(decision.action, RevisionAction::Supersede);
+    let applied = decision
+        .apply(&conn, "s1", &candidate, Some(&nearest), None)
+        .unwrap();
+    assert!(matches!(applied, Applied::Superseded { .. }));
+    let superseded_by: Option<String> = conn
+        .query_row(
+            "SELECT superseded_by FROM memory_items WHERE id = 'old'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        superseded_by.is_some(),
+        "the old row must point at its replacement"
+    );
+    assert_eq!(
+        count_rows(&conn, "memory_items"),
+        2,
+        "supersede retains history"
+    );
+    // And the superseded row is excluded from recall.
+    assert!(
+        !ids(&retrieve::recall(&conn, &recall_opts("decision"))).contains(&"old"),
+        "a superseded memory is still being recalled"
+    );
+}
+
+#[test]
+fn a_merge_without_supplied_text_goes_to_review_rather_than_inventing_one() {
+    let conn = migrated_conn();
+    conn.execute("INSERT INTO sessions (id, title) VALUES ('s1','S')", [])
+        .unwrap();
+    add_memory_full(&conn, "m1", "user_pref", "T", "prefers dark mode");
+    let candidate = fact("prefers dark mode and a light terminal", 0.95);
+    let nearest = Nearest {
+        row: row_named(&conn, "m1"),
+        score: 0.97,
+    };
+    let decision = revise::decide(&candidate, Some(0.97), Some(revise::Verdict::Complements));
+    assert_eq!(decision.action, RevisionAction::Merge);
+    let before = conn
+        .query_row(
+            "SELECT content FROM memory_items WHERE id = 'm1'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap();
+    // No merged text supplied: refuse rather than overwrite with a guess.
+    let applied = decision
+        .apply(&conn, "s1", &candidate, Some(&nearest), None)
+        .unwrap();
+    assert!(matches!(applied, Applied::SentToReview { .. }));
+    let after = conn
+        .query_row(
+            "SELECT content FROM memory_items WHERE id = 'm1'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap();
+    assert_eq!(before, after, "a merge wrote without supplied text");
+}
+
+#[test]
+fn a_merge_with_supplied_text_writes_it() {
+    let conn = migrated_conn();
+    add_memory_full(&conn, "m1", "user_pref", "T", "prefers dark mode");
+    let candidate = fact("prefers dark mode and a light terminal", 0.95);
+    let nearest = Nearest {
+        row: row_named(&conn, "m1"),
+        score: 0.97,
+    };
+    let decision = revise::decide(&candidate, Some(0.97), Some(revise::Verdict::Complements));
+    let applied = decision
+        .apply(
+            &conn,
+            "s1",
+            &candidate,
+            Some(&nearest),
+            Some("prefers dark mode, with a light terminal"),
+        )
+        .unwrap();
+    assert!(matches!(applied, Applied::Merged { .. }));
+    let content: String = conn
+        .query_row(
+            "SELECT content FROM memory_items WHERE id = 'm1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(content, "prefers dark mode, with a light terminal");
+}
+
+#[test]
+fn a_note_candidate_is_written_as_a_note_not_a_memory() {
+    let conn = migrated_conn();
+    let mut candidate = fact("a summary", 0.95);
+    candidate.is_note = true;
+    candidate.note_body = Some("the long form".into());
+    let decision = revise::decide(&candidate, Some(0.1), None);
+    let applied = decision.apply(&conn, "s1", &candidate, None, None).unwrap();
+    assert!(matches!(applied, Applied::Added { .. }));
+    assert_eq!(
+        count_rows(&conn, "memory_items"),
+        0,
+        "a note landed in memory_items"
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM notes WHERE body = 'the long form'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn applying_a_decision_logs_an_event() {
+    // The access log is what makes reinforcement and decay computable
+    // rather than guessed from updated_at alone.
+    let conn = migrated_conn();
+    let candidate = fact("a brand new fact for the log", 0.95);
+    let decision = revise::decide(&candidate, Some(0.1), None);
+    decision.apply(&conn, "s1", &candidate, None, None).unwrap();
+    let n: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memory_events WHERE event = 'extract'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(n, 1, "an applied add must leave an extract event");
+}
+
+#[test]
+fn a_session_can_run_more_than_one_extraction_round() {
+    // V004's UNIQUE session_id capped a session at one round for life.
+    let conn = migrated_conn();
+    conn.execute("INSERT INTO sessions (id, title) VALUES ('s1','S')", [])
+        .unwrap();
+    for id in ["r1", "r2", "r3"] {
+        conn.execute(
+            "INSERT INTO pending_memory_reviews (id, session_id, status) VALUES (?1,'s1','pending')",
+            params![id],
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM pending_memory_reviews WHERE session_id = 's1'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        3
+    );
+}
+
+#[test]
+fn a_watermark_survives_for_every_session() {
+    let conn = migrated_conn();
+    for id in ["s1", "s2"] {
+        conn.execute(
+            "INSERT INTO sessions (id, title) VALUES (?1,'S')",
+            params![id],
+        )
+        .unwrap();
+        set_watermark(&conn, id, "m-last");
+    }
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM memory_watermark", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 2);
+    set_watermark(&conn, "s1", "m-newer");
+    let latest: String = conn
+        .query_row(
+            "SELECT message_id FROM memory_watermark WHERE session_id = 's1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        latest, "m-newer",
+        "a second write must replace, not duplicate"
+    );
+}
+
+/// Reinforcement averages confidence rather than taking the max. A
+/// repeated 0.7 guess should converge to 0.7, not climb to 0.95 because
+/// it was seen twice; otherwise confidence would reward repetition over
+/// evidence, and every loopback would ratchet its own guesses upward.
+#[test]
+fn reinforcement_averages_confidence_and_does_not_climb_past_the_observation() {
+    let conn = migrated_conn();
+    conn.execute(
+        "INSERT INTO memory_items (id, kind, title, content, is_enabled, confidence, access_count)
+         VALUES ('m1','user_pref','Build','prefers dark mode',1,0.5,0)",
+        [],
+    )
+    .unwrap();
+
+    let candidate = fact("prefers dark mode", 0.9);
+    let decision = revise::decide(&candidate, Some(0.99), Some(revise::Verdict::Identical));
+    let applied = decision
+        .apply(
+            &conn,
+            "",
+            &candidate,
+            Some(&Nearest {
+                row: row_named(&conn, "m1"),
+                score: 0.99,
+            }),
+            None,
+        )
+        .unwrap();
+    match applied {
+        revise::Applied::Reinforced { confidence, .. } => {
+            assert!((confidence - 0.7).abs() < 1e-9, "got {}", confidence);
+        }
+        other => panic!("expected Reinforced, got {:?}", other),
+    }
+
+    // A second identical observation lands on the same 0.9 it started at,
+    // not above it.
+    let applied = revise::decide(&candidate, Some(0.99), Some(revise::Verdict::Identical))
+        .apply(
+            &conn,
+            "",
+            &candidate,
+            Some(&Nearest {
+                row: row_named(&conn, "m1"),
+                score: 0.99,
+            }),
+            None,
+        )
+        .unwrap();
+    match applied {
+        revise::Applied::Reinforced { confidence, .. } => {
+            assert!((confidence - 0.8).abs() < 1e-9, "got {}", confidence);
+            assert!(confidence < candidate.confidence);
+        }
+        other => panic!("expected Reinforced, got {:?}", other),
+    }
+}
+
+/// A note candidate becomes a note row, not a memory row. One index, two
+/// owner types: a memory recalled as a fact and a note recalled as a
+/// document must not be confusable.
+#[test]
+fn an_added_note_candidate_writes_a_note_not_a_memory() {
+    let conn = migrated_conn();
+    let mut candidate = fact("Runbook", 0.95);
+    candidate.is_note = true;
+    candidate.note_body = Some("# Runbook\n\nstep one".to_string());
+
+    let decision = revise::decide(&candidate, Some(0.1), None);
+    let applied = decision.apply(&conn, "", &candidate, None, None).unwrap();
+    assert!(matches!(applied, revise::Applied::Added { .. }));
+
+    let notes: i64 = conn
+        .query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))
+        .unwrap();
+    let memories: i64 = conn
+        .query_row("SELECT COUNT(*) FROM memory_items", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(notes, 1);
+    assert_eq!(memories, 0, "a note must not also land in memory_items");
+}
+
+/// The whole pipeline in one pass: a model's JSON reply goes through the
+/// parser, each candidate through the decision table, and the result
+/// through `apply` into the database.
+///
+/// The gap this closes: every other test starts from an `ExtractedFact`
+/// it built by hand, so a change to the parser and a change to the table
+/// could each pass alone while the seam between them — the field names the
+/// model actually emits versus the ones the table reads — was never
+/// exercised. Feeding raw model output is the only way to see that seam.
+#[test]
+fn a_model_reply_flows_through_parse_decide_and_apply() {
+    let conn = migrated_conn();
+    // What a small local model actually returns, flaws and all: a missing
+    // confidence, a note flagged inline, a hedge that is not a verdict.
+    let reply = r##"[
+        {"kind":"user_pref","title":"Editor","content":"Uses Neovim as the primary editor.","tags":"editor,config","confidence":0.9,"is_note":false,"note_body":null},
+        {"kind":"project_fact","title":"Convo","content":"Convo is a Tauri 2 chat client.","tags":null,"is_note":false,"note_body":null},
+        {"kind":"skill","title":"Release runbook","content":"Tag, push, then wait for CI.","tags":"release","confidence":0.85,"is_note":true,"note_body":"# Release runbook\n\n1. Tag\n2. Push\n3. Wait for CI"},
+        {"kind":"decision","title":"","content":"chose a rewrite over a refactor","tags":null,"confidence":0.6,"is_note":false,"note_body":null}
+    ]"##;
+
+    let candidates = extract::parse_candidates(reply).unwrap();
+    assert_eq!(candidates.len(), 4, "every item in the reply must parse");
+
+    // No confidence field: defaults to 0.5, which is below the add gate, so
+    // a model that omits it proposes rather than writes.
+    assert!(
+        (candidates[1].confidence - 0.5).abs() < 1e-9,
+        "a missing confidence must not read as full confidence, got {}",
+        candidates[1].confidence
+    );
+    // Tags arrive as one string, not an array.
+    assert_eq!(candidates[0].tags.as_deref(), Some("editor,config"));
+    // A note candidate carries its long form.
+    assert!(candidates[2].is_note);
+    assert!(candidates[2]
+        .note_body
+        .as_deref()
+        .unwrap()
+        .contains("Release runbook"));
+
+    // A review always names its session, so the connection needs one.
+    conn.execute("INSERT INTO sessions (id, title) VALUES ('s1','S')", [])
+        .unwrap();
+
+    let mut effects = Vec::new();
+    for candidate in &candidates {
+        // Nothing exists yet, so every candidate is judged against no
+        // neighbour: the branch under test is the add path and the gate.
+        let decision = revise::decide(candidate, Some(0.05), None);
+        // Propagated, not defaulted. An earlier version mapped the error
+        // to a fake review, which turned a real foreign key failure into
+        // an effect vector that still read "review" over zero rows.
+        let applied = decision.apply(&conn, "s1", candidate, None, None).unwrap();
+        effects.push(match applied {
+            revise::Applied::Added { .. } => "added",
+            revise::Applied::SentToReview { .. } => "review",
+            other => panic!("unexpected effect {:?}", other),
+        });
+    }
+    assert_eq!(
+        effects,
+        vec!["added", "review", "added", "review"],
+        "0.9 and 0.85 clear the gate; a defaulted 0.5 and an explicit 0.6 do not"
+    );
+
+    // One memory from the first candidate, one note from the third: the
+    // note is not also a memory row. The two sub-gate candidates are
+    // review rows, not writes, and each applied row logged an event.
+    assert_eq!(count_rows(&conn, "memory_items"), 1);
+    assert_eq!(count_rows(&conn, "notes"), 1);
+    assert_eq!(count_rows(&conn, "pending_memory_reviews"), 2);
+    assert_eq!(count_rows(&conn, "memory_events"), 2);
+}
+
+/// A review without a session is refused rather than half-written. The
+/// foreign key is doing the work here: the row is the inbox entry, and an
+/// inbox entry that cannot name its conversation cannot be re-run or shown
+/// in context. A silent skip would leave the user with no memory and no
+/// queue item and nothing in the log.
+#[test]
+fn a_review_without_a_session_is_refused_rather_than_written() {
+    let conn = migrated_conn();
+    let candidate = fact("a modest claim", 0.6); // below the add gate
+    let decision = revise::decide(&candidate, Some(0.05), None);
+    assert_eq!(decision.action, RevisionAction::Review);
+
+    let result = decision.apply(&conn, "", &candidate, None, None);
+    assert!(
+        result.is_err(),
+        "expected the session foreign key to refuse this, got {:?}",
+        result.map(|a| format!("{:?}", a))
+    );
+    assert_eq!(count_rows(&conn, "pending_memory_reviews"), 0);
+    assert_eq!(count_rows(&conn, "memory_items"), 0);
+}

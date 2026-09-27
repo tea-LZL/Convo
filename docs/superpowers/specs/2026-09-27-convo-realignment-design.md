@@ -452,14 +452,15 @@ tested, but `chat_stream_v2` still receives a `system` string assembled by the
 TypeScript substring scorer at `src/stores/chatStream.ts:736-787`. Wiring is
 Plan 4, which deletes that scorer and moves context assembly into Rust.
 
-### Phase 5 — Extraction + revision
-- [ ] `memory/extract.rs` — watermark trigger, 40-msg/6k-token window, re-targeted defensive parser
-- [ ] `memory/revise.rs` — the §7.4 decision table
-- [ ] `IDENTICAL / CONTRADICTS / COMPLEMENTS` judge call
-- [ ] SUPERSEDE sets `superseded_by` and excludes from recall, retains history
-- [ ] `is_note` candidates route to the Notes tab
-- [ ] Decision-table test: every row of §7.4 has a test
-- [ ] **Gate:** decision table fully covered, extraction end-to-end test green
+### Phase 5 — Extraction + revision — **complete**
+- [x] `memory/extract.rs` — watermark trigger, 40-msg/6k-token window, re-targeted defensive parser
+- [x] `memory/revise.rs` — the §7.4 decision table
+- [x] `IDENTICAL / CONTRADICTS / COMPLEMENTS` judge call
+- [x] SUPERSEDE sets `superseded_by` and excludes from recall, retains history
+- [x] `is_note` candidates route to the Notes tab
+- [x] Decision-table test: every row of §7.4 has a test
+- [x] `memory/index.rs` — embed off the send path; `memory_extract_and_revise` command
+- [x] **Gate:** decision table fully covered, extraction end-to-end test green
 
 ### Phase 6 — Notes
 - [ ] `note_pin`, `note_unlink_memory`; pinned notes always injected

@@ -421,3 +421,97 @@ pub fn should_extract(
         messages,
     }))
 }
+
+// --- running the model ------------------------------------------------------
+
+/// The extraction prompt.
+///
+/// The kind list and the `confidence` / `is_note` fields are additions to
+/// the original, which listed three kinds and no confidence. The rest is
+/// unchanged, including the "never use the keys type, fact, value" clause
+/// and the transient-filtering list, because those encode observed
+/// failures of real local models.
+pub const EXTRACTION_SYSTEM: &str = "You extract durable facts about the user and their work from a conversation. Output ONLY valid JSON: a bare array of objects with exactly these keys: kind, title, content, tags, confidence, is_note, note_body. Do not wrap the array in an object such as extracted_facts. Allowed kind values are exactly 'user_pref' for user preferences, 'project_fact' for project facts, 'decision' for a choice made, 'constraint' for a rule that must be respected, 'skill' for reusable instructions, and 'entity' for a person, service, or repository. confidence is a number from 0 to 1 stating how sure you are. Set is_note to true and put the long form in note_body when the item is a structured document or a runbook rather than a one-line fact. tags must be null or one comma-separated string, never an array. Example: [{\"kind\":\"user_pref\",\"title\":\"Birthday\",\"content\":\"The user's birthday is February 18th.\",\"tags\":null,\"confidence\":0.9,\"is_note\":false,\"note_body\":null}]. Never use the keys type, fact, value, details, fact_type, detail, or context. Never return task/request or communication goal/task items or one-off task details. Include only items likely to remain true across many future sessions — preferences, recurring projects, decisions and the reasoning behind them, standing rules, coding style, role descriptions, environment facts. Skip transient task details, debugging chatter, and one-off questions. Return at most 8 items. If nothing durable is found, return an empty array []. Output ONLY the JSON, no commentary.";
+
+/// Extract candidates from a window, using the caller's provider.
+pub async fn run_extraction(
+    pool: &std::sync::Arc<crate::db::DbPool>,
+    window: &ExtractionWindow,
+    route: Option<(String, String)>,
+) -> Result<Vec<ExtractedFact>, String> {
+    use crate::providers::types::{ChatRequest, MessageContent};
+    use crate::providers::Provider;
+    use crate::providers::{ollama::OllamaProvider, openai_compat::OpenAiCompatProvider};
+    use futures_util::StreamExt;
+
+    let (provider_id, model) = route.ok_or("no extraction model configured")?;
+    let (kind, base_url, api_key) = {
+        let conn = pool.get().map_err(|e| e.to_string())?;
+        let _ = &conn;
+        let found: Option<(String, String)> = conn
+            .query_row(
+                "SELECT kind, COALESCE(base_url, '') FROM providers WHERE id = ?1",
+                params![provider_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok();
+        let (kind, base_url) = found.ok_or("extraction provider not found")?;
+        let key = crate::services::get_api_key(&provider_id);
+        (kind, base_url, key)
+    };
+    let provider: Box<dyn Provider> = match kind.as_str() {
+        "ollama" => Box::new(OllamaProvider::new(base_url, api_key)),
+        "openai_compat" => Box::new(OpenAiCompatProvider::new(base_url, api_key)),
+        other => return Err(format!("unknown provider kind: {}", other)),
+    };
+
+    let convo: String = window
+        .messages
+        .iter()
+        .map(|(role, content)| {
+            format!(
+                "{}: {}",
+                if role == "user" { "Human" } else { "Assistant" },
+                content
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let user = format!(
+        "Conversation:\n\n{}\n\nReturn the JSON array of extracted facts.",
+        convo
+    );
+    let request = ChatRequest {
+        model,
+        messages: vec![MessageContent {
+            role: "user".into(),
+            content: user,
+            thinking: None,
+            images: vec![],
+        }],
+        stream: false,
+        system: Some(EXTRACTION_SYSTEM.to_string()),
+        temperature: Some(0.1),
+        top_p: None,
+        top_k: None,
+        num_ctx: None,
+        repeat_penalty: None,
+        stop: None,
+    };
+    let mut stream = provider.chat_stream(request).await?;
+    let mut out = String::new();
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(chunk) => {
+                if let Some(message) = chunk.message {
+                    out.push_str(&message.content);
+                }
+                if chunk.done {
+                    break;
+                }
+            }
+            Err(e) => return Err(format!("extraction LLM error: {}", e)),
+        }
+    }
+    parse_candidates(&out)
+}

@@ -179,6 +179,7 @@ pub fn run() {
             tasks_cmd::complete_task,
             // Memory
             knowledge_cmd::knowledge_index_status,
+            knowledge_cmd::memory_extract_and_revise,
             knowledge_cmd::memory_recall,
             memory_cmd::list_memory,
             memory_cmd::upsert_memory,

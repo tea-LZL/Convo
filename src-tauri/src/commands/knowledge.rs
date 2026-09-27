@@ -198,3 +198,64 @@ pub fn knowledge_index_status(
         semantic_note,
     })
 }
+
+/// Extract from a session and apply the revision table, all in Rust.
+///
+/// This is the entry point that replaces the browser-side
+/// extract-then-review dance: the frontend queued a review, the model
+/// answered, and a human decided what to keep. Now the revision table
+/// decides the high-confidence cases and the inbox only holds the rest.
+#[tauri::command]
+pub async fn memory_extract_and_revise(
+    pool: State<'_, Arc<DbPool>>,
+    session_id: String,
+    model_id: Option<String>,
+    provider_id: Option<String>,
+) -> Result<Vec<crate::memory::revise::Applied>, String> {
+    let (window, every_n, auto_extract, extraction_route) = {
+        let conn = pool.get().map_err(|e| e.to_string())?;
+        if !config::auto_extract(&conn) {
+            return Ok(Vec::new());
+        }
+        let window = crate::memory::extract::should_extract(&conn, &session_id, 2)
+            .map_err(|e| e.to_string())?;
+        let routing = config::load_routing(&conn);
+        (
+            window,
+            2,
+            true,
+            match (routing.extraction, model_id.clone(), provider_id.clone()) {
+                (Some(route), _, _) => Some((route.provider_id, route.model)),
+                (None, Some(m), Some(p)) => Some((p, m)),
+                (None, _, _) => None,
+            },
+        )
+    };
+    let Some(window) = window else {
+        return Ok(Vec::new());
+    };
+    let _ = (every_n, auto_extract);
+
+    let facts = match crate::memory::extract::run_extraction(&pool, &window, extraction_route).await
+    {
+        Ok(facts) => facts,
+        Err(e) => {
+            tracing::warn!("extraction failed for {}: {}", session_id, e);
+            return Ok(Vec::new());
+        }
+    };
+
+    let mut applied = Vec::new();
+    for candidate in &facts {
+        // Each candidate is independent: one failure must not abandon
+        // the rest, so errors are logged and the loop continues.
+        match crate::memory::revise::apply_candidate(&pool, &session_id, candidate).await {
+            Ok(result) => applied.push(result),
+            Err(e) => tracing::warn!("revision failed for a candidate: {}", e),
+        }
+    }
+
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    crate::memory::extract::set_watermark(&conn, &session_id, &window.watermark_message_id)?;
+    Ok(applied)
+}

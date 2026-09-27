@@ -209,6 +209,18 @@ export interface ExtractedFact {
   note_body?: string | null;
 }
 
+/**
+ * What the Rust revision table did with one candidate. The `review`
+ * variant carries an id because that case is a row in the inbox, not a
+ * write — the caller may want to link to it.
+ */
+export type AppliedRevision =
+  | { effect: "added"; id: string }
+  | { effect: "reinforced"; id: string; confidence: number }
+  | { effect: "superseded"; newId: string; oldId: string }
+  | { effect: "merged"; id: string }
+  | { effect: "review"; reviewId: string };
+
 export interface MemoryReview {
   id: string;
   sessionId: string;
@@ -518,6 +530,18 @@ export const api = {
     invoke<string[]>("get_session_memory_overrides", { sessionId }),
   setSessionMemoryOverrides: (sessionId: string, itemIds: string[]) =>
     invoke<void>("set_session_memory_overrides", { sessionId, itemIds }),
+  /**
+   * Extract and apply in one Rust call. Returns what each candidate did,
+   * so the UI can report "3 remembered, 1 needs review" without owning the
+   * decision. `extractFactsFromSession` below is the older split path and
+   * still backs the manual review flow.
+   */
+  memoryExtractAndRevise: (sessionId: string, modelId?: string, providerId?: string) =>
+    invoke<AppliedRevision[]>("memory_extract_and_revise", {
+      sessionId,
+      modelId: modelId ?? null,
+      providerId: providerId ?? null,
+    }),
   extractFactsFromSession: (sessionId: string, modelId?: string, providerId?: string) =>
     invoke<ExtractedFact[]>("extract_facts_from_session", {
       sessionId,
