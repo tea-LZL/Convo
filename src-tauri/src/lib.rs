@@ -180,6 +180,7 @@ pub fn run() {
             // Memory
             knowledge_cmd::knowledge_index_status,
             knowledge_cmd::memory_extract_and_revise,
+            knowledge_cmd::memory_index_fill,
             knowledge_cmd::memory_recall,
             memory_cmd::list_memory,
             memory_cmd::upsert_memory,

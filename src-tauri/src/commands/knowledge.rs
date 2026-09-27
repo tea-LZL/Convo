@@ -259,3 +259,66 @@ pub async fn memory_extract_and_revise(
     crate::memory::extract::set_watermark(&conn, &session_id, &window.watermark_message_id)?;
     Ok(applied)
 }
+
+/// Fill in the vectors that are missing, and rebuild them if the
+/// embedding model changed.
+///
+/// `knowledge_index_status` reports how many rows are unembedded, and this
+/// is the only thing that reduces that number for rows extraction did not
+/// create: memories added by hand, notes, and anything written while the
+/// embedding route was unconfigured or failing.
+///
+/// The dimension comes from what is already stored, not from
+/// configuration. A configured model and the vectors on disk are the only
+/// two sources, and if they disagree the stored vectors are the truth about
+/// what this index holds — mixing the two would produce confident wrong
+/// scores rather than a visible error.
+#[tauri::command]
+pub async fn memory_index_fill(
+    pool: State<'_, Arc<DbPool>>,
+    embed_notes: bool,
+) -> Result<usize, String> {
+    let (route, dim) = {
+        let conn = pool.get().map_err(|e| e.to_string())?;
+        let route = config::load_routing(&conn)
+            .embedding
+            .ok_or("no embedding model configured")?;
+        let dim: i64 = conn
+            .query_row(
+                "SELECT dim FROM memory_embeddings WHERE model = ?1 LIMIT 1",
+                rusqlite::params![route.model],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        (route, dim.max(0) as usize)
+    };
+    if dim == 0 {
+        return Err(format!(
+            "nothing is embedded for {} yet, so its dimension is unknown; \
+             add one memory with the model enabled first",
+            route.model
+        ));
+    }
+
+    let (provider_kind, base_url) = {
+        let conn = pool.get().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT kind, COALESCE(base_url, '') FROM providers WHERE id = ?1",
+            rusqlite::params![route.provider_id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )
+        .map_err(|_| format!("embedding provider {} not found", route.provider_id))?
+    };
+    let api_key = crate::services::get_api_key(&route.provider_id);
+    let provider: Box<dyn Provider> = match provider_kind.as_str() {
+        "ollama" => Box::new(crate::providers::ollama::OllamaProvider::new(
+            base_url, api_key,
+        )),
+        "openai_compat" => Box::new(crate::providers::openai_compat::OpenAiCompatProvider::new(
+            base_url, api_key,
+        )),
+        other => return Err(format!("unknown provider kind: {}", other)),
+    };
+
+    crate::memory::index::fill_index(&pool, provider.as_ref(), &route.model, dim, embed_notes).await
+}

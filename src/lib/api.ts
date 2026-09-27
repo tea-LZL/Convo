@@ -542,6 +542,14 @@ export const api = {
       modelId: modelId ?? null,
       providerId: providerId ?? null,
     }),
+  /**
+   * Embed everything that is missing a vector, and report how many rows
+   * were written. `embedNotes` gates the note arm: by default only pinned
+   * notes are indexed, because a long-form note library is expensive to
+   * embed and mostly not what a chat query reaches for.
+   */
+  memoryIndexFill: (embedNotes = false) =>
+    invoke<number>("memory_index_fill", { embedNotes }),
   extractFactsFromSession: (sessionId: string, modelId?: string, providerId?: string) =>
     invoke<ExtractedFact[]>("extract_facts_from_session", {
       sessionId,

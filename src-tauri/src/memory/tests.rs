@@ -17,6 +17,7 @@ fn conn_with_settings(pairs: &[(&str, &str)]) -> Connection {
 }
 
 use super::config::{self, ModelRoute, ModelRouting};
+use super::index;
 use super::retrieve;
 
 #[test]
@@ -206,6 +207,25 @@ fn migrated_conn() -> Connection {
         .to_latest(&mut conn)
         .unwrap();
     conn
+}
+
+/// A migrated in-memory pool. `max_size(1)` keeps it to a single
+/// connection so the `:memory:` database is the same one on every `get()` —
+/// the same trick `services.rs` uses.
+fn migrated_pool() -> std::sync::Arc<crate::db::DbPool> {
+    use r2d2::Pool;
+    use r2d2_sqlite::SqliteConnectionManager;
+    let pool = Pool::builder()
+        .max_size(1)
+        .build(SqliteConnectionManager::memory())
+        .expect("pool");
+    {
+        let mut conn = pool.get().unwrap();
+        crate::db::migrations_for_tests()
+            .to_latest(&mut conn)
+            .unwrap();
+    }
+    std::sync::Arc::new(pool)
 }
 
 fn add_memory(conn: &Connection, id: &str, content: &str) {
@@ -2048,4 +2068,329 @@ fn a_review_without_a_session_is_refused_rather_than_written() {
     );
     assert_eq!(count_rows(&conn, "pending_memory_reviews"), 0);
     assert_eq!(count_rows(&conn, "memory_items"), 0);
+}
+
+/// A provider that returns fixed vectors, so the fill path can be tested
+/// without a network or a model. `dim` is what it claims to return, which
+/// is how the mismatch test provokes the dimension guard.
+struct StubEmbedder {
+    dim: usize,
+    /// Vectors per input, or `None` to return the wrong count.
+    per_input: Option<usize>,
+}
+
+#[async_trait::async_trait]
+impl crate::providers::Provider for StubEmbedder {
+    fn list_models<'a>(
+        &'a self,
+    ) -> crate::providers::ProviderFuture<'a, Vec<crate::providers::ModelInfo>> {
+        Box::pin(async { Ok(vec![]) })
+    }
+    fn probe<'a>(&'a self) -> crate::providers::ProbeFuture<'a> {
+        Box::pin(async { crate::providers::ProbeOutcome::Err("stub".into()) })
+    }
+    fn chat_stream<'a>(
+        &'a self,
+        _request: crate::providers::types::ChatRequest,
+    ) -> crate::providers::ProviderFuture<'a, crate::providers::ProviderStream> {
+        Box::pin(async {
+            Err(crate::providers::ProviderError::NotConfigured(
+                "stub".into(),
+            ))
+        })
+    }
+    fn embed<'a>(
+        &'a self,
+        _model: &'a str,
+        inputs: &'a [String],
+    ) -> crate::providers::ProviderFuture<'a, Vec<Vec<f32>>> {
+        let n = self.per_input.unwrap_or(inputs.len());
+        Box::pin(async move { Ok(vec![vec![0.5; self.dim]; n]) })
+    }
+}
+
+/// `fill_index` stores a vector for every row that needs one, and reports
+/// how many it wrote.
+#[tokio::test]
+async fn fill_index_stores_a_vector_for_every_eligible_row() {
+    let pool = migrated_pool();
+    {
+        let conn = pool.get().unwrap();
+        add_memory_full(
+            &conn,
+            "m1",
+            "user_pref",
+            "Build",
+            "builds with npm run build and then vite build",
+        );
+        add_memory_full(
+            &conn,
+            "m2",
+            "user_pref",
+            "Test",
+            "tests run with npm run test and vitest run",
+        );
+    }
+    let written = index::fill_index(
+        &pool,
+        &StubEmbedder {
+            dim: 3,
+            per_input: None,
+        },
+        "e",
+        3,
+        false,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(written, 2);
+    let conn = pool.get().unwrap();
+    let stored: i64 = conn
+        .query_row("SELECT COUNT(*) FROM memory_embeddings", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(stored, 2);
+}
+
+/// A disabled or superseded row is not embedded. Re-embedding a superseded
+/// memory would put a vector back into the index for something recall is
+/// supposed to exclude.
+#[tokio::test]
+async fn fill_index_skips_disabled_and_superseded_rows() {
+    let pool = migrated_pool();
+    {
+        let conn = pool.get().unwrap();
+        add_memory_full(
+            &conn,
+            "m1",
+            "user_pref",
+            "Live",
+            "a preference that is still true today",
+        );
+        add_memory_full(
+            &conn,
+            "m2",
+            "user_pref",
+            "Off",
+            "a preference the user turned off here",
+        );
+        add_memory_full(
+            &conn,
+            "m3",
+            "user_pref",
+            "Old",
+            "a fact that a later memory replaced",
+        );
+        conn.execute("UPDATE memory_items SET is_enabled = 0 WHERE id = 'm2'", [])
+            .unwrap();
+        conn.execute(
+            "UPDATE memory_items SET superseded_by = 'm1' WHERE id = 'm3'",
+            [],
+        )
+        .unwrap();
+    }
+    let written = index::fill_index(
+        &pool,
+        &StubEmbedder {
+            dim: 3,
+            per_input: None,
+        },
+        "e",
+        3,
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(written, 1);
+
+    let conn = pool.get().unwrap();
+    let ids: Vec<String> = conn
+        .prepare("SELECT owner_id FROM memory_embeddings")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(ids, vec!["m1".to_string()]);
+}
+
+/// A dimension mismatch is an error naming both numbers, not a truncated
+/// vector written anyway. A short vector compared against a long one gives a
+/// confident wrong score, which is worse than no semantic recall at all.
+#[tokio::test]
+async fn fill_index_refuses_vectors_of_the_wrong_dimension() {
+    let pool = migrated_pool();
+    {
+        let conn = pool.get().unwrap();
+        add_memory_full(
+            &conn,
+            "m1",
+            "user_pref",
+            "Build",
+            "builds with npm run build and then vite build",
+        );
+    }
+    let err = index::fill_index(
+        &pool,
+        &StubEmbedder {
+            dim: 5,
+            per_input: None,
+        },
+        "e",
+        3,
+        false,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        err.contains('5'),
+        "error should name the returned dim: {}",
+        err
+    );
+    assert!(
+        err.contains('3'),
+        "error should name the index dim: {}",
+        err
+    );
+    let conn = pool.get().unwrap();
+    let stored: i64 = conn
+        .query_row("SELECT COUNT(*) FROM memory_embeddings", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(stored, 0, "a bad vector must not be written");
+}
+
+/// A provider that returns the wrong number of vectors is refused. Pairing
+/// vectors with the wrong rows would corrupt the index in a way nothing
+/// downstream can detect.
+#[tokio::test]
+async fn fill_index_refuses_a_mismatched_vector_count() {
+    let pool = migrated_pool();
+    {
+        let conn = pool.get().unwrap();
+        add_memory_full(
+            &conn,
+            "m1",
+            "user_pref",
+            "Build",
+            "builds with npm run build and then vite build",
+        );
+        add_memory_full(
+            &conn,
+            "m2",
+            "user_pref",
+            "Test",
+            "tests run with npm run test and vitest run",
+        );
+    }
+    let err = index::fill_index(
+        &pool,
+        &StubEmbedder {
+            dim: 3,
+            per_input: Some(1),
+        },
+        "e",
+        3,
+        false,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        err.contains('1'),
+        "error should name what came back: {}",
+        err
+    );
+    assert!(
+        err.contains('2'),
+        "error should name what was asked: {}",
+        err
+    );
+}
+
+/// Running twice writes nothing the second time. The fill must be
+/// idempotent, or a scheduled pass would re-embed the whole index on every
+/// tick and spend a model's time to reproduce rows it already has.
+#[tokio::test]
+async fn fill_index_is_idempotent() {
+    let pool = migrated_pool();
+    {
+        let conn = pool.get().unwrap();
+        add_memory_full(
+            &conn,
+            "m1",
+            "user_pref",
+            "Build",
+            "builds with npm run build and then vite build",
+        );
+    }
+    let first = index::fill_index(
+        &pool,
+        &StubEmbedder {
+            dim: 3,
+            per_input: None,
+        },
+        "e",
+        3,
+        false,
+    )
+    .await
+    .unwrap();
+    let second = index::fill_index(
+        &pool,
+        &StubEmbedder {
+            dim: 3,
+            per_input: None,
+        },
+        "e",
+        3,
+        false,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(first, 1);
+    assert_eq!(second, 0, "a second fill re-embedded a row it already had");
+}
+
+/// Content shorter than `MIN_CONTENT_LENGTH` is not embedded. A three-word
+/// memory is cheaper to match lexically than to embed, and every vector it
+/// adds is a vector a real memory has to compete with.
+#[tokio::test]
+async fn fill_index_skips_content_too_short_to_be_worth_embedding() {
+    let pool = migrated_pool();
+    {
+        let conn = pool.get().unwrap();
+        add_memory_full(&conn, "short", "user_pref", "Hi", "likes tabs");
+        add_memory_full(
+            &conn,
+            "long",
+            "user_pref",
+            "Build",
+            "builds with npm run build and then vite build",
+        );
+    }
+    let written = index::fill_index(
+        &pool,
+        &StubEmbedder {
+            dim: 3,
+            per_input: None,
+        },
+        "e",
+        3,
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(written, 1, "only the long row is worth a vector");
+
+    let conn = pool.get().unwrap();
+    let ids: Vec<String> = conn
+        .prepare("SELECT owner_id FROM memory_embeddings")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(ids, vec!["long".to_string()]);
 }
