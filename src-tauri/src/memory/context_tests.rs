@@ -549,6 +549,108 @@ fn add_memory(conn: &Connection, id: &str, kind: &str, title: &str, content: &st
     .unwrap();
 }
 
+/// A log sink a `tracing` subscriber can write formatted lines into.
+///
+/// Exists because one of the degradations on this path differs from its
+/// broken version *only* in what it logs: both fall back to the same small
+/// window and both send. A test that only asserts the sendable prompt would
+/// pass against the version that loses the error, which is exactly the kind
+/// of test that reads as coverage and is not.
+#[derive(Clone, Default)]
+struct LogSink(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl LogSink {
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().unwrap()).to_string()
+    }
+}
+
+impl std::io::Write for LogSink {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogSink {
+    type Writer = LogSink;
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+/// A context-length query that *fails* is not the same as a model that is
+/// not in the cache, and the two must not look the same in the log.
+///
+/// `MIN(context_length)` over a missing table returns an error, where an
+/// unknown model returns a null. Collapsing them with `.ok()` produced one
+/// message — "no known context length for model X" — for both, so a
+/// database that could not be read was reported as a model that is merely
+/// absent, and a degradation costing every turn its memory was invisible.
+///
+/// The table is dropped rather than the connection broken: the dead-pool
+/// test already covers "no connection at all", and this is the other
+/// failure — the database is fine, one query about it is not.
+#[tokio::test]
+async fn a_failed_context_length_query_is_logged_and_still_sends() {
+    let pool = migrated_pool();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute("INSERT INTO sessions (id, title) VALUES ('s1','S')", [])
+            .unwrap();
+        // Comfortably over the fallback budget, so a fallback to an
+        // *unlimited* budget would inject it and fail the assertion below.
+        add_memory(
+            &conn,
+            "m1",
+            "project_fact",
+            "Deploy runbook",
+            &format!("deploy runbook steps {}", "y".repeat(3000)),
+        );
+        conn.execute_batch("DROP TABLE models;").unwrap();
+    }
+
+    let sink = LogSink::default();
+    let plan = {
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(sink.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        plan_send(&pool, "s1", "deploy runbook", "never-seen", None).await
+    };
+    let logs = sink.text();
+
+    // The send is unaffected either way; what changed is the diagnosis.
+    assert!(
+        plan.system.contains(PERSONA),
+        "the prompt must still be assembled: {}",
+        plan.system
+    );
+    assert_eq!(
+        plan.recalled, 0,
+        "the fallback window still bounds the rows, so an oversized memory is left out"
+    );
+    // The summary line fires in both cases — an absent model and a failed
+    // query both come back as "no length" — and it is `budget_for` that
+    // emits it, a layer above where the two are still distinguishable. The
+    // fix is not to remove it but to add the cause underneath it: before,
+    // this failure produced the summary alone.
+    assert!(
+        logs.contains("no known context length for"),
+        "the summary should still be reported: {logs}"
+    );
+    assert!(
+        logs.contains("could not read the context length for")
+            && logs.contains("no such table: models"),
+        "the query error has to be reported as itself, not only as an absent model: {logs}"
+    );
+}
+
 /// A send with no memories gets the persona and no memory block, and still
 /// sends. The whole degradation contract is that a memory failure is
 /// invisible to the user.
@@ -1130,12 +1232,20 @@ async fn an_unknown_context_length_falls_back_to_a_small_window() {
 /// 4096 window the smallest local model is likely to have, at the pinned
 /// fraction. Asserted apart from the behaviour above so a change to the
 /// constant is a visible diff rather than a test that quietly still passes.
+///
+/// The 4096 is asserted by name here rather than in
+/// `the_spec_constants_have_the_values_the_spec_pins`, which is the test
+/// that pins every other number in `config.rs` — that test lives in a file
+/// this task is scoped away from touching. So this is where the fallback
+/// window's value is pinned, and it should be moved there when the shared
+/// constants test next becomes editable.
 #[test]
 fn the_default_budget_is_the_four_thousand_token_window_at_the_pinned_fraction() {
     let default = super::super::commands::chat_stream::default_budget();
+    assert_eq!(config::FALLBACK_CONTEXT_LENGTH, 4096);
     assert_eq!(
         default,
-        (4096.0 * crate::memory::config::CONTEXT_BUDGET_FRACTION) as usize,
+        (config::FALLBACK_CONTEXT_LENGTH as f64 * config::CONTEXT_BUDGET_FRACTION) as usize
     );
     assert_eq!(default, 614);
 }

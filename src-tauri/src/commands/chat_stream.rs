@@ -123,14 +123,6 @@ fn persist_assistant(
 // Everything below degrades. Nothing in this section returns an error, and
 // nothing in it can prevent a send.
 
-/// The context window assumed when a model's real one is unknown.
-///
-/// 4096 is the smallest window a local model is likely to have, and the
-/// unknown-length case is the one that breaks first — so it is the window
-/// worth planning against. An unlimited budget here is how memory eats a
-/// whole context window and takes the conversation with it.
-const FALLBACK_CONTEXT_LENGTH: u32 = 4096;
-
 /// What one send will use, and how much of it was memory.
 ///
 /// `recalled` is the number of rows the model was actually shown, not the
@@ -144,8 +136,12 @@ pub struct SendPlan {
 }
 
 /// The budget for a model whose context window is not known, in tokens.
+///
+/// The fallback window and the fraction that trims it both come from
+/// `memory::config`, so every number that shapes a prompt lives in one place
+/// rather than split between a command file and a config module.
 pub(crate) fn default_budget() -> usize {
-    (FALLBACK_CONTEXT_LENGTH as f64 * config::CONTEXT_BUDGET_FRACTION) as usize
+    (config::FALLBACK_CONTEXT_LENGTH as f64 * config::CONTEXT_BUDGET_FRACTION) as usize
 }
 
 /// The model's context window, from the cached model metadata.
@@ -156,14 +152,27 @@ pub(crate) fn default_budget() -> usize {
 /// some memory in the prompt, while under-budgeting is the direction that
 /// cannot take the conversation down. A null or non-positive row is not a
 /// window, so it is excluded rather than treated as zero.
+///
+/// The two ways of answering "no" are kept apart. `Ok(None)` is a model
+/// that is simply not in the cache, which is the ordinary state for any
+/// model whose metadata has never been refreshed, and the caller falling
+/// back to a small window is correct rather than a fault. `Err` is the
+/// query itself failing, and `.ok()` would have swallowed that into the
+/// same `None` — leaving a message that names the model when the truth is
+/// that the database could not be read, and making a degradation that costs
+/// every subsequent turn its memory impossible to spot.
 fn context_length_for(conn: &rusqlite::Connection, model: &str) -> Option<i64> {
-    conn.query_row(
+    match conn.query_row(
         "SELECT MIN(context_length) FROM models WHERE name = ?1 AND context_length > 0",
         rusqlite::params![model],
         |row| row.get::<_, Option<i64>>(0),
-    )
-    .ok()
-    .flatten()
+    ) {
+        Ok(length) => length,
+        Err(e) => {
+            tracing::warn!("could not read the context length for {:?}: {}", model, e);
+            None
+        }
+    }
 }
 
 /// The row budget for one model: its context window times the configured
@@ -203,10 +212,11 @@ async fn recall_rows(
             // `None` means every kind, which is what recall should do. An
             // empty `Some` would filter everything out.
             kinds: None,
-            // `config::top_k` already refuses anything below 1, and the
-            // floor here says why: `top_k = 0` recalls nothing, which would
-            // look like the feature was broken rather than like a setting.
-            top_k: config::top_k(&conn).max(1) as usize,
+            // No floor of our own: `config::top_k` rejects anything below 1
+            // already, and a second copy of that rule in a command file is
+            // the same number in two places — one of which nobody will
+            // update when the other changes.
+            top_k: config::top_k(&conn) as usize,
             lambda: retrieve::DEFAULT_LAMBDA,
         }
     };

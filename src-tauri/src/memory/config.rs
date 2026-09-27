@@ -41,6 +41,21 @@ pub const RECENCY_HALF_LIFE_DAYS: f64 = 30.0;
 /// Share of the model's context window the memory block may occupy.
 pub const CONTEXT_BUDGET_FRACTION: f64 = 0.15;
 
+/// The context window assumed for a model whose real one is not known.
+///
+/// A constant and not a setting, because there is nothing to configure: the
+/// value is a judgement about what to assume when the truth is unavailable,
+/// and a user has no better answer than the smallest case. 4096 is the
+/// smallest window a local model is likely to have, which makes it the
+/// assumption that *breaks first* rather than the one that breaks loudest.
+/// An unlimited budget here is how memory eats a whole context window and
+/// takes the conversation with it.
+///
+/// Lives beside [`CONTEXT_BUDGET_FRACTION`] because it is only ever used
+/// with it: the fallback row budget is this times that fraction, so the two
+/// numbers are a single decision split across two constants.
+pub const FALLBACK_CONTEXT_LENGTH: u32 = 4096;
+
 /// Shorter content is not worth a vector: it is noise in a cosine
 /// neighbourhood and a waste of an embedding call.
 pub const MIN_CONTENT_LENGTH: usize = 32;
