@@ -398,6 +398,14 @@ triggers had already indexed — doubling their term frequency and inflating the
 BM25 rank. Measured at -1.73 → -2.46 for one row. Both backfills now use
 .
 
+**Second defect, caught by the final review:** the first backfill was a raw
+`INSERT ... SELECT` over every row, which adds a second posting to rows the V002
+triggers had already indexed — doubling their term frequency and inflating their
+BM25 rank. Measured at -1.73 to -2.46 for one row, i.e. every existing memory
+would have gained a relevance boost it had not earned. Both backfills now use
+`INSERT INTO <fts>(<fts>) VALUES('rebuild')`, which regenerates the index from
+the content table exactly once.
+
 **Defect the migration test caught:** a migration that creates an FTS table and
 its triggers indexes nothing that already exists, because triggers only fire on
 write. The first V006 draft left every pre-existing note unsearchable, and
