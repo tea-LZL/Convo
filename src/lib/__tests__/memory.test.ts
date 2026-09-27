@@ -84,10 +84,13 @@ describe("memory API wrappers", () => {
     );
   });
 
-  it("get_session_memory_overrides calls with session id", async () => {
+  it("get_session_memory_overrides calls with session id and reads the scope", async () => {
     const { api } = await import("../api");
 
-    mockedInvoke.mockResolvedValueOnce(["id1", "id2"] as never);
+    mockedInvoke.mockResolvedValueOnce({
+      itemIds: ["id1", "id2"],
+      configured: true,
+    } as never);
 
     const result = await api.getSessionMemoryOverrides("sess-xyz");
 
@@ -95,19 +98,23 @@ describe("memory API wrappers", () => {
       "get_session_memory_overrides",
       { sessionId: "sess-xyz" }
     );
-    expect(result).toEqual(["id1", "id2"]);
+    expect(result).toEqual({ itemIds: ["id1", "id2"], configured: true });
   });
 
-  it("set_session_memory_overrides sends item ids", async () => {
+  it("set_session_memory_overrides sends item ids and the scope flag", async () => {
     const { api } = await import("../api");
 
     mockedInvoke.mockResolvedValueOnce(undefined as never);
 
-    await api.setSessionMemoryOverrides("sess-xyz", ["id-a", "id-b"]);
+    await api.setSessionMemoryOverrides("sess-xyz", ["id-a", "id-b"], true);
 
+    // The flag is what separates "restricted to these" from "restricted to
+    // nothing" from "never configured", and the first two both send an id
+    // list. Dropping it would turn a chat scoped to nothing into a chat
+    // scoped to everything.
     expect(mockedInvoke).toHaveBeenCalledWith(
       "set_session_memory_overrides",
-      { sessionId: "sess-xyz", itemIds: ["id-a", "id-b"] }
+      { sessionId: "sess-xyz", itemIds: ["id-a", "id-b"], configured: true }
     );
   });
 });

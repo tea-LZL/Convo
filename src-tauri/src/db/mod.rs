@@ -17,6 +17,7 @@ const MIGRATION_V005: &str = include_str!("../../migrations/V005__search_keyring
 const MIGRATION_V006: &str = include_str!("../../migrations/V006__unified_index.sql");
 const MIGRATION_V007: &str = include_str!("../../migrations/V007__extraction_watermark.sql");
 const MIGRATION_V008: &str = include_str!("../../migrations/V008__memory_pin.sql");
+const MIGRATION_V009: &str = include_str!("../../migrations/V009__session_memory_scope.sql");
 
 fn migrations() -> Migrations<'static> {
     Migrations::new(vec![
@@ -28,6 +29,7 @@ fn migrations() -> Migrations<'static> {
         M::up(MIGRATION_V006),
         M::up(MIGRATION_V007),
         M::up(MIGRATION_V008),
+        M::up(MIGRATION_V009),
     ])
 }
 

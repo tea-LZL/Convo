@@ -989,7 +989,7 @@ fn semantic_opts<'a>(session_id: Option<&'a str>) -> retrieve::RecallOptions<'a>
 }
 
 /// Scope a session to `ids`. An empty `ids` is a session that has never
-/// used the feature, which `allowlist_json` reports as an empty list.
+/// used the feature, which `session_allowlist` reports as unrestricted.
 fn scope_session_to(conn: &Connection, session_id: &str, ids: &[&str]) {
     conn.execute(
         "INSERT OR IGNORE INTO sessions (id, title) VALUES (?1,'S')",
@@ -1003,6 +1003,22 @@ fn scope_session_to(conn: &Connection, session_id: &str, ids: &[&str]) {
         )
         .unwrap();
     }
+}
+
+/// Scope a session to nothing, which the override rows alone cannot say.
+/// Goes through the real write path rather than inserting a row, so this
+/// fixture cannot drift from what the modal sends.
+fn deny_all_for_session(conn: &Connection, session_id: &str) {
+    conn.execute(
+        "INSERT OR IGNORE INTO sessions (id, title) VALUES (?1,'S')",
+        params![session_id],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT OR IGNORE INTO session_memory_scope (session_id) VALUES (?1)",
+        params![session_id],
+    )
+    .unwrap();
 }
 
 /// The arm that already worked, pinned anyway: an exclusion the keyword
@@ -1088,13 +1104,13 @@ fn no_session_leaves_a_recall_unrestricted() {
     );
 }
 
-/// An empty override list means "no restriction", and that convention is
-/// load-bearing rather than incidental. `allowlist_json` answers `[]` for
-/// every session that has never touched the feature — which is every
-/// session a user did not go looking for it in — so reading `[]` as
-/// "nothing is allowed" would not fail loudly. It would silently empty the
-/// memory of every session in the library, on every send, and look like a
-/// retrieval bug nobody could reproduce.
+/// An untouched session means "no restriction", and that convention is
+/// load-bearing rather than incidental. `session_allowlist` answers
+/// unrestricted for every session with no scope row and no override rows —
+/// which is every session a user did not go looking for it in — so reading
+/// the empty list as "nothing is allowed" would not fail loudly. It would
+/// silently empty the memory of every session in the library, on every send,
+/// and look like a retrieval bug nobody could reproduce.
 #[test]
 fn an_empty_override_list_leaves_a_recall_unrestricted() {
     let conn = migrated_conn();
@@ -1107,6 +1123,142 @@ fn an_empty_override_list_leaves_a_recall_unrestricted() {
         ids(&hits).contains(&"wifi"),
         "a session with no overrides was filtered to nothing: {:?}",
         ids(&hits)
+    );
+}
+
+/// A session the user scoped to nothing recalls nothing, and that is the
+/// answer they asked for.
+///
+/// The bug this pins: unchecking every memory in the session modal sent an
+/// empty list, which was the same thing as "never configured" — so a user
+/// who said "this chat has no memory" got the whole library back, silently,
+/// with no error anywhere. A deny-all the data layer cannot hold is a
+/// control that lies about what it does.
+///
+/// Both routes are live here, because an exclusion that only the keyword
+/// route honours is the bug d2528ab was about: the vector route has to lose
+/// the same rows, and the merge-time filter has to be the thing that does it.
+#[test]
+fn a_session_scoped_to_nothing_recalls_nothing() {
+    let conn = migrated_conn();
+    knowledge_corpus(&conn);
+    add_semantic_only_memory(&conn, "wifi");
+    deny_all_for_session(&conn, "s1");
+
+    let keyword = retrieve::recall(&conn, &{
+        let mut o = recall_opts("postgres pooling");
+        o.session_id = Some("s1");
+        o
+    });
+    assert!(
+        keyword.is_empty(),
+        "the keyword route answered a session that admits nothing: {:?}",
+        ids(&keyword)
+    );
+
+    let semantic =
+        retrieve::recall_with_query_vector(&conn, &semantic_opts(Some("s1")), STUB_VECTOR);
+    assert!(
+        semantic.is_empty(),
+        "the vector route answered a session that admits nothing: {:?}",
+        ids(&semantic)
+    );
+}
+
+/// The same instruction, seen through the read the UI uses to draw the
+/// boxes: a scoped-to-nothing session has to come back as *configured* with
+/// an empty list, not as an untouched session. Returning the untouched
+/// answer would leave the modal drawing every box checked while recall
+/// returns nothing — the same lie, one layer up.
+#[test]
+fn a_session_scoped_to_nothing_reads_back_as_configured_and_empty() {
+    let conn = migrated_conn();
+    add_memory(&conn, "db-choice", "Chose Postgres over MySQL");
+    deny_all_for_session(&conn, "s1");
+
+    let scope = memory::session_memory_scope(&conn, "s1").unwrap();
+    assert_eq!(
+        scope,
+        memory::SessionMemoryScope {
+            item_ids: Vec::new(),
+            configured: true,
+        },
+        "deny-all must not be readable as never-configured"
+    );
+}
+
+/// And the three states are three states, not two. The third is the one
+/// this change added; the first two are the convention that had to survive
+/// it.
+#[test]
+fn the_scope_reads_back_untouched_scoped_and_cleared() {
+    let mut conn = migrated_conn();
+    add_memory(&conn, "db-choice", "Chose Postgres over MySQL");
+    add_memory(&conn, "db-pool", "The pool is r2d2");
+    conn.execute(
+        "INSERT OR IGNORE INTO sessions (id, title) VALUES ('s1','S')",
+        [],
+    )
+    .unwrap();
+
+    let untouched = memory::SessionMemoryScope {
+        item_ids: Vec::new(),
+        configured: false,
+    };
+    assert_eq!(
+        memory::session_memory_scope(&conn, "s1").unwrap(),
+        untouched
+    );
+
+    memory::write_session_memory_scope(&mut conn, "s1", &["db-choice".to_string()], true).unwrap();
+    assert_eq!(
+        memory::session_memory_scope(&conn, "s1").unwrap(),
+        memory::SessionMemoryScope {
+            item_ids: vec!["db-choice".to_string()],
+            configured: true,
+        }
+    );
+
+    // Checking every box again is the one gesture that means "no
+    // restriction", and it has to clear the scope rather than store a list
+    // of every id.
+    memory::write_session_memory_scope(&mut conn, "s1", &[], false).unwrap();
+    assert_eq!(
+        memory::session_memory_scope(&conn, "s1").unwrap(),
+        untouched
+    );
+    let leftover: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM session_overrides WHERE session_id = 's1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(leftover, 0, "clearing leaves no override rows behind");
+}
+
+/// A session scoped before the scope table existed still reads as scoped.
+/// This is every session a user had already configured when the app
+/// updated, and the migration adds no rows for them, so this is the
+/// compatibility the whole shape rests on: reading them as unrestricted
+/// would silently widen each one to the entire library on the next send.
+#[test]
+fn override_rows_without_a_scope_row_still_read_as_configured() {
+    let conn = migrated_conn();
+    knowledge_corpus(&conn);
+    scope_session_to(&conn, "s1", &["db-choice"]);
+
+    let scope = memory::session_memory_scope(&conn, "s1").unwrap();
+    assert!(scope.configured, "a pre-migration session stays scoped");
+    assert_eq!(scope.item_ids, ["db-choice"]);
+
+    let mut o = recall_opts("postgres");
+    o.session_id = Some("s1");
+    let hits = retrieve::recall(&conn, &o);
+    assert_eq!(
+        ids(&hits),
+        vec!["db-choice"],
+        "and keeps exactly the memories it had"
     );
 }
 
@@ -2780,6 +2932,131 @@ fn a_note_with_no_memories_lists_no_links() {
     )
     .unwrap();
     assert!(notes::memories_for_note(&conn, "n1").unwrap().is_empty());
+}
+
+/// The write half of the link, and the reason a round of extraction can
+/// populate provenance at all. `notes::memories_for_note` is the read the
+/// Notes tab draws its "linked memories" section from, so linking through
+/// the column and reading back through the query is the only version of
+/// this test that proves the UI works.
+#[test]
+fn linking_a_memory_to_a_note_shows_it_in_the_notes_linked_memories() {
+    let conn = migrated_conn();
+    conn.execute(
+        "INSERT INTO notes (id, title, body) VALUES ('n1','Runbook','step one')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO memory_items (id, kind, title, content, is_enabled)
+         VALUES ('m1','skill','Build','npm run build',1)",
+        [],
+    )
+    .unwrap();
+
+    memory::set_source_note(&conn, "n1", "m1").unwrap();
+
+    let links = notes::memories_for_note(&conn, "n1").unwrap();
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].id, "m1");
+    let source: Option<String> = conn
+        .query_row(
+            "SELECT source_note_id FROM memory_items WHERE id = 'm1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(source.as_deref(), Some("n1"));
+    // And the title projection the Memory tab resolves its "from note" chip
+    // with, which was fetching nothing while nothing wrote the column.
+    let titles = notes::all_note_titles(&conn).unwrap();
+    assert_eq!(titles[0].memory_ids, ["m1"]);
+}
+
+/// `source_note_id` was added by `ALTER TABLE`, so it carries no foreign key
+/// to `notes`. An `UPDATE` naming a note that was never written would report
+/// one changed row and leave a dangling id the Notes tab can never resolve —
+/// a claim about origin that resolves to nothing. It is an error instead.
+#[test]
+fn linking_a_memory_to_a_note_that_does_not_exist_is_an_error() {
+    let conn = migrated_conn();
+    conn.execute(
+        "INSERT INTO memory_items (id, kind, title, content, is_enabled)
+         VALUES ('m1','skill','Build','npm run build',1)",
+        [],
+    )
+    .unwrap();
+
+    let err = memory::set_source_note(&conn, "nope", "m1").unwrap_err();
+    assert!(err.contains("nope"), "the error names the note: {err}");
+    let source: Option<String> = conn
+        .query_row(
+            "SELECT source_note_id FROM memory_items WHERE id = 'm1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(source, None, "the failed link wrote nothing");
+}
+
+/// The other half: a memory that is not there is equally a failed claim, and
+/// `UPDATE` reporting zero rows is how a link looks recorded when it was
+/// not.
+#[test]
+fn linking_a_memory_that_does_not_exist_is_an_error() {
+    let conn = migrated_conn();
+    conn.execute(
+        "INSERT INTO notes (id, title, body) VALUES ('n1','Runbook','step one')",
+        [],
+    )
+    .unwrap();
+
+    let err = memory::set_source_note(&conn, "n1", "nope").unwrap_err();
+    assert!(err.contains("nope"), "the error names the memory: {err}");
+}
+
+/// Unlinking has to keep working once linking is possible, and it has to
+/// clear the column rather than leave a second copy of the claim behind.
+/// Before extraction wrote `source_note_id`, this path was unreachable in
+/// practice — there was nothing to unlink.
+#[test]
+fn a_link_can_be_undone_by_unlinking_it() {
+    let conn = migrated_conn();
+    conn.execute(
+        "INSERT INTO notes (id, title, body) VALUES ('n1','Runbook','step one')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO memory_items (id, kind, title, content, is_enabled)
+         VALUES ('m1','skill','Build','npm run build',1)",
+        [],
+    )
+    .unwrap();
+    memory::set_source_note(&conn, "n1", "m1").unwrap();
+    assert_eq!(notes::memories_for_note(&conn, "n1").unwrap().len(), 1);
+
+    notes::unlink(&conn, "n1", "m1").unwrap();
+
+    assert!(notes::memories_for_note(&conn, "n1").unwrap().is_empty());
+    let source: Option<String> = conn
+        .query_row(
+            "SELECT source_note_id FROM memory_items WHERE id = 'm1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(source, None, "the memory's source note is NULL again");
+    // The memory itself is untouched: unlinking is a claim about origin, not
+    // a delete.
+    let content: String = conn
+        .query_row(
+            "SELECT content FROM memory_items WHERE id = 'm1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(content, "npm run build");
 }
 
 /// Both note readers read `pinned` positionally, so a column dropped or

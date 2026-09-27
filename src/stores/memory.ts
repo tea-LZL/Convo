@@ -45,7 +45,11 @@ interface MemoryState {
   upsert: (item: Parameters<typeof api.upsertMemory>[0]) => Promise<string>;
   toggle: (id: string, enabled: boolean) => Promise<void>;
   remove: (id: string) => Promise<void>;
-  setSessionOverrides: (sessionId: string, itemIds: string[]) => Promise<void>;
+  /**
+   * `configured: false` clears the chat's scope; `configured: true` with an
+   * empty list restricts it to nothing. See `SessionMemoryScope`.
+   */
+  setSessionOverrides: (sessionId: string, itemIds: string[], configured: boolean) => Promise<void>;
   /** Per-session override lists, written by the session-memory modal. */
   _overrides: Record<string, string[] | null>;
 }
@@ -103,10 +107,17 @@ export const useMemoryStore = create<MemoryState>((set, get) => ({
     set({ _overrides: {} });
     await refreshAfterMutation(get().refresh);
   },
-  setSessionOverrides: async (sessionId, itemIds) => {
-    await api.setSessionMemoryOverrides(sessionId, itemIds);
+  setSessionOverrides: async (sessionId, itemIds, configured) => {
+    await api.setSessionMemoryOverrides(sessionId, itemIds, configured);
     set((state) => ({
-      _overrides: { ...state._overrides, [sessionId]: [...itemIds] },
+      // The cache keeps the two empty answers apart: an unscoped chat is
+      // null, a chat scoped to nothing is an empty list. Collapsing them
+      // here would make a "this chat has no memory" instruction read back
+      // as "nothing is restricted" for anything that consults the cache.
+      _overrides: {
+        ...state._overrides,
+        [sessionId]: configured ? [...itemIds] : null,
+      },
     }));
   },
 }));

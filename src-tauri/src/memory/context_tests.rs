@@ -792,6 +792,66 @@ async fn a_pinned_note_is_injected_without_an_embedding_model() {
     assert!(plan.recalled >= 1);
 }
 
+/// The session-memory modal's copy promises two things about a pin: that a
+/// pinned memory is sent in every chat, and — the case a user is most
+/// likely to get wrong — that unchecking it does *not* stop it being sent.
+/// The second half is the load-bearing one, because unchecking is the only
+/// control in that modal that looks like a switch.
+///
+/// Both halves, on the real send path, with the session scoped to nothing so
+/// the allowlist is doing its most work: the pinned memory is in the prompt
+/// and the unpinned one is not. `pinned_rows` reads `memory_items.pinned`
+/// directly and never passes through the allowlist, which is exactly why
+/// this holds.
+#[tokio::test]
+async fn a_pinned_memory_is_sent_even_when_the_session_excludes_everything() {
+    let pool = migrated_pool();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute("INSERT INTO sessions (id, title) VALUES ('s1','S')", [])
+            .unwrap();
+        add_memory(
+            &conn,
+            "pinned-one",
+            "project_fact",
+            "Deploy rule",
+            "the billing service runs on Postgres",
+        );
+        add_memory(
+            &conn,
+            "plain-one",
+            "project_fact",
+            "Deploy note",
+            "the deploy runbook lives in the ops repository",
+        );
+        conn.execute(
+            "UPDATE memory_items SET pinned = 1 WHERE id = 'pinned-one'",
+            [],
+        )
+        .unwrap();
+        // "This chat has no memory", the answer the override rows alone
+        // could not express.
+        conn.execute(
+            "INSERT INTO session_memory_scope (session_id) VALUES ('s1')",
+            [],
+        )
+        .unwrap();
+    }
+
+    let plan = plan_send(&pool, "s1", "which database deploy", "m", None).await;
+
+    assert!(
+        plan.system.contains("Postgres"),
+        "a pinned memory is injected regardless of the session allowlist: {}",
+        plan.system
+    );
+    assert!(
+        !plan.system.contains("ops repository"),
+        "an unpinned memory the session excluded must stay out: {}",
+        plan.system
+    );
+}
+
 /// §6.4: a failing embed call must not fail the send, and BM25 has to reach
 /// the prompt without it.
 ///

@@ -227,6 +227,21 @@ export interface MemorySearchHit {
   snippet: string;
 }
 
+/**
+ * What one chat's memory list is scoped to.
+ *
+ * `configured: false` is a chat that has never touched the feature: every
+ * enabled memory is eligible, which is what an empty list has always meant
+ * and must keep meaning, or every untouched chat in the library would lose
+ * its memory. `configured: true` with an empty `itemIds` is the instruction
+ * "nothing is eligible in this chat" — an answer the ids alone could not
+ * carry, because they are also what an untouched chat looks like.
+ */
+export interface SessionMemoryScope {
+  itemIds: string[];
+  configured: boolean;
+}
+
 export interface ExtractedFact {
   kind: string;
   title: string | null;
@@ -608,9 +623,16 @@ export const api = {
     invoke<MemorySearchHit[]>("search_memory", { query, kind: kind ?? null, limit: 30 }),
   getEnabledMemory: () => invoke<MemoryItem[]>("get_enabled_memory"),
   getSessionMemoryOverrides: (sessionId: string) =>
-    invoke<string[]>("get_session_memory_overrides", { sessionId }),
-  setSessionMemoryOverrides: (sessionId: string, itemIds: string[]) =>
-    invoke<void>("set_session_memory_overrides", { sessionId, itemIds }),
+    invoke<SessionMemoryScope>("get_session_memory_overrides", { sessionId }),
+  /**
+   * `configured: false` clears the chat's scope entirely and `itemIds` is
+   * ignored. `configured: true` with an empty `itemIds` restricts the chat
+   * to nothing, which is what a user who unchecks every box meant. Sending
+   * the empty list as `configured: false` instead would hand the whole
+   * library back, which is the bug `SessionMemoryScope` exists to end.
+   */
+  setSessionMemoryOverrides: (sessionId: string, itemIds: string[], configured: boolean) =>
+    invoke<void>("set_session_memory_overrides", { sessionId, itemIds, configured }),
   /**
    * Extract and apply in one Rust call. Returns what each candidate did,
    * so the UI can report "3 remembered, 1 needs review" without owning the

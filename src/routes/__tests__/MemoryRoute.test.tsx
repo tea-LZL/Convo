@@ -163,10 +163,21 @@ describe("MemoryRoute pinning", () => {
   // body in the library. The refresh runs after every pin click, so a pasted
   // document was crossing the IPC boundary on every click of a button that
   // has nothing to do with notes.
-  it("resolves every row's source note in one title-only call, not one per row", async () => {
-    vi.mocked(invoke).mockImplementation(async (command) => {
-      if (command === "list_memory") return [memory("m-1"), memory("m-2"), memory("m-3")];
+  //
+  // The assertion is one call per *refresh*, not "exactly one call ever". A
+  // count pinned to a single cycle fails the moment a legitimate second
+  // refresh is added — a stale-comment fix, a manual reload button — which
+  // is an unrelated reason to fail and trains the reader to re-pin the
+  // number. Tying the two call counts together is the property that was
+  // actually wanted: the note projection costs one query per refresh, and
+  // neither count moves with the number of rendered rows.
+  it("resolves every row's source note once per refresh, not once per row", async () => {
+    const rows = [memory("m-1"), memory("m-2"), memory("m-3")];
+    let pinned = false;
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      if (command === "list_memory") return rows.map((row) => ({ ...row, pinned: pinned && row.id === "m-1" }));
       if (command === "list_memory_reviews") return [];
+      if (command === "set_memory_pinned") pinned = (args as { pinned: boolean }).pinned;
       // m-1 and m-3 came from the same note; m-2 came from nowhere. Keyed by
       // memory id, so two notes and three rows are still one query.
       if (command === "list_note_titles") return [
@@ -182,11 +193,24 @@ describe("MemoryRoute pinning", () => {
       </MemoryRouter>,
     );
 
+    const calls = (command: string) =>
+      vi.mocked(invoke).mock.calls.filter(([c]) => c === command).length;
+
     await waitFor(() => expect(screen.getAllByText(/from note: Release notes/)).toHaveLength(2));
-    // The row with no source note is not labelled, and the query that
-    // resolves the labels is not issued per row.
+    // The row with no source note is not labelled, and all three rows are up.
     expect(screen.getAllByRole("button", { name: /^(Pin|Unpin) Pref m-2/ })).toHaveLength(1);
-    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "list_note_titles")).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: /^(Pin|Unpin) Pref m-/ })).toHaveLength(3);
+    // Three rows, one call: a per-row lookup would be three.
+    expect(calls("list_note_titles")).toBe(calls("list_memory"));
+    expect(calls("list_note_titles")).toBe(1);
+
+    // A second refresh costs a second call — one per cycle — and the counts
+    // stay locked together, so neither scales with the rows on screen.
+    fireEvent.click(screen.getByRole("button", { name: /Pin Pref m-1/ }));
+    await waitFor(() => expect(calls("list_memory")).toBe(2));
+    expect(calls("list_note_titles")).toBe(calls("list_memory"));
+    expect(calls("list_note_titles")).toBe(2);
+
     // The bodies stay in the database. A route that reached for
     // `list_notes` here would render identically and cost megabytes.
     expect(invoke).not.toHaveBeenCalledWith("list_notes", expect.anything());

@@ -466,9 +466,13 @@ fn memory_bm25(
     expression: &str,
     terms: &[String],
     kinds_json: &str,
-    allowlist_json: &str,
+    allowlist: &Allowlist,
     limit: usize,
 ) -> rusqlite::Result<Vec<Bm25Hit>> {
+    // The restriction is `?3` and the ids are `?4` rather than the other way
+    // round: `json_array_length = 0` has to keep meaning "unrestricted" for
+    // every session that has never been scoped, and a session scoped to
+    // nothing has to be expressible at all. See `Allowlist`.
     let sql = "
         SELECT m.id, m.kind, m.title, m.content, m.is_enabled,
                m.superseded_by, m.access_count, m.updated_at
@@ -478,14 +482,20 @@ fn memory_bm25(
           AND m.is_enabled = 1
           AND m.superseded_by IS NULL
           AND m.kind IN (SELECT value FROM json_each(?2))
-          AND (json_array_length(?3) = 0
-               OR m.id IN (SELECT value FROM json_each(?3)))
+          AND (?3 = 0
+               OR m.id IN (SELECT value FROM json_each(?4)))
         ORDER BY rank
-        LIMIT ?4
+        LIMIT ?5
     ";
     let mut stmt = conn.prepare(sql)?;
     let rows = stmt.query_map(
-        params![expression, kinds_json, allowlist_json, limit as i64],
+        params![
+            expression,
+            kinds_json,
+            allowlist.restricted as i64,
+            allowlist.json,
+            limit as i64
+        ],
         |row| {
             Ok(Bm25Hit {
                 row: KnowledgeRow {
@@ -517,40 +527,54 @@ fn note_bm25(
     conn: &rusqlite::Connection,
     expression: &str,
     terms: &[String],
-    allowlist_json: &str,
+    allowlist: &Allowlist,
     limit: usize,
 ) -> rusqlite::Result<Vec<Bm25Hit>> {
     // Notes carry no kind, so a kind filter cannot apply to them. When the
     // caller filtered to specific kinds, notes are excluded outright
     // rather than leaking past the filter.
+    //
+    // Notes answer to the same allowlist as memories, and have always done
+    // so: `session_overrides` names memory ids only, so scoping a session
+    // to any subset of memories also takes its notes out of keyword
+    // recall. That is pre-existing, and consistent for the scoped-to-nothing
+    // case as well.
     let sql = "
         SELECT n.id, n.title, n.body, n.updated_at
         FROM notes_fts
         JOIN notes n ON n.rowid = notes_fts.rowid
         WHERE notes_fts MATCH ?1
-          AND (json_array_length(?2) = 0
-               OR n.id IN (SELECT value FROM json_each(?2)))
+          AND (?2 = 0
+               OR n.id IN (SELECT value FROM json_each(?3)))
         ORDER BY rank
-        LIMIT ?3
+        LIMIT ?4
     ";
     let mut stmt = conn.prepare(sql)?;
-    let rows = stmt.query_map(params![expression, allowlist_json, limit as i64], |row| {
-        Ok(Bm25Hit {
-            row: KnowledgeRow {
-                owner_type: "note".into(),
-                owner_id: row.get(0)?,
-                kind: "note".into(),
-                title: row.get(1)?,
-                content: row.get(2)?,
-                is_enabled: true,
-                superseded_by: None,
-                access_count: 0,
-                updated_at: row.get(3)?,
-            },
-            rank: 0,
-            terms: Vec::new(),
-        })
-    })?;
+    let rows = stmt.query_map(
+        params![
+            expression,
+            allowlist.restricted as i64,
+            allowlist.json,
+            limit as i64
+        ],
+        |row| {
+            Ok(Bm25Hit {
+                row: KnowledgeRow {
+                    owner_type: "note".into(),
+                    owner_id: row.get(0)?,
+                    kind: "note".into(),
+                    title: row.get(1)?,
+                    content: row.get(2)?,
+                    is_enabled: true,
+                    superseded_by: None,
+                    access_count: 0,
+                    updated_at: row.get(3)?,
+                },
+                rank: 0,
+                terms: Vec::new(),
+            })
+        },
+    )?;
     let mut out: Vec<Bm25Hit> = rows.collect::<rusqlite::Result<Vec<_>>>()?;
     for (index, hit) in out.iter_mut().enumerate() {
         hit.rank = index + 1;
@@ -565,31 +589,31 @@ fn note_bm25(
 /// query is specific. When it finds nothing, a relaxed OR pass runs
 /// instead: a three-word query where all three must appear is a high bar,
 /// and returning nothing is worse than returning something weaker.
+#[allow(clippy::too_many_arguments)]
 fn bm25_route(
     conn: &rusqlite::Connection,
     query: &str,
     kinds_json: &str,
-    allowlist_json: &str,
+    allowlist: &Allowlist,
     include_notes: bool,
     limit: usize,
 ) -> Vec<Bm25Hit> {
     let Some((expression, terms)) = fts_expression(query, " AND ") else {
         return Vec::new();
     };
-    let mut hits = memory_bm25(conn, &expression, &terms, kinds_json, allowlist_json, limit)
-        .unwrap_or_default();
+    let mut hits =
+        memory_bm25(conn, &expression, &terms, kinds_json, allowlist, limit).unwrap_or_default();
     if hits.is_empty() {
         if let Some((relaxed, _)) = fts_expression(query, " OR ") {
-            hits = memory_bm25(conn, &relaxed, &[], kinds_json, allowlist_json, limit)
-                .unwrap_or_default();
+            hits =
+                memory_bm25(conn, &relaxed, &[], kinds_json, allowlist, limit).unwrap_or_default();
         }
     }
     if include_notes {
-        let mut notes =
-            note_bm25(conn, &expression, &terms, allowlist_json, limit).unwrap_or_default();
+        let mut notes = note_bm25(conn, &expression, &terms, allowlist, limit).unwrap_or_default();
         if notes.is_empty() {
             if let Some((relaxed, _)) = fts_expression(query, " OR ") {
-                notes = note_bm25(conn, &relaxed, &[], allowlist_json, limit).unwrap_or_default();
+                notes = note_bm25(conn, &relaxed, &[], allowlist, limit).unwrap_or_default();
             }
         }
         hits.append(&mut notes);
@@ -691,41 +715,159 @@ fn all_indexed_rows(
     Ok(out)
 }
 
-/// Resolve a session's override list into a JSON array of ids.
+/// A session's memory allowlist, resolved once per recall.
 ///
-/// An absent row, or a row with no overrides, means "no restriction" —
-/// which is what `buildContextBlock` has always meant by an empty list.
-fn allowlist_json(conn: &rusqlite::Connection, session_id: Option<&str>) -> String {
+/// Two facts, and the second is the one the shape exists for. The SQL reads
+/// `json_array_length(json) = 0` as "no restriction", which is right for a
+/// session that has never touched the feature and catastrophic for one that
+/// was told to admit nothing: the two are the same empty array. `restricted`
+/// is the bit that tells them apart, and it is carried beside the ids
+/// rather than encoded in them — a fake id inside the list would be a lie
+/// the rest of the system has to know not to believe.
+struct Allowlist {
+    /// `["id", ...]` for the keyword route's `json_each`. Empty when nothing
+    /// is admitted, which is only ever *restricted* when `restricted` is
+    /// also true.
+    json: String,
+    /// Whether this list is a restriction at all. `false` means every memory
+    /// is eligible; `true` with an empty `json` means none is.
+    restricted: bool,
+}
+
+impl Allowlist {
+    /// No restriction: every session with no scope row, and every recall
+    /// that names no session at all.
+    fn unrestricted() -> Self {
+        Allowlist {
+            json: "[]".to_string(),
+            restricted: false,
+        }
+    }
+}
+
+/// Resolve a session's override list into the ids it admits and whether it
+/// is a restriction.
+///
+/// Three answers, and the third is the reason this returns a struct:
+/// no session and no rows means no restriction; rows mean the session is
+/// scoped to exactly those rows; a `session_memory_scope` row with no
+/// override rows means the session is scoped to nothing. An override row on
+/// its own still counts as scoped, because that is what every session
+/// written before the scope table existed has, and reading it as
+/// unrestricted would silently widen those sessions to the whole library.
+fn session_allowlist(conn: &rusqlite::Connection, session_id: Option<&str>) -> Allowlist {
     let Some(session_id) = session_id else {
-        return "[]".to_string();
+        return Allowlist::unrestricted();
     };
-    let ids: Vec<String> = conn
+    let mut stmt = match conn
         .prepare("SELECT item_id FROM session_overrides WHERE session_id = ?1 ORDER BY item_id")
-        .and_then(|mut stmt| {
-            stmt.query_map(params![session_id], |r| r.get::<_, String>(0))
-                .map(|rows| rows.filter_map(|r| r.ok()).collect())
-        })
-        .unwrap_or_default();
-    serde_json::to_string(&ids).unwrap_or_else(|_| "[]".to_string())
+    {
+        Ok(stmt) => stmt,
+        Err(e) => {
+            // Degrading to no restriction is deliberate — a settings-shaped
+            // row must never be the reason recall returns nothing — but
+            // silence would make a corrupt overrides table look identical to
+            // a healthy one. Name what failed.
+            tracing::warn!("could not read session memory overrides: {}", e);
+            return Allowlist::unrestricted();
+        }
+    };
+    let rows = match stmt.query_map(rusqlite::params![session_id], |r| r.get::<_, String>(0)) {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(
+                session_id,
+                "could not read the session memory overrides: {}",
+                e
+            );
+            return Allowlist::unrestricted();
+        }
+    };
+    let mut ids: Vec<String> = Vec::new();
+    let mut skipped = 0usize;
+    let mut first_error: Option<rusqlite::Error> = None;
+    for row in rows {
+        match row {
+            Ok(id) => ids.push(id),
+            Err(e) => {
+                skipped += 1;
+                first_error.get_or_insert(e);
+            }
+        }
+    }
+    if skipped > 0 {
+        // Skipping is the only direction available — an id that cannot be
+        // read cannot be matched — so this WIDENS recall: a memory the user
+        // excluded becomes eligible again. Better than a query error
+        // emptying every session's memory, and only safe because it is
+        // loud.
+        tracing::warn!(
+            session_id,
+            skipped,
+            error = ?first_error,
+            "session memory overrides had unreadable rows; the memories they named are \
+             eligible for recall again for this session"
+        );
+    }
+    if !ids.is_empty() {
+        return Allowlist {
+            json: serde_json::to_string(&ids).unwrap_or_else(|_| "[]".to_string()),
+            restricted: true,
+        };
+    }
+    let scoped: Result<i64, rusqlite::Error> = conn.query_row(
+        "SELECT COUNT(*) FROM session_memory_scope WHERE session_id = ?1",
+        rusqlite::params![session_id],
+        |r| r.get(0),
+    );
+    match scoped {
+        // A scope row with no override rows: this session admits nothing,
+        // and that is what the user asked for. See the migration.
+        Ok(count) if count > 0 => Allowlist {
+            json: "[]".to_string(),
+            restricted: true,
+        },
+        Ok(_) => Allowlist::unrestricted(),
+        Err(e) => {
+            tracing::warn!(
+                session_id,
+                "could not read the session memory scope; treating it as unrestricted: {}",
+                e
+            );
+            Allowlist::unrestricted()
+        }
+    }
 }
 
 /// The ids a session's overrides admit, or `None` when they admit all of
 /// them.
 ///
-/// `None` and an empty set both mean "no restriction" — the same convention
-/// [`allowlist_json`] documents and `bm25_route` relies on, where the SQL
-/// treats a zero-length array as matching every row. That convention is
-/// load-bearing: `allowlist_json` answers `[]` for every session that has
-/// no override rows, so reading an empty set as "nothing is allowed" would
-/// not fail loudly, it would silently empty the memory of every session in
-/// the library. A malformed array degrades the same way, because a bad
-/// settings-shaped row must never be the reason recall returns nothing.
-fn admitted_ids(allowlist_json: &str) -> Option<std::collections::HashSet<String>> {
-    let ids: Vec<String> = serde_json::from_str(allowlist_json).unwrap_or_default();
-    if ids.is_empty() {
+/// `None` and an empty set are different answers and no longer overlap.
+/// `None` is "no restriction" — a recall that names no session, or one
+/// whose overrides could not be read, and the convention the SQL's
+/// `json_array_length = 0` branch implements. `Some(empty)` is a session
+/// scoped to nothing, which is the instruction "this chat has no memory".
+///
+/// A malformed array degrades to `None` for the same reason the read above
+/// does: a bad settings-shaped row must never be the reason recall returns
+/// nothing. Unlike a bad row, this one is logged — a table that is silently
+/// ignored looks exactly like a healthy one, and the user cannot tell that
+/// the restriction they set is not being applied.
+fn admitted_ids(allowlist: &Allowlist) -> Option<std::collections::HashSet<String>> {
+    if !allowlist.restricted {
         return None;
     }
-    Some(ids.into_iter().collect())
+    match serde_json::from_str::<Vec<String>>(&allowlist.json) {
+        Ok(ids) => Some(ids.into_iter().collect()),
+        Err(e) => {
+            tracing::warn!(
+                "could not parse the session memory allowlist, so it is not applied \
+                 and every memory is eligible: {}",
+                e
+            );
+            None
+        }
+    }
 }
 
 /// `None` and an empty list both mean "every kind", because a filter that
@@ -752,7 +894,7 @@ pub fn recall_with_query_vector(
     opts: &RecallOptions<'_>,
     query_vector: &[f32],
 ) -> Vec<RankedMemory> {
-    let allowlist = allowlist_json(conn, opts.session_id);
+    let allowlist = session_allowlist(conn, opts.session_id);
     let kinds = kinds_json(opts.kinds.as_ref());
     let include_notes = opts.kinds.as_ref().is_none_or(|k| k.is_empty());
     let per_table = config::BM25_LIMIT;

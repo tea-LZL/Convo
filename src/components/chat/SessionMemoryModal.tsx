@@ -27,15 +27,25 @@ export function SessionMemoryModal({ open, onClose, sessionId }: SessionMemoryMo
       next.add(id);
     }
     setExcludedIds(next);
-    // Persist: send the list of INCLUDED item IDs.  An empty list
-    // clears all overrides (= all enabled items are included).
+    // Persist: the list of INCLUDED item ids, and whether the chat is
+    // scoped at all.
+    //
+    // Two instructions, not one. At least one exclusion is a scope: the
+    // chat is restricted to the checked items, which is the whole point of
+    // this modal. NO exclusion is the one gesture that means "no
+    // restriction", so it clears the scope rather than storing a list of
+    // every id. And the case this rewrite exists for is in between: the
+    // last box, unchecked, leaves an *empty* included list — and an empty
+    // list sent as "unscoped" hands the user back the entire library, the
+    // opposite of what they just asked for. So the empty list is sent as a
+    // scope, and the database can tell the two apart.
     const enabledIds = items
       .filter((i) => i.is_enabled)
       .map((i) => i.id);
-    const included = enabledIds.filter((eid) => !next.has(eid));
-    const payload = next.size > 0 ? included : [];
+    const configured = next.size > 0;
+    const included = configured ? enabledIds.filter((eid) => !next.has(eid)) : [];
     try {
-      await setSessionOverrides(sessionId, payload);
+      await setSessionOverrides(sessionId, included, configured);
     } catch {
       // Rollback on failure
       setExcludedIds(excludedIds);
@@ -46,22 +56,26 @@ export function SessionMemoryModal({ open, onClose, sessionId }: SessionMemoryMo
     if (!open) return;
     setLoading(true);
     try {
-      const [all, overrides] = await Promise.all([
+      const [all, scope] = await Promise.all([
         api.listMemory(),
         api.getSessionMemoryOverrides(sessionId),
       ]);
       setItems(all);
-      // An item is "excluded" if it's enabled globally but NOT in the
-      // session overrides list AND the overrides list is non-empty.
-      // An empty overrides list means "all enabled items included."
-      if (overrides.length > 0) {
-        const overrideSet = new Set(overrides);
-        const excluded = new Set(
-          all
-            .filter((i) => i.is_enabled && !overrideSet.has(i.id))
-            .map((i) => i.id)
+      // An item is "excluded" if it's enabled globally and not admitted by
+      // this chat's scope. An unscoped chat admits every enabled item —
+      // that is what an untouched chat means, and it is why the read
+      // reports `configured` rather than leaving it to be inferred from an
+      // empty list. A chat scoped to nothing has every enabled item
+      // excluded, which is what the user asked for and what recall does.
+      if (scope.configured) {
+        const admitted = new Set(scope.itemIds);
+        setExcludedIds(
+          new Set(
+            all
+              .filter((i) => i.is_enabled && !admitted.has(i.id))
+              .map((i) => i.id)
+          ),
         );
-        setExcludedIds(excluded);
       } else {
         setExcludedIds(new Set());
       }
@@ -77,6 +91,7 @@ export function SessionMemoryModal({ open, onClose, sessionId }: SessionMemoryMo
   }, [open, sessionId]);
 
   const enabled = items.filter((i) => i.is_enabled);
+  const nothingEligible = enabled.length > 0 && enabled.every((i) => excludedIds.has(i.id));
 
   return (
     <Modal open={open} onClose={onClose} title="Memory for this session" size="md">
@@ -84,8 +99,21 @@ export function SessionMemoryModal({ open, onClose, sessionId }: SessionMemoryMo
         Checked items are the ones recall may return for this chat; unchecking one only changes
         this chat. Recall sends the ones relevant to what you are asking, so checking is not the
         same as pinning. A pinned memory is sent in every chat whether it is checked here or not —
-        pin one from the Memory page to always include it.
+        pin one from the Memory page to always include it. Unchecking the last one means no memory
+        is eligible here; checking them all again removes the restriction.
       </p>
+      {/*
+        The state a user must never have to infer: with every box unchecked,
+        this chat has no eligible memory. It used to be the opposite —
+        unchecking everything sent an empty list, which meant "no
+        restriction", so the whole library came back with nothing to show for
+        it.
+      */}
+      {nothingEligible && (
+        <p className="text-xs text-warn bg-warn/10 border border-warn/30 rounded-md px-2 py-1.5 mb-3">
+          No memory is eligible for recall in this chat. Pinned memories are still sent.
+        </p>
+      )}
       {loading ? (
         <div className="flex items-center justify-center py-8">
           <Spinner size={16} />

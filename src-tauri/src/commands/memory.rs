@@ -278,21 +278,114 @@ pub fn set_memory_pinned(
     set_pinned(&conn, &id, pinned)
 }
 
+/// Record that a note produced a memory. The write half of the link that
+/// `memory_items.source_note_id` is, and the mirror of
+/// [`crate::commands::notes::unlink`].
+///
+/// Both ids are checked, and both are checked for a reason. `source_note_id`
+/// carries no foreign key — it was added by `ALTER TABLE` in V006, not
+/// declared `REFERENCES notes(id)` — so an `UPDATE` naming a note that was
+/// never written reports one changed row and leaves a dangling id that the
+/// Notes tab can never resolve. A claim about origin is a claim about two
+/// rows: if either is missing the link is not recorded.
+///
+/// Zero rows changed is an error, not a no-op, for the same reason
+/// [`set_pinned`] gives: `UPDATE` reports zero rows for an id that is not
+/// there, and returning `Ok(())` for that is how provenance looks recorded
+/// when nothing was written.
+///
+/// Plain `&Connection` rather than a command: nothing in the UI sets this,
+/// and a command with no caller is a surface nothing populates. Extraction
+/// is the only writer, and it writes through this one.
+pub fn set_source_note(
+    conn: &rusqlite::Connection,
+    note_id: &str,
+    memory_id: &str,
+) -> Result<(), String> {
+    let note_exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM notes WHERE id = ?1",
+            params![note_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if note_exists == 0 {
+        return Err(format!("no note with id {note_id}"));
+    }
+    let changed = conn
+        .execute(
+            "UPDATE memory_items
+             SET source_note_id = ?2,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE id = ?1",
+            params![memory_id, note_id],
+        )
+        .map_err(|e| e.to_string())?;
+    if changed == 0 {
+        return Err(format!("no memory with id {memory_id}"));
+    }
+    Ok(())
+}
+
+/// What one session's memory list is scoped to.
+///
+/// Three states, and the third is why this is not a `Vec<String>`.
+/// `configured == false` is a session that has never touched the feature:
+/// every enabled memory is eligible, which is what an empty override list
+/// has always meant. `configured == true` with an empty `item_ids` is the
+/// instruction "nothing is eligible in this chat" — a real answer the
+/// override rows alone could not express, because they are also what an
+/// untouched session looks like. The UI needs to tell the two apart to
+/// render the boxes, and recall needs it to honour the instruction.
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionMemoryScope {
+    /// The memory ids eligible for recall in this session. Empty when
+    /// `configured` is false, and possibly empty when it is true.
+    pub item_ids: Vec<String>,
+    /// Whether this session was scoped at all.
+    pub configured: bool,
+}
+
 #[tauri::command]
 pub fn get_session_memory_overrides(
     pool: State<'_, Arc<DbPool>>,
     session_id: String,
-) -> Result<Vec<String>, String> {
+) -> Result<SessionMemoryScope, String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
+    session_memory_scope(&conn, &session_id)
+}
+
+/// [`get_session_memory_overrides`] over `&Connection`, so the three states
+/// are testable without a `State`.
+///
+/// Override rows on their own mean scoped, because that is what every
+/// session written before `session_memory_scope` exists looks like, and
+/// reading it as unrestricted would widen those sessions to the whole
+/// library. The scope row is what says "deliberately, and to nothing".
+pub fn session_memory_scope(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+) -> Result<SessionMemoryScope, String> {
     let mut stmt = conn
-        .prepare("SELECT item_id FROM session_overrides WHERE session_id = ?1")
+        .prepare("SELECT item_id FROM session_overrides WHERE session_id = ?1 ORDER BY item_id")
         .map_err(|e| e.to_string())?;
-    let rows = stmt
+    let item_ids = stmt
         .query_map(params![session_id], |r| r.get::<_, String>(0))
         .map_err(|e| e.to_string())?
-        .collect::<Result<_, _>>()
+        .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
-    Ok(rows)
+    let deliberate: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM session_memory_scope WHERE session_id = ?1",
+            params![session_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(SessionMemoryScope {
+        configured: deliberate > 0 || !item_ids.is_empty(),
+        item_ids,
+    })
 }
 
 #[tauri::command]
@@ -300,18 +393,55 @@ pub fn set_session_memory_overrides(
     pool: State<'_, Arc<DbPool>>,
     session_id: String,
     item_ids: Vec<String>,
+    configured: bool,
 ) -> Result<(), String> {
     let mut conn = pool.get().map_err(|e| e.to_string())?;
+    write_session_memory_scope(&mut conn, &session_id, &item_ids, configured)
+}
+
+/// [`set_session_memory_overrides`] over `&Connection`, so the write is
+/// testable.
+///
+/// `configured == false` clears the session entirely — rows and scope row —
+/// and `item_ids` is ignored, because a session with no restriction is the
+/// one state an empty list has always meant and the one every untouched
+/// session is in. `configured == true` writes exactly `item_ids`, including
+/// the empty list: a scope row with no override rows is how a user says
+/// "this chat has no memory", and it is the only representation of that
+/// answer that is not indistinguishable from never having asked.
+///
+/// One transaction, because the two tables are one fact. A scope row
+/// written without its overrides is a session scoped to nothing that the
+/// user meant to scope to something.
+pub fn write_session_memory_scope(
+    conn: &mut rusqlite::Connection,
+    session_id: &str,
+    item_ids: &[String],
+    configured: bool,
+) -> Result<(), String> {
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     tx.execute(
         "DELETE FROM session_overrides WHERE session_id = ?1",
         params![session_id],
     )
     .map_err(|e| e.to_string())?;
-    for id in item_ids {
+    if configured {
+        for id in item_ids {
+            tx.execute(
+                "INSERT OR IGNORE INTO session_overrides (session_id, item_id) VALUES (?1, ?2)",
+                params![session_id, id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
         tx.execute(
-            "INSERT OR IGNORE INTO session_overrides (session_id, item_id) VALUES (?1, ?2)",
-            params![session_id, id],
+            "INSERT OR IGNORE INTO session_memory_scope (session_id) VALUES (?1)",
+            params![session_id],
+        )
+        .map_err(|e| e.to_string())?;
+    } else {
+        tx.execute(
+            "DELETE FROM session_memory_scope WHERE session_id = ?1",
+            params![session_id],
         )
         .map_err(|e| e.to_string())?;
     }

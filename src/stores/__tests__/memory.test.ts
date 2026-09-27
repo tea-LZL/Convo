@@ -129,8 +129,24 @@ describe("useMemoryStore", () => {
   it("setSessionOverrides updates the prompt cache", async () => {
     vi.spyOn(api, "setSessionMemoryOverrides").mockResolvedValue();
 
-    await useMemoryStore.getState().setSessionOverrides("session-1", [preferenceItem.id]);
+    await useMemoryStore
+      .getState()
+      .setSessionOverrides("session-1", [preferenceItem.id], true);
 
     expect(useMemoryStore.getState()._overrides["session-1"]).toEqual([preferenceItem.id]);
+  });
+
+  // The cache has to keep the two empty answers apart. A chat scoped to
+  // nothing and a chat that was never scoped both cache an empty list, and
+  // the first one is the instruction "no memory here" while the second is
+  // "everything is eligible" — so the cleared chat is cached as null.
+  it("setSessionOverrides caches a cleared chat as unscoped, not as an empty list", async () => {
+    vi.spyOn(api, "setSessionMemoryOverrides").mockResolvedValue();
+
+    await useMemoryStore.getState().setSessionOverrides("session-1", [], true);
+    expect(useMemoryStore.getState()._overrides["session-1"]).toEqual([]);
+
+    await useMemoryStore.getState().setSessionOverrides("session-1", [], false);
+    expect(useMemoryStore.getState()._overrides["session-1"]).toBeNull();
   });
 });
