@@ -309,7 +309,7 @@ src/components/chat/
 
 ### 8.3 Test count floor
 
-The suite is **263 tests** today (verified 2026-09-27). `AGENTS.md` said 107 and `docs/RELEASE_CHECKLIST.md` said 252 — both were wrong; both are corrected by this work. The rewrite may drop by exactly the tests belonging to deleted modules (16: 7 in `streamingRenderer.test.ts`, 9 in `streamingSegmenter.test.ts`) and no more, and adds the invariants above. No test is deleted to make a gate pass; obsolete tests for deleted modules are removed only in the same commit that deletes the module.
+The suite is **263 tests** today (verified 2026-09-27). `AGENTS.md` said 107 and `docs/RELEASE_CHECKLIST.md` said 252 — both were wrong; both are corrected by this work. The rewrite may drop by exactly the tests belonging to deleted modules (19: 7 in `streamingRenderer.test.ts`, 9 in `streamingSegmenter.test.ts`, 3 in the Task 2 `streamingParity.test.ts` harness, whose subject is deleted with it) and no more, and adds the invariants above. No test is deleted to make a gate pass; obsolete tests for deleted modules are removed only in the same commit that deletes the module.
 
 ---
 

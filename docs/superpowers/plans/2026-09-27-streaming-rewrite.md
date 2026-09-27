@@ -528,28 +528,32 @@ The gate task. Nothing is deleted until the replacement is proven equivalent.
 Run: `npm run test:run -- src/components/chat/__tests__/StreamingTail.test.tsx src/lib/__tests__/markdownBlocks.test.ts`
 Expected: PASS. If this fails, stop. Do not delete the old renderer.
 
-- [ ] **Step 2: Promote the Task 2 replay test to a hard assertion**
+- [ ] **Step 2: Delete the temporary characterization harness**
 
-In `streamingParity.test.ts`, the `fourBacktickOpenerThreeBacktickClose` case was annotated `.fails` for the documented `streamingSegmenter.ts:33-37` limitation. Now that the new splitter handles mismatched fence lengths, remove the `.fails` annotation so it must pass. If it still fails, the new splitter has a real bug — fix `markdownBlocks.ts` and re-run Task 3's tests.
+`src/lib/__tests__/streamingParity.test.ts` (Task 2) imports `splitFinalized` and `createStreamRenderer` from the modules this task deletes, so it cannot survive them. Its assertions are already superseded — the splitter contracts live in `markdownBlocks.test.ts` and the parity assertions live in `StreamingTail.test.tsx`. Delete it.
+
+`src/components/chat/__tests__/fixtures/streamShapes.ts` **stays**. It lives in its own file precisely so the corpus outlives the harness; Tasks 4, 6, and 7 still import `STREAM_SHAPES`.
+
+The fence-mismatch case that `streamingParity.test.ts` annotated `.fails` is permanently covered by `markdownBlocks.test.ts` → `mismatchedFenceLengths` (Task 3, Step 2). There is nothing to promote.
 
 - [ ] **Step 3: Swap the component in `ChatViewNew.tsx`**
 
-Replace the `StreamingSection` import and its single usage with `StreamingTail`. Props are identical, so this is a two-line change. Verify no other file imports `StreamingSection`.
+Replace the `StreamingSection` import and its single usage with `StreamingTail`. Props are identical, so this is a two-line change. Also drop the `StreamingSection` re-export from `src/components/chat/index.ts:5` and add `StreamingTail`.
 
 Run: `grep -rn "StreamingSection" src/`
 Expected: only `src/components/chat/types.ts` (the `StreamingSectionProps` type name).
 
 - [ ] **Step 4: Confirm the no-visual-jump property end to end**
 
-The defect this rewrite fixes: mid-stream output came from `renderMarkdown`, settled output came from `MarkdownRenderer`, so every message restyled on finalize. After this task there is one renderer. Verify by test, not by reading.
+The defect this rewrite fixes: mid-stream output came from `renderMarkdown`, settled output came from `MarkdownRenderer`, so every message restyles on finalize. After this task there is one renderer. Verify by test, not by reading.
 
 Add to `StreamingTail.test.tsx` a test that renders `StreamingTail` with `streaming: true` and then with `streaming: false` for the **same** content, and asserts the markdown subtree is structurally identical across the transition. Before Task 4 this assertion fails; after it passes.
 
 - [ ] **Step 5: Close Review Focus case 1 — rewritten (non-append-only) content**
 
-Add a test that drives `StreamingTail` through `update`-equivalent prop changes where the text is *corrected* rather than appended: render with `"para one\n\npara two"`, then re-render with `"para ONE\n\npara two"`, and assert the rendered output shows `para ONE` and not `para one`.
+Add a test that drives `StreamingTail` through re-renders where the text is *corrected* rather than appended: render with `"para one\n\npara two"`, then re-render with `"para ONE\n\npara two"`, and assert the rendered output shows `para ONE` and not `para one`.
 
-This is the failure mode `streamingRenderer.ts:60-66` documents as an append-only PRECONDITION and `streamingRenderer.test.ts` never covered. It passes for free here because `StreamingTail` re-derives from `streamContent` every render with no frozen DOM, but it must be pinned by a test or a future refactor could reintroduce a cache that breaks it.
+This is the failure mode `streamingRenderer.ts:60-66` documents as an append-only PRECONDITION and no existing test covered. It passes for free here because `StreamingTail` re-derives from `streamContent` every render with no frozen DOM, but it must be pinned by a test or a future refactor could reintroduce a cache that breaks it.
 
 - [ ] **Step 6: Delete the old modules and their tests**
 
@@ -558,10 +562,11 @@ git rm src/components/chat/StreamingSection.tsx \
        src/lib/streamingRenderer.ts \
        src/lib/streamingSegmenter.ts \
        src/lib/__tests__/streamingRenderer.test.ts \
-       src/lib/__tests__/streamingSegmenter.test.ts
+       src/lib/__tests__/streamingSegmenter.test.ts \
+       src/lib/__tests__/streamingParity.test.ts
 ```
 
-This removes **16 tests** (7 in `streamingRenderer.test.ts`, 9 in `streamingSegmenter.test.ts`). Per Global Constraints that is permitted **only** in this commit, because the modules they cover are deleted here. The suite may drop by exactly 16 and no more; anything else means a test for a live module was deleted by accident. Record the delta in the commit body.
+This removes **19 tests** (7 in `streamingRenderer.test.ts`, 9 in `streamingSegmenter.test.ts`, 3 in `streamingParity.test.ts`). Per Global Constraints that is permitted **only** in this commit, because the modules they cover are deleted here. The suite may drop by exactly 19 and no more; anything else means a test for a live module was deleted by accident. Record the delta in the commit body.
 
 - [ ] **Step 7: Keep `src/lib/markdown.ts` — do not delete it**
 
@@ -579,7 +584,7 @@ Separately, `grep -rn "dangerouslySetInnerHTML" src/` — the new streaming path
 - [ ] **Step 9: Run the full suite**
 
 Run: `npm run typecheck && npm run test:run && npm run build`
-Expected: 0 failures, count ≥ the Task 5 count minus 16.
+Expected: 0 failures, count ≥ the Task 5 count minus 19.
 
 - [ ] **Step 10: Commit**
 
