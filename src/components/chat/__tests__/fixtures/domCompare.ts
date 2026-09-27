@@ -13,10 +13,31 @@
  * Entity encoding cannot survive that, which is the point.
  */
 
-/** Canonical form of an element subtree: tag names in document order, then text. */
+/**
+ * Elements whose text content is rendered inline, where a whitespace-only
+ * text node is meaningful. Everywhere else, whitespace between block
+ * elements is collapsed away by the browser and cannot affect what a user
+ * sees, so it is excluded from the comparison.
+ */
+const INLINE_CONTEXT = new Set([
+  "a", "abbr", "b", "bdo", "big", "br", "button", "cite", "code", "del", "dfn", "em",
+  "i", "img", "input", "kbd", "label", "mark", "q", "s", "samp", "small", "span",
+  "strong", "sub", "sup", "time", "tt", "u", "var", "wbr",
+  "h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "td", "th", "dt", "dd", "pre", "summary",
+]);
+
+/**
+ * Canonical form of an element subtree: tag names in document order, then
+ * text. Whitespace-only text nodes are dropped outside inline contexts,
+ * because react-markdown emits a bare "\n" between block elements when it
+ * renders a whole message, and omits it when the blocks are rendered
+ * separately — visually identical, structurally different.
+ */
 export function canonicalDom(node: Node): string {
   if (node.nodeType === Node.TEXT_NODE) {
-    return `#text(${node.nodeValue ?? ""})`;
+    const value = node.nodeValue ?? "";
+    if (value.trim() === "" && !isInlineContext(node.parentNode)) return "";
+    return `#text(${value})`;
   }
   if (node.nodeType !== Node.ELEMENT_NODE) {
     // Comments (including the renderer's <!--tail--> marker) carry no
@@ -26,6 +47,11 @@ export function canonicalDom(node: Node): string {
   const el = node as Element;
   const children = [...el.childNodes].map(canonicalDom).filter(Boolean);
   return `<${el.tagName.toLowerCase()}>${children.join("")}</${el.tagName.toLowerCase()}>`;
+}
+
+function isInlineContext(parent: Node | null): boolean {
+  if (!parent || parent.nodeType !== Node.ELEMENT_NODE) return false;
+  return INLINE_CONTEXT.has((parent as Element).tagName.toLowerCase());
 }
 
 /**
