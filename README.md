@@ -146,13 +146,19 @@ All in-app shortcuts are rebindable in Settings → Shortcuts.
 
 ## Roadmap
 
-All seven planned phases are complete (v0.7). Future directions:
+**This section is stale. `docs/GOALS.md` is canonical, not this roadmap.**
+
+v0.7 shipped a workspace-shaped app — six tabs, model comparison, document editing. The product was subsequently realigned to a **memory-first Ollama chat client**: the feature sprawl is being demoted in the nav rather than deleted, and the memory core (which had degraded to a browser-side substring scorer) is being rebuilt around a unified knowledge index with hybrid keyword + embedding retrieval. See `docs/GOALS.md` and `docs/superpowers/specs/`.
+
+Superseded v0.7 wishlist, retained for reference:
 - Hardware-aware auto-suggest when picking models in the chat header
 - Tray icon with quick actions
 - Auto-update via Tauri updater
 - Document AI editing in the renderer (vs the chat composer)
 - Code-splitting for the 1.1MB JS bundle (dynamic imports per route)
 - Sync via Convo Sync (out of scope: desktop stays local-only)
+
+Note that "auto-update" and any plugin-style extension surface are explicitly non-goals under the realignment.
 
 ## License
 
