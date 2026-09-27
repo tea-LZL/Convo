@@ -32,7 +32,7 @@ describe("sendMessage persistence", () => {
     });
   });
 
-  it("sends the base prompt and enabled nickname memory to chat_stream_v2", async () => {
+  it("sends the caller's override and nothing the frontend can add", async () => {
     const nickname = {
       ...preferenceItem,
       title: "User's nickname",
@@ -43,18 +43,23 @@ describe("sendMessage persistence", () => {
       if (command === "get_session_memory_overrides") return [] as never;
       return undefined as never;
     });
+    // Loaded and enabled: the memory is available to the send path, so
+    // this asserts the frontend declines to inject it. Rust reads the
+    // same rows from the database and assembles the block itself.
+    useMemoryStore.setState({ items: [nickname], loaded: true, loading: false, _overrides: {} });
 
     await sendMessage("prompt-test-session", "what is my nickname?", "model-1", {
       providerId: "provider-1",
+      systemOverride: "Answer in one sentence.",
     });
 
     const call = mockedInvoke.mock.calls.find(([command]) => command === "chat_stream_v2");
     expect(call).toBeDefined();
-    const system = (call?.[1] as { args: { system: string } }).args.system;
-    expect(system).toContain("You are a helpful, concise assistant.");
-    expect(system).toContain("<memory-context>");
-    expect(system).toContain("User's nickname");
-    expect(system).toContain("Kevin");
+    const system = (call?.[1] as { args: { system?: string } }).args.system;
+    expect(system).toBe("Answer in one sentence.");
+    expect(system).not.toContain("<memory-context>");
+    expect(system).not.toContain("You are a helpful");
+    expect(system).not.toContain("Kevin");
   });
 
   it("forwards image attachment bytes to the stream request", async () => {
