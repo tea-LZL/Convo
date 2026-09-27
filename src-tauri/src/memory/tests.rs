@@ -983,3 +983,172 @@ fn recall_respects_a_kind_filter() {
         ids(&hits)
     );
 }
+
+// ---------------------------------------------------------------------------
+// Recall gates
+// ---------------------------------------------------------------------------
+
+/// Proves the vector route is load-bearing.
+///
+/// "what is the wifi password" against a memory worded "the SSID is
+/// Convo-5G and the passphrase is hunter2". After stop words and
+/// sub-three-character tokens are dropped, the question and the memory
+/// share nothing at all, so the keyword route cannot answer it. If this
+/// ever passes on the keyword path alone, the embedding index is not
+/// being read and the whole subsystem is decorative.
+#[test]
+fn recall_finds_a_memory_with_no_lexical_overlap() {
+    let conn = migrated_conn();
+    // Deliberately avoids "wifi" and "password". An earlier version said
+    // "The wifi password is hunter2", which of course the keyword route
+    // found — the test then proved nothing.
+    add_memory_full(
+        &conn,
+        "wifi",
+        "project_fact",
+        "Network",
+        "The SSID is Convo-5G and the passphrase is hunter2",
+    );
+    upsert_embedding(&conn, "memory", "wifi", "stub", &[1.0, 0.0, 0.0]).unwrap();
+
+    let mut o = recall_opts("what is the wifi password");
+    o.embedding_model = Some("stub".to_string());
+    let hits = retrieve::recall_with_query_vector(&conn, &o, &[1.0, 0.0, 0.0]);
+
+    assert!(!hits.is_empty(), "keyword search cannot answer this one");
+    assert_eq!(hits[0].owner_id, "wifi");
+    assert!(
+        hits[0].reason.contains("semantic"),
+        "got reason: {}",
+        hits[0].reason
+    );
+    // And the keyword route genuinely found nothing, so the win is real.
+    let keyword_only = retrieve::recall(&conn, &recall_opts("what is the wifi password"));
+    assert!(
+        keyword_only.is_empty(),
+        "the fixture does not actually need vectors"
+    );
+}
+
+/// The recall-precision gate from the spec: at least 90% of the items a
+/// reasonable person would call relevant land in the top 6.
+///
+/// Measured keyword-only, because the test has no embedder. That is the
+/// degraded mode, and the number it produces is the floor the hybrid route
+/// has to beat, not the target.
+const KNOWN_QUERIES: &[(&str, &[&str])] = &[
+    ("postgres", &["db-choice", "db-pool", "db-runbook"]),
+    ("which database", &["db-choice"]),
+    ("connection pool failover", &["db-pool", "db-runbook"]),
+    ("how do i run migrations", &["migrate"]),
+    ("apply pending sql", &["migrate"]),
+    ("neovim configuration", &["editor", "editor-notes"]),
+    ("when can i deploy", &["deploy"]),
+    ("friday deploy policy", &["deploy"]),
+    ("pgbouncer", &["db-pool", "db-runbook"]),
+    ("multi tenant billing", &["db-choice"]),
+    // Paraphrases. A keyword index cannot answer these; they are here to
+    // measure how much the vector route is worth, not to be passed.
+    ("how do I connect to the database", &["db-choice"]),
+    ("what text editor do I use", &["editor"]),
+    ("when am I allowed to ship", &["deploy"]),
+];
+
+#[test]
+fn recall_precision_over_keyword_queries_meets_the_gate() {
+    let conn = migrated_conn();
+    knowledge_corpus(&conn);
+    let mut total = 0usize;
+    let mut found = 0usize;
+    let mut misses: Vec<String> = Vec::new();
+    for (query, relevant) in KNOWN_QUERIES {
+        let hits = retrieve::recall(&conn, &recall_opts(query));
+        let top: Vec<&str> = hits.iter().take(6).map(|h| h.owner_id.as_str()).collect();
+        for want in *relevant {
+            total += 1;
+            if top.contains(want) {
+                found += 1;
+            } else {
+                misses.push(format!("{:?} missed {} (got {:?})", query, want, top));
+            }
+        }
+    }
+    let precision = found as f64 / total as f64;
+    println!(
+        "MEASURED keyword-only recall precision: {:.0}% ({}/{})",
+        precision * 100.0,
+        found,
+        total
+    );
+    assert!(
+        precision >= 0.90,
+        "keyword-only recall precision {:.0}% ({}/{}) below the 90% gate\n{}",
+        precision * 100.0,
+        found,
+        total,
+        misses.join("\n")
+    );
+}
+
+#[test]
+fn recall_degrades_to_keyword_only_when_the_embed_route_is_unusable() {
+    // A configured model with no stored vectors: the cosine route yields
+    // nothing and keyword recall still answers.
+    let conn = migrated_conn();
+    knowledge_corpus(&conn);
+    let mut o = recall_opts("postgres");
+    o.embedding_model = Some("nomic-embed-text".to_string());
+    o.embedding_dim = Some(768);
+    let hits = retrieve::recall(&conn, &o);
+    assert!(!hits.is_empty());
+    assert!(
+        hits.iter().all(|h| h.reason.contains("keyword")),
+        "claimed a semantic reason with no vectors"
+    );
+}
+
+#[test]
+fn recall_ignores_vectors_from_a_different_dimension() {
+    // Vectors from another model are not comparable with this one.
+    let conn = migrated_conn();
+    knowledge_corpus(&conn);
+    upsert_embedding(
+        &conn,
+        "memory",
+        "db-choice",
+        "nomic-embed-text",
+        &[0.1, 0.2],
+    )
+    .unwrap();
+    let mut o = recall_opts("postgres");
+    o.embedding_model = Some("nomic-embed-text".to_string());
+    let hits = retrieve::recall_with_query_vector(&conn, &o, &[0.0; 1024]);
+    assert!(!hits.is_empty(), "keyword recall must still answer");
+    assert!(
+        hits.iter().all(|h| h.reason.contains("keyword")),
+        "a 2-dim vector was compared against a 1024-dim query"
+    );
+}
+
+#[test]
+fn index_status_reports_what_needs_embedding_and_whether_a_reindex_is_due() {
+    let conn = migrated_conn();
+    knowledge_corpus(&conn);
+    upsert_embedding(
+        &conn,
+        "memory",
+        "db-choice",
+        "nomic-embed-text",
+        &[0.1; 768],
+    )
+    .unwrap();
+
+    let (needs, reindex) = retrieve::knowledge_status(&conn, "nomic-embed-text", 768);
+    assert!(!reindex, "every stored vector matches the configured model");
+    // Four memories (all but db-choice, now embedded) plus the one pinned
+    // note. Unpinned notes are excluded by default.
+    assert_eq!(needs, 5, "unembedded memories plus the pinned note");
+
+    let (_, reindex) = retrieve::knowledge_status(&conn, "mxbai-embed-large", 1024);
+    assert!(reindex, "a model switch means the index is stale");
+}
