@@ -219,3 +219,56 @@ describe("splitBlocks on degenerate input", () => {
     expect(splitBlocks("")).toEqual({ frozen: [], tail: "" });
   });
 });
+
+describe("splitBlocks respects constructs that continue across a blank line", () => {
+  // A blank line is a hard block boundary for most markdown, but not for
+  // these. Cutting at one produces a different render than the settled
+  // message, which is the exact restyle this rewrite exists to remove.
+
+  it("keeps an indented code block whole across its internal blank line", () => {
+    const { frozen } = splitBlocks("    a\n\n    b");
+    expect(frozen).toEqual([]);
+  });
+
+  it("keeps a block whole when the next line is an indented code line", () => {
+    // The paragraph cannot be separated: the indented line continues the
+    // code block rather than starting a new construct.
+    const { frozen, tail } = splitBlocks("intro\n\ntext\n\n    code line");
+    expect(frozen).toEqual(["intro\n\n"]);
+    expect(tail).toBe("text\n\n    code line");
+  });
+
+  it("keeps a block whole when the next line opens a raw HTML block", () => {
+    const { tail } = splitBlocks("text\n\n<div>\n  markup\n</div>");
+    expect(tail).toBe("text\n\n<div>\n  markup\n</div>");
+  });
+
+  it("still separates a paragraph from ordinary following content", () => {
+    const { frozen, tail } = splitBlocks("first para\n\nsecond para");
+    expect(frozen).toEqual(["first para\n\n"]);
+    expect(tail).toBe("second para");
+  });
+
+  it("does not treat a less-than sign in prose as an HTML block", () => {
+    const { frozen } = splitBlocks("a < b and c > d\n\nnext");
+    expect(frozen).toEqual(["a < b and c > d\n\n"]);
+  });
+});
+
+describe("splitBlocks offset and fence-opener edge cases", () => {
+  it("reports a start offset for the first line", () => {
+    // Guards the offset table itself: a hole at index 0 only worked
+    // because String.slice coerces undefined to 0.
+    const { frozen, tail } = splitBlocks("alpha\n\nbravo");
+    expect(frozen).toEqual(["alpha\n\n"]);
+    expect(tail).toBe("bravo");
+  });
+
+  it("does not open a backtick fence on an info string containing a backtick", () => {
+    // CommonMark forbids backticks in a backtick fence's info string, so
+    // this line is not an opener. Treating it as one would swallow every
+    // following blank line and freeze nothing at all.
+    const { frozen } = splitBlocks("``` ```\nnot really a fence\n\nafter");
+    expect(frozen.length).toBeGreaterThan(0);
+  });
+});

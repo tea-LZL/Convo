@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo } from "react";
-import { useChatStreamStore } from "../../stores/chatStream";
+import { selectStreamSlice, useChatStreamStore } from "../../stores/chatStream";
 import { splitBlocks } from "../../lib/markdownBlocks";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 import type { StreamingTailProps } from "./types";
@@ -29,7 +29,7 @@ import type { StreamingTailProps } from "./types";
  * first paint.
  */
 const MarkdownBlock = React.memo(function MarkdownBlock({ content }: { content: string }) {
-  return <MarkdownRenderer content={content} />;
+  return <MarkdownRenderer content={content} streaming />;
 });
 
 /**
@@ -65,15 +65,13 @@ export const MarkdownBlocks = React.memo(function MarkdownBlocks({ text }: { tex
  * persisted and re-rendered from source as a normal message.
  */
 export function StreamingTail({ sessionId, stickToBottomRef, onBumpScroll }: StreamingTailProps) {
-  const streaming = useChatStreamStore(
-    (s) => s.sessions[sessionId]?.streaming ?? false
-  );
-  const streamContent = useChatStreamStore(
-    (s) => s.sessions[sessionId]?.streamContent ?? ""
-  );
-  const streamThinking = useChatStreamStore(
-    (s) => s.sessions[sessionId]?.streamThinking ?? ""
-  );
+  // One subscription, not three. The slice is cached against the
+  // published session object, so its reference is stable while other
+  // sessions change — which is what confines re-renders to the tail.
+  const slice = useChatStreamStore(selectStreamSlice(sessionId));
+  const streaming = slice?.streaming ?? false;
+  const streamContent = slice?.streamContent ?? "";
+  const streamThinking = slice?.streamThinking ?? "";
 
   // Auto-scroll in the same frame as the render, so the tail is never
   // one frame behind the viewport.

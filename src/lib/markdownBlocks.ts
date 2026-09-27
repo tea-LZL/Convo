@@ -38,6 +38,21 @@ const FENCE_RE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
  */
 const LIST_START_RE = /^ {0,3}(?:[-*+]|\d{1,9}[.)])(?:\s|$)/;
 
+/**
+ * A line indented enough to be an indented code block. These continue
+ * ACROSS blank lines — "    a\n\n    b" is one code block, not two — so
+ * a blank line before one is not a boundary.
+ */
+const INDENTED_CODE_RE = /^(?: {4}|\t)/;
+
+/**
+ * A line that opens a raw HTML block (CommonMark types 1-6). A block that
+ * *starts* with one continues across blank lines, so a blank line before
+ * one is not a boundary either. Deliberately narrow: a bare `<` in prose
+ * ("a < b") is not an HTML block, and requiring a tag name keeps it out.
+ */
+const HTML_BLOCK_OPEN_RE = /^ {0,3}<(?:[A-Za-z][A-Za-z0-9-]*|\/[A-Za-z][A-Za-z0-9-]*)/;
+
 /** Blocks that can no longer change, plus the still-growing tail. */
 export interface BlockSplit {
   /** Source of each finalized block, in order. Never changes once produced. */
@@ -71,6 +86,7 @@ export function splitBlocks(text: string): BlockSplit {
   // between two blocks is `["", ""]`, and `join("\n")` on that loses a
   // newline, which would make the split lossy.
   const starts: number[] = new Array(lines.length);
+  starts[0] = 0;
   for (let i = 1, at = 0; i < lines.length; i++) {
     at += lines[i - 1].length + 1;
     starts[i] = at;
@@ -89,7 +105,7 @@ export function splitBlocks(text: string): BlockSplit {
     const line = lines[i];
     const fence = line.match(FENCE_RE);
 
-    if (fence) {
+    if (fence && (inFence || fence[1][0] !== "`" || !fence[2].includes("`"))) {
       if (!inFence) {
         inFence = true;
         fenceChar = fence[1][0];
@@ -160,6 +176,12 @@ export function splitBlocks(text: string): BlockSplit {
  * while freezing after "- a" yields two adjacent tight lists. Cut inside
  * a list and the render visibly changes, so never do.
  *
+ * Two more constructs continue across a blank line, and are handled by
+ * looking at what *follows* the blank: an indented code line, and a raw
+ * HTML block opener. Neither can interrupt a paragraph, so a paragraph
+ * immediately before one is really the opening of that construct, and
+ * cutting would split it.
+ *
  * Setext headings need no special case: they require the underline to
  * follow the paragraph directly, so a blank line already prevents one.
  * Tables need none either: a blank line terminates a table.
@@ -176,5 +198,14 @@ function isFreezable(lines: string[], blockStart: number, j: number): boolean {
   }
   if (!hasContent) return false;
 
-  return !LIST_START_RE.test(lines[blockStart]);
+  // A block that IS an indented code block or a raw HTML block runs
+  // through its own internal blank lines, so it is never freezable.
+  const first = lines[blockStart];
+  if (INDENTED_CODE_RE.test(first) || HTML_BLOCK_OPEN_RE.test(first)) return false;
+
+  // And a block followed by one of those is not finished either.
+  const next = lines[j];
+  if (INDENTED_CODE_RE.test(next) || HTML_BLOCK_OPEN_RE.test(next)) return false;
+
+  return !LIST_START_RE.test(first);
 }

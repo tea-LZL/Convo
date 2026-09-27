@@ -114,6 +114,29 @@ describe("invariant 2: tail work is bounded by the block count, not the chunk co
     expect(parses).toBeGreaterThan(BLOCKS);
   });
 
+  it("does not re-highlight a growing code fence on every frame", () => {
+    // An open fence is the whole tail while it streams, so it re-renders
+    // every frame. With Prism in that path, a growing 200-line block
+    // measured at ~170ms per frame — 6fps, not 60fps. The streaming path
+    // renders code without highlighting for exactly this reason; the
+    // settled message gets it.
+    const code = Array.from(
+      { length: 200 },
+      (_, i) => `const value${i} = compute(${i}, "some argument text to give the parser work");`,
+    ).join("\n");
+    const FRAMES = 20;
+    const { rerender } = render(<MarkdownBlocks text={"```ts\n"} />);
+    const started = performance.now();
+    for (let i = 0; i < FRAMES; i++) {
+      rerender(<MarkdownBlocks text={`\`\`\`ts\n${code.slice(0, Math.floor((code.length * (i + 1)) / FRAMES))}`} />);
+    }
+    const perFrame = (performance.now() - started) / FRAMES;
+
+    // A budget, not a wall-clock assertion on CI hardware: the old path
+    // was ~170ms/frame. Anything in that neighbourhood is a regression.
+    expect(perFrame).toBeLessThan(40);
+  });
+
   it("does no work at all when the content does not change", () => {
     const body = Array.from({ length: 10 }, (_, i) => `Paragraph ${i}.`).join("\n\n");
     const { rerender } = render(<MarkdownBlocks text={body} />);

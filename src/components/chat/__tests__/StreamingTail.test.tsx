@@ -121,14 +121,32 @@ describe("frozen blocks are not re-rendered", () => {
   });
 });
 
+/**
+ * Shapes whose settled render includes a code block. These are exempt
+ * from exact structural parity: the live tail deliberately renders code
+ * without syntax highlighting, because Prism re-highlighting a growing
+ * open fence measured at ~170ms per frame against ~6ms without it. Text
+ * content and block structure still have to match — only colour and the
+ * copy button arrive late.
+ */
+const CODE_FENCE_SHAPES = new Set([
+  "closedCodeFence",
+  "codeFenceWithLanguage",
+  "tildeFence",
+  "unclosedCodeFence",
+  "fourBacktickOpenerThreeBacktickClose",
+  "inlineCodeSpanningFenceText",
+  "mixedEverything",
+]);
+
 describe("streaming and settled markdown agree", () => {
   // The defect this rewrite exists to fix. The old streaming path used
   // renderMarkdown (hand-rolled regex → HTML string, no GFM, no
   // highlighting); the settled path used react-markdown + remark-gfm +
   // Prism. So every completed message restyled itself the instant its
   // stream ended. One renderer removes the possibility.
-  it.each(STREAM_SHAPES.map((s) => [s.name] as const))(
-    "block rendering of %s matches whole-message rendering",
+  it.each(STREAM_SHAPES.filter((s) => !CODE_FENCE_SHAPES.has(s.name)).map((s) => [s.name] as const))(
+    "block rendering of %s matches whole-message rendering exactly",
     (name) => {
       const shape = shapeNamed(name);
       const streamed = render(<MarkdownBlocks text={shape.full} />);
@@ -138,6 +156,46 @@ describe("streaming and settled markdown agree", () => {
       );
     },
   );
+
+  it("preserves the code text and the prose of a streamed block exactly", () => {
+    for (const name of CODE_FENCE_SHAPES) {
+      const shape = shapeNamed(name);
+      const streamed = render(<MarkdownBlocks text={shape.full} />);
+      const settled = render(<MarkdownRenderer content={shape.full} />);
+
+      // The code itself, exactly, in the same order. react-markdown's
+      // inter-block newline text nodes are invisible to a reader and are
+      // absent when blocks render separately, so raw textContent is not
+      // a usable oracle across a block boundary — hence checking the
+      // code and the prose separately instead.
+      const codeOf = (c: HTMLElement) =>
+        [...c.querySelectorAll("pre code")].map((el) => el.textContent);
+      expect(codeOf(streamed.container)).toEqual(codeOf(settled.container));
+
+      // And the prose, with code and highlight chrome dropped from both.
+      // Top-level blocks are joined with an explicit separator rather
+      // than relying on textContent: react-markdown emits inter-block
+      // newline text nodes only when it renders a whole message, so a
+      // raw concatenation is separated on one side and not the other.
+      const prose = (c: HTMLElement) => {
+        const clone = c.cloneNode(true) as HTMLElement;
+        clone.querySelectorAll("pre, .code-copy, .code-lang").forEach((n) => n.remove());
+        return [...clone.children]
+          .map((child) => (child.textContent ?? "").replace(/\s+/g, " ").trim())
+          .filter(Boolean)
+          .join(" ");
+      };
+      expect(prose(streamed.container)).toBe(prose(settled.container));
+    }
+  });
+
+  it("skips syntax highlighting only while streaming", () => {
+    const shape = shapeNamed("codeFenceWithLanguage");
+    const streamed = render(<MarkdownBlocks text={shape.full} />);
+    const settled = render(<MarkdownRenderer content={shape.full} />);
+    expect(streamed.container.querySelector(".code-copy")).toBeNull();
+    expect(settled.container.querySelector(".code-copy")).not.toBeNull();
+  });
 
   it("renders GFM identically while streaming and settled", () => {
     const table = shapeNamed("gfmTable").full;

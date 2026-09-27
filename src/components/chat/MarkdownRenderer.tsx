@@ -42,6 +42,36 @@ export const MARKDOWN_COMPONENTS = {
 };
 
 /**
+ * Code rendering for the live streaming tail.
+ *
+ * Deliberately does not syntax-highlight. An open fence is the tail's
+ * entire content for as long as it streams, so it re-renders every frame,
+ * and Prism re-highlighting a growing 200-line block measured at ~170ms
+ * per frame — 6fps, not 60fps. The previous DOM-direct renderer had the
+ * same trade (append-mode plain text, highlighted once on close) for the
+ * same reason.
+ *
+ * The text content and the block structure are identical either way, so
+ * nothing shifts when the stream ends and the message re-renders with
+ * highlighting. Only colour and the copy button arrive late.
+ */
+const STREAMING_MARKDOWN_COMPONENTS = {
+  code({ className, children, ...props }: any) {
+    const match = /language-(\w+)/.exec(className || "");
+    const codeStr = String(children).replace(/\n$/, "");
+    const inline = !match && !String(children).includes("\n");
+    if (inline) {
+      return <code className="bg-surface-2 rounded px-1 py-0.5 text-xs" {...props}>{children}</code>;
+    }
+    return (
+      <pre style={{ margin: 0, borderRadius: 10, border: "1px solid var(--color-border)", background: "var(--color-surface-1)", overflow: "auto" }}>
+        <code className={match ? `language-${match[1]}` : undefined}>{codeStr}</code>
+      </pre>
+    );
+  },
+};
+
+/**
  * Wrapped in React.memo. With the module-level REMARK_PLUGINS and
  * MARKDOWN_COMPONENTS above, the only prop the parent ever changes
  * between renders is `content`. When the message row re-renders
@@ -54,9 +84,19 @@ export const MARKDOWN_COMPONENTS = {
  * re-rendered 60Hz and re-parsed markdown on every static message
  * each time, saturating the main thread.
  */
-export const MarkdownRenderer = React.memo(function MarkdownRenderer({ content }: { content: string }) {
+export const MarkdownRenderer = React.memo(function MarkdownRenderer({
+  content,
+  streaming = false,
+}: {
+  content: string;
+  /** Render without syntax highlighting. See STREAMING_MARKDOWN_COMPONENTS. */
+  streaming?: boolean;
+}) {
   return (
-    <Markdown remarkPlugins={REMARK_PLUGINS} components={MARKDOWN_COMPONENTS}>
+    <Markdown
+      remarkPlugins={REMARK_PLUGINS}
+      components={streaming ? STREAMING_MARKDOWN_COMPONENTS : MARKDOWN_COMPONENTS}
+    >
       {content}
     </Markdown>
   );
