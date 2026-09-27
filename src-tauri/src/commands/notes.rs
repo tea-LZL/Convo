@@ -27,7 +27,12 @@ pub fn list_notes(pool: State<'_, Arc<DbPool>>) -> Result<Vec<NoteWithLinks>, St
 
 /// Every note, newest first, without provenance. The note rows are the same
 /// for `list_notes` and `search_notes`; only the former attaches links.
-fn all_notes(conn: &Connection) -> Result<Vec<Note>, String> {
+///
+/// `pub` so a test can pin the positional `row.get` chain: a column dropped
+/// from the SELECT keeps indices 0-7 valid and a reordered one reads the
+/// wrong field silently, so the read path needs coverage, not just the
+/// writes.
+pub fn all_notes(conn: &Connection) -> Result<Vec<Note>, String> {
     let mut stmt = conn
         .prepare("SELECT id, title, body, tags, source_session_id, source_message_id, created_at, updated_at, pinned FROM notes ORDER BY updated_at DESC")
         .map_err(|e| e.to_string())?;
@@ -81,15 +86,23 @@ pub fn upsert_note(pool: State<'_, Arc<DbPool>>, note: NoteInput) -> Result<Stri
 
 /// Set or clear a note's pin. A pinned note is injected on every send,
 /// budget permitting, regardless of what retrieval ranks.
+///
+/// A pin on a note that is not there is an error, not a no-op: `UPDATE`
+/// reports zero rows for an id that does not exist, and returning `Ok(())`
+/// for that is how a pin looks set when it never was.
 pub fn set_pinned(conn: &Connection, id: &str, pinned: bool) -> Result<(), String> {
-    conn.execute(
-        "UPDATE notes
-         SET pinned = ?2,
-             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         WHERE id = ?1",
-        params![id, if pinned { 1 } else { 0 }],
-    )
-    .map_err(|e| e.to_string())?;
+    let changed = conn
+        .execute(
+            "UPDATE notes
+             SET pinned = ?2,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE id = ?1",
+            params![id, if pinned { 1 } else { 0 }],
+        )
+        .map_err(|e| e.to_string())?;
+    if changed == 0 {
+        return Err(format!("no note with id {id}"));
+    }
     Ok(())
 }
 
@@ -126,15 +139,27 @@ pub fn memories_for_note(conn: &Connection, note_id: &str) -> Result<Vec<NoteLin
 /// Clear a memory's source note. The note side needs no update because it
 /// never stored a list. The memory survives: unlinking is a claim about
 /// origin, not a delete.
-pub fn unlink(conn: &Connection, memory_id: &str) -> Result<(), String> {
-    conn.execute(
-        "UPDATE memory_items
-         SET source_note_id = NULL,
-             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         WHERE id = ?1",
-        params![memory_id],
-    )
-    .map_err(|e| e.to_string())?;
+///
+/// Scoped to `note_id` as well as `memory_id`. Provenance is one column, so
+/// an unscoped `UPDATE` would happily detach a memory that belongs to some
+/// other note than the one the caller named — a silent edit to a claim the
+/// caller never made. A mismatch, and a memory that does not exist, both
+/// match zero rows and come back as an error.
+pub fn unlink(conn: &Connection, note_id: &str, memory_id: &str) -> Result<(), String> {
+    let changed = conn
+        .execute(
+            "UPDATE memory_items
+             SET source_note_id = NULL,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE id = ?1 AND source_note_id = ?2",
+            params![memory_id, note_id],
+        )
+        .map_err(|e| e.to_string())?;
+    if changed == 0 {
+        return Err(format!(
+            "memory {memory_id} is not linked to note {note_id}"
+        ));
+    }
     Ok(())
 }
 
@@ -154,12 +179,11 @@ pub fn unlink_memory_from_note(
     note_id: String,
     memory_id: String,
 ) -> Result<(), String> {
-    // `note_id` is the note the caller believed the memory belonged to.
-    // Provenance is a single column, so the memory is detached from it
-    // whatever that belief was; nothing to clean up on the note side.
-    let _ = note_id;
+    // The note id is verified, not merely accepted: `unlink` matches it, so
+    // naming the wrong note fails instead of detaching provenance the
+    // caller did not mean to touch.
     let conn = pool.get().map_err(|e| e.to_string())?;
-    unlink(&conn, &memory_id)
+    unlink(&conn, &note_id, &memory_id)
 }
 
 fn validate_note(note: &NoteInput) -> Result<(), String> {
@@ -189,8 +213,15 @@ pub fn delete_note(pool: State<'_, Arc<DbPool>>, id: String) -> Result<(), Strin
 #[tauri::command]
 pub fn search_notes(pool: State<'_, Arc<DbPool>>, query: String) -> Result<Vec<Note>, String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
+    search(&conn, &query)
+}
+
+/// The query behind `search_notes`, over `&Connection` so its positional
+/// `row.get` chain is testable. The empty query means "everything", the same
+/// short-circuit it has always had.
+pub fn search(conn: &Connection, query: &str) -> Result<Vec<Note>, String> {
     if query.trim().is_empty() {
-        return all_notes(&conn);
+        return all_notes(conn);
     }
     let q = format!("%{}%", query.to_lowercase());
     let mut stmt = conn

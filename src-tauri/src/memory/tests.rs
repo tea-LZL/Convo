@@ -2576,7 +2576,7 @@ fn unlinking_a_memory_removes_it_from_its_notes_list() {
     .unwrap();
     assert_eq!(notes::memories_for_note(&conn, "n1").unwrap().len(), 1);
 
-    notes::unlink(&conn, "m1").unwrap();
+    notes::unlink(&conn, "n1", "m1").unwrap();
     assert!(notes::memories_for_note(&conn, "n1").unwrap().is_empty());
 
     // The memory itself survives: unlinking is a claim about origin, not a
@@ -2602,4 +2602,123 @@ fn a_note_with_no_memories_lists_no_links() {
     )
     .unwrap();
     assert!(notes::memories_for_note(&conn, "n1").unwrap().is_empty());
+}
+
+/// Both note readers read `pinned` positionally, so a column dropped or
+/// reordered in either SELECT would leave the pin unreadable — or, worse,
+/// readable from the wrong column. Pin it through the write path and read it
+/// back through both.
+#[test]
+fn a_pinned_note_reads_back_pinned_from_both_readers() {
+    let conn = migrated_conn();
+    conn.execute(
+        "INSERT INTO notes (id, title, body) VALUES ('n1','Runbook','step one')",
+        [],
+    )
+    .unwrap();
+    notes::set_pinned(&conn, "n1", true).unwrap();
+
+    let listed = notes::all_notes(&conn).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert!(listed[0].pinned);
+
+    let found = notes::search(&conn, "runbook").unwrap();
+    assert_eq!(found.len(), 1);
+    assert!(found[0].pinned);
+}
+
+/// A note with no title is the case that catches a shift between the
+/// nullable `title` and the `NOT NULL` `body`: swapped, `title` would hold
+/// the body text and `body` would fail to read at all.
+#[test]
+fn a_note_without_a_title_still_reads_its_body() {
+    let conn = migrated_conn();
+    conn.execute(
+        "INSERT INTO notes (id, title, body) VALUES ('n1', NULL, 'untitled body')",
+        [],
+    )
+    .unwrap();
+
+    let listed = notes::all_notes(&conn).unwrap();
+    assert_eq!(listed[0].title, None);
+    assert_eq!(listed[0].body, "untitled body");
+
+    let found = notes::search(&conn, "untitled").unwrap();
+    assert_eq!(found[0].title, None);
+    assert_eq!(found[0].body, "untitled body");
+}
+
+/// `created_at` and `updated_at` are adjacent in the SELECT and both are
+/// strings, so nothing but a distinct pair catches them trading places. An
+/// edit moves `updated_at` forward and leaves `created_at` alone.
+#[test]
+fn an_edited_note_reads_two_distinct_timestamps_in_order() {
+    let conn = migrated_conn();
+    conn.execute(
+        "INSERT INTO notes (id, title, body, created_at, updated_at)
+         VALUES ('n1','Runbook','first draft','2024-01-01T00:00:00.000Z','2024-01-02T00:00:00.000Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE notes SET body = 'second draft', updated_at = '2024-06-01T00:00:00.000Z' WHERE id = 'n1'",
+        [],
+    )
+    .unwrap();
+
+    for read in [
+        notes::all_notes(&conn).unwrap(),
+        notes::search(&conn, "draft").unwrap(),
+    ] {
+        assert_eq!(read[0].created_at, "2024-01-01T00:00:00.000Z");
+        assert_eq!(read[0].updated_at, "2024-06-01T00:00:00.000Z");
+        assert!(read[0].created_at < read[0].updated_at);
+        assert_eq!(read[0].body, "second draft");
+    }
+}
+
+/// `UPDATE` reports zero rows for an id that is not there. Reporting that as
+/// success is how a pin looks set when it never was.
+#[test]
+fn pinning_a_note_that_does_not_exist_is_an_error() {
+    let conn = migrated_conn();
+    let err = notes::set_pinned(&conn, "nope", true).unwrap_err();
+    assert!(err.contains("nope"), "error must name the id: {err}");
+}
+
+/// Same for unlinking: a memory id that matches nothing is a caller bug, and
+/// `Ok(())` would read as "detached" when nothing was.
+#[test]
+fn unlinking_a_memory_that_does_not_exist_is_an_error() {
+    let conn = migrated_conn();
+    let err = notes::unlink(&conn, "n1", "nope").unwrap_err();
+    assert!(err.contains("nope"), "error must name the id: {err}");
+}
+
+/// The note id is verified, not accepted. Unlinking through the wrong note
+/// touches nothing: the memory stays linked to the note that really produced
+/// it.
+#[test]
+fn unlinking_a_memory_through_the_wrong_note_changes_nothing() {
+    let conn = migrated_conn();
+    conn.execute(
+        "INSERT INTO notes (id, title, body) VALUES ('n1','Runbook','step one')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO notes (id, title, body) VALUES ('n2','Other','x')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO memory_items (id, kind, title, content, is_enabled, source_note_id)
+         VALUES ('m1','skill','Build','npm run build',1,'n1')",
+        [],
+    )
+    .unwrap();
+
+    notes::unlink(&conn, "n2", "m1").unwrap_err();
+    assert_eq!(notes::memories_for_note(&conn, "n1").unwrap().len(), 1);
+    assert!(notes::memories_for_note(&conn, "n2").unwrap().is_empty());
 }
