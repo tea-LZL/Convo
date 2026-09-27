@@ -46,6 +46,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { StrictMode } from "react";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { axe } from "vitest-axe";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -110,7 +111,6 @@ async function renderCard(status: KnowledgeIndexStatus | Error) {
 }
 
 const card = () => screen.queryByRole("region", { name: CARD_NAME });
-const chip = () => screen.getByText(/^(live|indexing|needs reindex|off)$/);
 
 /**
  * The colour token a rendered element is painted from, read off the class
@@ -255,10 +255,34 @@ describe("StatusCard states", () => {
     expect(screen.getByText("indexing")).toBeInTheDocument();
   });
 
-  it("reports embedded rows against memory plus notes, from Rust's own fields", async () => {
-    await renderCard({ ...live, memoryCount: 8, noteCount: 4, embeddedCount: 5 });
+  it("reports two absolute numbers, and never a ratio", async () => {
+    await renderCard({ ...live, embeddedCount: 18, needsEmbedding: 4 });
     await screen.findByRole("region", { name: CARD_NAME });
-    expect(screen.getByText("5 / 12 indexed")).toBeInTheDocument();
+    expect(screen.getByText("18 embedded · 4 awaiting")).toBeInTheDocument();
+  });
+
+  it("does not divide one count by the other, because they are not two halves of a fraction", async () => {
+    // The regression this pins: `embedded_count` is `COUNT(*)` over
+    // `memory_embeddings`, `needs_embedding` counts only rows passing
+    // `rows_needing_embedding`'s WHERE clause, and `memory_count +
+    // note_count` is an unfiltered `COUNT(*)` over both tables. A ratio
+    // over any two of those has a denominator holding rows that will
+    // never be embedded, so a fully healthy store rendered `live` beside
+    // a permanent `18 / 42 indexed`. Asserted as *absence* of any
+    // fraction-shaped string, so it cannot come back as `18/42` either.
+    await renderCard({ ...live, memoryCount: 30, noteCount: 12, embeddedCount: 18, needsEmbedding: 0 });
+    const cardEl = await screen.findByRole("region", { name: CARD_NAME });
+    const text = cardEl.textContent ?? "";
+
+    expect(text).toContain("18 embedded");
+    expect(text).toContain("0 awaiting");
+    // No `/`, no `%`, and neither total-count field is used at all.
+    expect(text, "a card must not render a fraction").not.toMatch(/[/%]/);
+    expect(text).not.toContain("42");
+    expect(text).not.toContain("30");
+    // And the raw counts are still available from the fetch — they are
+    // just not what the card claims about the index.
+    expect(live.memoryCount + live.noteCount).toBe(42);
   });
 });
 
@@ -390,6 +414,66 @@ describe("a failed fetch renders nothing at all", () => {
     render(<StatusCard />);
     await waitFor(() => expect(api.knowledgeIndexStatus).toHaveBeenCalled());
     expect(card()).not.toBeInTheDocument();
+  });
+
+  it("does not let a failure poison a later mount", async () => {
+    // What this covers, precisely: a *new* mount after a failure fetches
+    // again and reports. The `useRef` is per-instance, so a fresh card
+    // starts with a fresh ref and cannot inherit the old request.
+    //
+    // What it does NOT cover, and no test here can: the same instance
+    // re-running its effect after a failure. The effect has `[]` deps, so
+    // that cannot happen today, and `pending.current = null` in the catch
+    // is what would make it correct if the deps ever changed. That line is
+    // therefore unverified — see the report. Asserted here because the
+    // reachable half is worth pinning, and because a test titled after the
+    // unreachable half would be a guard that cannot fail.
+    vi.spyOn(api, "knowledgeIndexStatus").mockRejectedValueOnce(new Error("down"));
+    const first = render(<StatusCard />);
+    await act(async () => {});
+    expect(card()).not.toBeInTheDocument();
+    first.unmount();
+
+    vi.spyOn(api, "knowledgeIndexStatus").mockResolvedValue(live);
+    render(<StatusCard />);
+    await act(async () => {});
+    expect(card(), "a later mount must fetch afresh and still report").toBeInTheDocument();
+  });
+});
+
+/**
+ * React 18 runs a mount effect twice, and `src/main.tsx:10` renders the
+ * app inside `React.StrictMode` — so this is the shipping app's mount
+ * sequence, not a test artefact. Without an in-flight guard it is two
+ * `knowledge_index_status` round-trips per sidebar mount in production.
+ *
+ * Asserted here rather than at the sidebar because the guard belongs to
+ * the hook: `Sidebar.test.tsx` renders without StrictMode and so cannot
+ * see it at all.
+ */
+describe("StrictMode does not double the index query", () => {
+  beforeEach(() => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  it("fetches once for the card, and once for the dot", async () => {
+    for (const node of [<StatusCard key="card" />, <StatusDot key="dot" />]) {
+      vi.spyOn(api, "knowledgeIndexStatus").mockResolvedValue(live);
+      const view = render(<StrictMode>{node}</StrictMode>);
+      await act(async () => {});
+      expect(api.knowledgeIndexStatus, "one query per mount, not two").toHaveBeenCalledTimes(1);
+      // The negative control: the component rendered, so the count of 1
+      // is a dedupe rather than a component that never fetched.
+      expect(view.container).not.toBeEmptyDOMElement();
+      view.unmount();
+    }
+  });
+
+  it("does not double the failed-fetch log either", async () => {
+    vi.spyOn(api, "knowledgeIndexStatus").mockRejectedValue(new Error("down"));
+    render(<StrictMode><StatusCard /></StrictMode>);
+    await act(async () => {});
+    expect(api.knowledgeIndexStatus).toHaveBeenCalledTimes(1);
   });
 });
 

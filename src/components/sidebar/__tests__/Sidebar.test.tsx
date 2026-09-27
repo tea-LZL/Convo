@@ -472,8 +472,18 @@ describe("the collapsed rail keeps a memory status", () => {
 
   it("queries the index once per sidebar, whichever branch is mounted", async () => {
     // The card and the dot are in mutually exclusive branches, so this
-    // must not become two round-trips to the backend.
+    // must not become two round-trips to the backend. Both halves matter:
+    // testing only the collapsed side would pass even if someone added a
+    // `StatusDot` to the expanded tree, because the count would still be
+    // 1 — from the card, with the dot's own query invisible.
     await renderSidebar(true, { status: STALE_STATUS });
+    expect(screen.getByRole("img"), "the collapsed branch shows the dot").toBeInTheDocument();
     expect(api.knowledgeIndexStatus).toHaveBeenCalledTimes(1);
+    cleanup();
+
+    await renderSidebar(false, { status: STALE_STATUS });
+    expect(statusCard(), "the expanded branch shows the card").not.toBeNull();
+    expect(screen.queryByRole("img"), "and not the dot").not.toBeInTheDocument();
+    expect(api.knowledgeIndexStatus, "one query in the expanded branch too").toHaveBeenCalledTimes(1);
   });
 });

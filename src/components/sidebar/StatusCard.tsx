@@ -42,8 +42,45 @@
  * a sidebar fails to render, so there is no error state, no placeholder
  * and no retry affordance here — the Memory page owns that conversation.
  * `StatusDot` inherits that: no status, no dot.
+ *
+ * ── Two absolute numbers, and no ratio anywhere ───────────────────────
+ * The line reads `N embedded · M awaiting`. It was briefly a coverage
+ * ratio, and that was wrong in a way worth writing down, because the
+ * numbers it used are not the two halves of one fraction:
+ *
+ *   - `embedded_count` is `COUNT(*)` over `memory_embeddings`.
+ *   - `needs_embedding` comes from `rows_needing_embedding`, which counts
+ *     only rows passing `is_enabled = 1 AND superseded_by IS NULL AND
+ *     LENGTH(content) >= 32` — and for notes, `pinned = 1` (see
+ *     `src-tauri/src/memory/embed.rs:124`).
+ *   - `memory_count + note_count` is a raw `COUNT(*)` over both tables,
+ *     with none of those filters.
+ *
+ * So a perfectly healthy store — every *embeddable* row vectorised — put
+ * unpinned notes, one-line memories, disabled rows and superseded rows in
+ * the denominator, none of which will ever be embedded. The card would
+ * read `live` beside a permanent `18 / 42 indexed`, which is a card whose
+ * stated job is honest reporting, disagreeing with itself in the two
+ * halves of the same line.
+ *
+ * The reviewer's alternative denominator, `embedded_count +
+ * needs_embedding`, is no cleaner: `rows_needing_embedding` also returns
+ * rows whose embedding is under a *different* model or dimension, while
+ * `embedded_count` counts embeddings in *any* model. The two populations
+ * overlap, so their sum is not a denominator either.
+ *
+ * Two absolute numbers are unambiguous under every population definition,
+ * which is the only property a status card actually needs. The chip tone
+ * already carries the health; the numbers only have to be true.
+ *
+ * **Follow-up, not done here:** a real coverage ratio needs a denominator
+ * Rust computes over the *embeddable* population — one field on
+ * `KnowledgeIndexStatus`, counting the rows `rows_needing_embedding`'s
+ * `WHERE` clause selects, ignoring the model/dim predicate. This plan
+ * touches no Rust, so the ratio cannot be built correctly from what the
+ * frontend is given, and a wrong one is worse than none.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, KnowledgeIndexStatus } from "../../lib/api";
 import { errorClass, recordLog } from "../../lib/logger";
 import { Tooltip } from "../ui/Form";
@@ -106,7 +143,7 @@ export const STATUS_TEXT = {
 
 export type StatusText = keyof typeof STATUS_TEXT;
 
-export interface MemoryStatus {
+interface MemoryStatus {
   status: KnowledgeIndexStatus;
   tone: StatusTone;
   text: StatusText;
@@ -118,7 +155,7 @@ export interface MemoryStatus {
  * first, then a stale index, then a live one. Matching the order here is
  * what keeps the chip and the note from disagreeing about the same fetch.
  */
-export function memoryStatus(status: KnowledgeIndexStatus): MemoryStatus {
+function memoryStatus(status: KnowledgeIndexStatus): MemoryStatus {
   if (!status.embeddingModel) return { status, tone: "subtle", text: "off" };
   if (status.needsReindex) return { status, tone: "warn", text: "reindex" };
   if (status.needsEmbedding === 0) return { status, tone: "success", text: "live" };
@@ -133,28 +170,64 @@ export function memoryStatus(status: KnowledgeIndexStatus): MemoryStatus {
  * dot — which are in mutually exclusive branches of the sidebar, so
  * exactly one of them is ever mounted and this is one query either way.
  * `null` until it answers, and `null` again if it fails.
+ *
+ * The in-flight guard is not belt-and-braces: the app renders inside
+ * `React.StrictMode` (`src/main.tsx:10`), and React 18 runs a mount
+ * effect twice. Without the guard that is two `knowledge_index_status`
+ * round-trips on every sidebar mount, in the shipping app, not only in a
+ * test. The second run re-uses the first run's promise.
+ *
+ * **What the guard must not do is skip the second run's state update.**
+ * The first version returned early from the effect when a request was
+ * already in flight, which deduplicated the *fetch* and with it the only
+ * closure that would call `setStatus` — the first run's cleanup had
+ * already marked itself dead. The card then rendered nothing, forever,
+ * in the one environment it actually ships in. The guard is therefore on
+ * the request, not on the effect body: every run attaches to the shared
+ * promise and every run applies the result.
+ *
+ * What the guard does *not* cover is two *different* components of this
+ * module mounted at once — a `useRef` is per-instance, so `StatusCard`
+ * and `StatusDot` side by side would each fetch. That case does not exist
+ * today because of the mutual exclusion above, and a test pins it; a
+ * module-level flag would cover it and is worse, because shared mutable
+ * state outlives an error and leaks between tests.
  */
-export function useMemoryIndexStatus(): KnowledgeIndexStatus | null {
+function useMemoryIndexStatus(): KnowledgeIndexStatus | null {
   const [status, setStatus] = useState<KnowledgeIndexStatus | null>(null);
+  const pending = useRef<Promise<KnowledgeIndexStatus | null> | null>(null);
 
   useEffect(() => {
     let live = true;
-    // `await` inside the try, not a `.then`: the Tauri boundary is
-    // untyped at runtime, and a caller that resolves with something that
-    // is not a promise must not take the sidebar down with it.
-    (async () => {
-      try {
-        const next = await api.knowledgeIndexStatus();
-        if (live) setStatus(next ?? null);
-      } catch (error) {
-        recordLog({
-          operation: "knowledge_index_status",
-          status: "failed",
-          route: "sidebar",
-          errorClass: errorClass(error),
-        });
-      }
-    })();
+    if (!pending.current) {
+      pending.current = (async () => {
+        try {
+          // `await` inside the try, not a `.then`: the Tauri boundary is
+          // untyped at runtime, and a caller that resolves with something
+          // that is not a promise must not take the sidebar down with it.
+          return (await api.knowledgeIndexStatus()) ?? null;
+        } catch (error) {
+          recordLog({
+            operation: "knowledge_index_status",
+            status: "failed",
+            route: "sidebar",
+            errorClass: errorClass(error),
+          });
+          // A failure is deliberately not remembered by the ref. This is
+          // unreachable today — the effect has `[]` deps, and a `useRef`
+          // is per-instance, so no later mount can see this ref anyway —
+          // and it is kept because it costs one line and makes the ref
+          // correct rather than incidentally correct. No test pins it,
+          // which is recorded in the report rather than glossed.
+          pending.current = null;
+          return null;
+        }
+      })();
+    }
+    // The stored promise never rejects, so this is always safe to chain.
+    pending.current.then((next) => {
+      if (live) setStatus(next);
+    });
     return () => {
       live = false;
     };
@@ -173,8 +246,8 @@ export function StatusCard() {
 
   const state = memoryStatus(status);
   const model = status.embeddingModel ?? "no model";
-  const total = (status.memoryCount ?? 0) + (status.noteCount ?? 0);
   const embedded = status.embeddedCount ?? 0;
+  const awaiting = status.needsEmbedding ?? 0;
   const note = status.semanticNote;
 
   return (
@@ -184,10 +257,9 @@ export function StatusCard() {
     >
       <div className="flex min-w-0 items-center justify-between gap-2">
         <span className={`${CHIP_BASE} ${CHIP_TONE[state.tone]}`}>{STATUS_TEXT[state.text]}</span>
-        {/* The counts shrink before the model name does: they are the
-            comparative read, the model name is the detail. */}
+        {/* Two absolute numbers, never a ratio — see the file header. */}
         <span className="shrink-0 font-mono text-[10px] text-text-subtle tabular-nums">
-          {`${embedded} / ${total} indexed`}
+          {`${embedded} embedded · ${awaiting} awaiting`}
         </span>
       </div>
 
