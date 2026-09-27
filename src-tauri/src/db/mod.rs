@@ -59,6 +59,14 @@ pub fn init_pool() -> Result<Arc<DbPool>, String> {
     Ok(Arc::new(pool))
 }
 
+/// The real migration chain, for tests that need the actual schema rather
+/// than a hand-rolled approximation. `#[cfg(test)]` so no command can reach
+/// it.
+#[cfg(test)]
+pub(crate) fn migrations_for_tests() -> Migrations<'static> {
+    migrations()
+}
+
 pub fn run_migrations(pool: &DbPool) -> Result<(), String> {
     let mut conn = pool.get().map_err(|e| e.to_string())?;
     let m = migrations();
