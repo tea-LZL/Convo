@@ -375,9 +375,14 @@ fn an_unknown_owner_type_is_rejected_by_us_and_says_which_one() {
 /// Every type the function does not know is named in the error, whatever
 /// the schema would have done with it. The empty string and the wrong-case
 /// spellings are here because a type is a string this module assembled, and
-/// an empty one is what an unset field carries. `contains("")` is trivially
-/// true, so the empty entry rests on `is_err` alone; the others carry the
-/// real weight.
+/// an empty one is what an unset field carries.
+///
+/// The empty entry is the weakest of the six: `contains("")` is trivially
+/// true, so it rests on `is_err` and on the message not being SQLite's. A
+/// fall-through would fail both of those — SQLite rejects `""` and says
+/// `CHECK constraint failed` — so the entry is not vacuous, it just leans
+/// on two of the three assertions instead of all three. The other five
+/// carry the real weight.
 #[test]
 fn every_owner_type_we_do_not_handle_is_rejected_by_name() {
     let conn = migrated_conn();
@@ -433,4 +438,61 @@ fn reinforcing_a_memory_that_no_longer_exists_errors_and_logs_nothing() {
         events, 0,
         "an event was logged for a memory that was never reinforced"
     );
+}
+
+/// The counter and the event are one fact stated twice, so they commit
+/// together. Committed separately, the `UPDATE` can land and the event
+/// insert can then fail, leaving a boost that moved with no log behind it
+/// — the same half-write the missing-row guard closes, pointing the other
+/// way.
+///
+/// The second write is made to fail through the real code path rather than
+/// through fault injection: a `BEFORE INSERT` trigger on `memory_events`
+/// that aborts. No seam was added to `record_injection`, and the statement
+/// that fails is the genuine one `log_event` issues.
+///
+/// `ABORT` rather than `ROLLBACK` is the realistic shape — a constraint
+/// violation rolls back the failing statement, not the transaction, which
+/// is exactly the case where the earlier `UPDATE` is left pending and only
+/// the caller's own error handling can undo it.
+#[test]
+fn a_failed_event_write_rolls_the_counter_back_with_it() {
+    let conn = migrated_conn();
+    conn.execute(
+        "INSERT INTO memory_items (id, kind, title, content, is_enabled, access_count)
+         VALUES ('m1','skill','Build','npm run build',1,0)",
+        [],
+    )
+    .unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER refuse_recall BEFORE INSERT ON memory_events
+         BEGIN SELECT RAISE(ABORT, 'event log is unavailable'); END;",
+    )
+    .unwrap();
+
+    let result = record_injection(
+        &conn,
+        &row("memory", "m1", "Pinned memories", "npm run build"),
+        Some("s1"),
+    );
+
+    assert!(result.is_err(), "a failed event write must be reported");
+    let (count, seen, events): (i64, Option<String>, i64) = conn
+        .query_row(
+            "SELECT (SELECT access_count FROM memory_items WHERE id = 'm1'),
+                    (SELECT last_seen_at FROM memory_items WHERE id = 'm1'),
+                    (SELECT COUNT(*) FROM memory_events WHERE owner_id = 'm1')",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        count, 0,
+        "the counter committed even though the event write failed"
+    );
+    assert_eq!(
+        seen, None,
+        "last_seen_at committed even though the event write failed"
+    );
+    assert_eq!(events, 0);
 }

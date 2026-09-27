@@ -475,14 +475,34 @@ fn with_title(title: Option<String>, body: String) -> String {
 /// this function's behaviour depend on a constraint a later migration is
 /// free to widen, and the day it is widened a forgotten owner type starts
 /// writing recall events for a row whose counter never moved.
+///
+/// Both writes happen in one transaction, because the counter and the log
+/// are one fact stated twice. Committed separately, the `UPDATE` can land
+/// and the event insert can then fail — a trigger, a full disk, a lock —
+/// leaving a boost that moved with no log to show for it. The same
+/// half-write as a missing row, pointing the other way, and the same
+/// consequence: a number nobody can reconcile with the record behind it.
+///
+/// `tx.commit()` is explicit rather than left to `Drop`. Rollback on drop
+/// is right for the error paths and wrong for the success path, because
+/// dropping the transaction discards the outcome and reports `Ok(())` —
+/// a caller would read a silently rolled-back write as a recorded
+/// reinforcement. The commit says it happened; every early return above
+/// happens before it, so the missing-row and unknown-type errors roll back
+/// both writes by never reaching it.
+///
+/// Not re-entrant: a caller that already holds a transaction on `conn`
+/// will get "cannot start a transaction within a transaction" from the
+/// first line. Callers pass the pool's connection, not a transaction.
 pub fn record_injection(
     conn: &Connection,
     row: &ContextRow,
     session_id: Option<&str>,
 ) -> Result<(), String> {
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     match row.owner_type.as_str() {
         "memory" => {
-            let reinforced = conn
+            let reinforced = tx
                 .execute(
                     "UPDATE memory_items
                      SET access_count = access_count + 1,
@@ -499,6 +519,9 @@ pub fn record_injection(
             // `plan_send` never fails on this — so a delete racing a send
             // costs a warning line, not a message. That is the right trade:
             // the alternative is a boost that drifts with no way to see why.
+            //
+            // Returned before the commit, so the transaction is dropped
+            // with nothing written: no counter, no event.
             if reinforced == 0 {
                 return Err(format!(
                     "cannot reinforce a memory that does not exist: {}",
@@ -509,5 +532,7 @@ pub fn record_injection(
         "note" => {} // No counter to bump; the event below is the record.
         other => return Err(format!("unknown context owner type: {}", other)),
     }
-    crate::memory::embed::log_event(conn, &row.owner_type, &row.owner_id, "recall", session_id)
+    crate::memory::embed::log_event(&tx, &row.owner_type, &row.owner_id, "recall", session_id)
+        .map_err(|e| format!("reinforce: log event: {}", e))?;
+    tx.commit().map_err(|e| format!("commit: {}", e))
 }

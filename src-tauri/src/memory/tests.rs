@@ -3159,18 +3159,3 @@ fn injecting_a_note_logs_the_recall_without_touching_a_counter() {
         .unwrap();
     assert_eq!(events, 1);
 }
-
-/// An unknown owner type is an error, not a silent no-op. A silently
-/// skipped reinforcement is indistinguishable from a working one until
-/// someone reads the boost numbers months later.
-#[test]
-fn an_unknown_owner_type_is_reported_rather_than_ignored() {
-    let conn = migrated_conn();
-    let row = context::ContextRow {
-        owner_type: "document".into(),
-        owner_id: "d1".into(),
-        label: "Notes".into(),
-        text: "x".into(),
-    };
-    assert!(context::record_injection(&conn, &row, None).is_err());
-}
