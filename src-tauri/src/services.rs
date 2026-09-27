@@ -306,6 +306,29 @@ pub fn ensure_default_ollama_provider(pool: &DbPool) -> Result<(), String> {
     Ok(())
 }
 
+/// Where ollama.com serves its API. Seeded as a provider so a user with a
+/// cloud key and no local server is never asked to type a base URL.
+pub const OLLAMA_CLOUD_URL: &str = "https://ollama.com/api";
+
+/// Seed the `Ollama Cloud` provider. Idempotent.
+///
+/// Deliberately not the default provider: the local one stays default so an
+/// existing install's behaviour is unchanged, and someone with a cloud key
+/// and a local server picks cloud per session rather than globally.
+pub fn ensure_ollama_cloud_provider(pool: &DbPool) -> Result<(), String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    if provider_url_exists(&conn, "ollama", Some(OLLAMA_CLOUD_URL), None)? {
+        return Ok(());
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO providers (id, kind, name, base_url, is_default) VALUES (?1, 'ollama', 'Ollama Cloud', ?2, 0)",
+        rusqlite::params![id, OLLAMA_CLOUD_URL],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 pub fn ensure_builtin_themes() -> Result<(), String> {
     use crate::themes::builtin_themes;
     use std::sync::Arc;
@@ -369,6 +392,93 @@ mod tests {
             !provider_url_exists(&conn, "ollama", Some("http://localhost:11434"), Some("p1"))
                 .unwrap()
         );
+    }
+
+    use super::*;
+
+    fn pool_with_providers() -> DbPool {
+        use r2d2::Pool;
+        use r2d2_sqlite::SqliteConnectionManager;
+        let manager = SqliteConnectionManager::memory();
+        Pool::builder().max_size(1).build(manager).expect("pool")
+    }
+
+    #[test]
+    fn cloud_provider_seed_is_idempotent() {
+        let pool = pool_with_providers();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute_batch(
+                "CREATE TABLE providers (
+                    id TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    base_url TEXT,
+                    is_default INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                );",
+            )
+            .unwrap();
+        }
+
+        ensure_ollama_cloud_provider(&pool).unwrap();
+        ensure_ollama_cloud_provider(&pool).unwrap();
+        ensure_ollama_cloud_provider(&pool).unwrap();
+
+        let conn = pool.get().unwrap();
+        let (n, name, url, is_default): (i64, String, String, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), name, base_url, is_default FROM providers",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "re-running the seed must not duplicate the provider");
+        assert_eq!(name, "Ollama Cloud");
+        assert_eq!(url, OLLAMA_CLOUD_URL);
+        assert_eq!(
+            is_default, 0,
+            "cloud must not take the default slot from the local provider"
+        );
+    }
+
+    #[test]
+    fn cloud_seed_does_not_disturb_an_existing_local_provider() {
+        let pool = pool_with_providers();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute_batch(
+                "CREATE TABLE providers (
+                    id TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    base_url TEXT,
+                    is_default INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                );",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO providers (id, kind, name, base_url, is_default)
+                 VALUES ('local','ollama','Ollama (local)','http://localhost:11434',1)",
+                [],
+            )
+            .unwrap();
+        }
+
+        ensure_ollama_cloud_provider(&pool).unwrap();
+
+        let conn = pool.get().unwrap();
+        let still_default: String = conn
+            .query_row("SELECT name FROM providers WHERE is_default = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM providers", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(still_default, "Ollama (local)");
+        assert_eq!(total, 2, "the local provider must survive alongside cloud");
     }
 }
 

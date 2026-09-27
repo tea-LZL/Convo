@@ -12,17 +12,35 @@ use super::discovery::DiscoveredModel;
 
 pub struct OllamaProvider {
     base_url: String,
+    api_key: Option<String>,
     http: reqwest::Client,
 }
 
 impl OllamaProvider {
-    pub fn new(base_url: String, _api_key: Option<String>) -> Self {
+    pub fn new(base_url: String, api_key: Option<String>) -> Self {
         let http = reqwest::Client::builder().build().expect("reqwest client");
-        Self { base_url, http }
+        Self {
+            base_url,
+            api_key,
+            http,
+        }
     }
 
     fn url(&self, path: &str) -> String {
         format!("{}/{}", self.base_url.trim_end_matches('/'), path)
+    }
+
+    /// Attach the bearer token when one is configured.
+    ///
+    /// Applied unconditionally rather than branching on host: local Ollama
+    /// ignores an unexpected `Authorization` header, and the alternative —
+    /// sniffing whether a base URL is `ollama.com` — breaks the moment
+    /// anyone points Convo at a self-hosted proxy or a cloud gateway.
+    fn auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match &self.api_key {
+            Some(key) => req.bearer_auth(key),
+            None => req,
+        }
     }
 }
 
@@ -31,8 +49,7 @@ impl Provider for OllamaProvider {
     fn list_models<'a>(&'a self) -> ProviderFuture<'a, Vec<ModelInfo>> {
         Box::pin(async move {
             let resp = self
-                .http
-                .get(self.url("api/tags"))
+                .auth(self.http.get(self.url("api/tags")))
                 .send()
                 .await
                 .map_err(|e| ProviderError::Http(e.to_string()))?;
@@ -88,8 +105,7 @@ impl Provider for OllamaProvider {
     fn chat_stream<'a>(&'a self, request: ChatRequest) -> ProviderFuture<'a, ProviderStream> {
         Box::pin(async move {
             let resp = self
-                .http
-                .post(self.url("api/chat"))
+                .auth(self.http.post(self.url("api/chat")))
                 .json(&request)
                 .send()
                 .await

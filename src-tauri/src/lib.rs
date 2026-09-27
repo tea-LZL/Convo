@@ -42,6 +42,9 @@ pub fn run() {
         eprintln!("FATAL: DB migration failed: {}", e);
         std::process::exit(1);
     }
+    if let Err(e) = services_mod::ensure_ollama_cloud_provider(&pool) {
+        eprintln!("convo: could not seed the Ollama Cloud provider: {}", e);
+    }
     if let Err(e) = services_mod::ensure_default_ollama_provider(&pool) {
         eprintln!("WARN: default provider init: {}", e);
     }

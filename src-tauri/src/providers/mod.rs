@@ -67,7 +67,10 @@ pub async fn probe(
     api_key: Option<&str>,
 ) -> Result<ProbeResult, String> {
     let p: Box<dyn Provider> = match kind {
-        "ollama" => Box::new(ollama::OllamaProvider::new(base_url.to_string(), None)),
+        "ollama" => Box::new(ollama::OllamaProvider::new(
+            base_url.to_string(),
+            api_key.map(|s| s.to_string()),
+        )),
         "openai_compat" => Box::new(openai_compat::OpenAiCompatProvider::new(
             base_url.to_string(),
             api_key.map(|s| s.to_string()),
