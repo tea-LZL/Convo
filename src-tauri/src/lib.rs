@@ -15,6 +15,7 @@ use commands::chat_stream as chat_stream_cmd;
 use commands::compare as compare_cmd;
 use commands::documents as documents_cmd;
 use commands::hardware as hardware_cmd;
+use commands::knowledge as knowledge_cmd;
 use commands::memory as memory_cmd;
 use commands::memory_reviews as memory_reviews_cmd;
 use commands::models as models_cmd;
@@ -177,6 +178,8 @@ pub fn run() {
             tasks_cmd::delete_task,
             tasks_cmd::complete_task,
             // Memory
+            knowledge_cmd::knowledge_index_status,
+            knowledge_cmd::memory_recall,
             memory_cmd::list_memory,
             memory_cmd::upsert_memory,
             memory_cmd::delete_memory,

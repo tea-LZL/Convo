@@ -17,6 +17,7 @@ fn conn_with_settings(pairs: &[(&str, &str)]) -> Connection {
 }
 
 use super::config::{self, ModelRoute, ModelRouting};
+use super::retrieve;
 
 #[test]
 fn routing_defaults_to_unset_when_no_row_exists() {
@@ -219,6 +220,15 @@ fn add_note(conn: &Connection, id: &str, body: &str, pinned: i64) {
     conn.execute(
         "INSERT INTO notes (id, title, body, pinned) VALUES (?1,'N',?2,?3)",
         params![id, body, pinned],
+    )
+    .unwrap();
+}
+
+/// The same, with a real title, for the retrieval corpus.
+fn add_note_titled(conn: &Connection, id: &str, title: &str, body: &str, pinned: i64) {
+    conn.execute(
+        "INSERT INTO notes (id, title, body, pinned) VALUES (?1,?2,?3,?4)",
+        params![id, title, body, pinned],
     )
     .unwrap();
 }
@@ -709,4 +719,267 @@ fn load_vectors_chunks_past_the_sqlite_variable_limit() {
     }
     let loaded = load_vectors(&conn, "m", &rows).unwrap();
     assert_eq!(loaded.len(), 2000);
+}
+
+// ---------------------------------------------------------------------------
+// Retrieval routes
+// ---------------------------------------------------------------------------
+
+/// A memory with an explicit kind and title. Plan 2's three-argument
+/// `add_memory` stays as it is, because a dozen of its tests use it.
+fn add_memory_full(conn: &Connection, id: &str, kind: &str, title: &str, content: &str) {
+    conn.execute(
+        "INSERT INTO memory_items (id, kind, title, content) VALUES (?1, ?2, ?3, ?4)",
+        params![id, kind, title, content],
+    )
+    .unwrap();
+}
+
+/// A corpus where every query has at least one defensible answer, plus
+/// decoys that only a keyword route or only a semantic route would find.
+fn knowledge_corpus(conn: &Connection) {
+    for (id, kind, title, content) in [
+        (
+            "db-choice",
+            "decision",
+            "Database choice",
+            "Chose Postgres over MySQL for the multi-tenant billing schema",
+        ),
+        (
+            "db-pool",
+            "project_fact",
+            "Connection pooling",
+            "PgBouncer sits in front of Postgres with pool_mode set to transaction",
+        ),
+        (
+            "migrate",
+            "skill",
+            "Running migrations",
+            "Apply migrations with just so it runs pending SQL and exits nonzero on failure",
+        ),
+        (
+            "editor",
+            "user_pref",
+            "Editor",
+            "Prefers Neovim with lazy.nvim and no plugin manager",
+        ),
+        (
+            "deploy",
+            "constraint",
+            "Deploy window",
+            "No production deploys on Fridays after 14:00 UTC",
+        ),
+    ] {
+        add_memory_full(conn, id, kind, title, content);
+    }
+    add_note_titled(
+        conn,
+        "db-runbook",
+        "Runbook",
+        "Restart PgBouncer after a Postgres failover, then check replication lag",
+        1,
+    );
+    add_note_titled(
+        conn,
+        "editor-notes",
+        "Editor setup",
+        "Neovim config lives in a dotfiles repo, module-per-plugin",
+        0,
+    );
+}
+
+fn recall_opts<'a>(query: &'a str) -> retrieve::RecallOptions<'a> {
+    retrieve::RecallOptions {
+        query,
+        session_id: None,
+        embedding_model: None,
+        embedding_dim: None,
+        kinds: None,
+        top_k: config::TOP_K_DEFAULT as usize,
+        lambda: retrieve::DEFAULT_LAMBDA,
+    }
+}
+
+#[test]
+fn recall_finds_an_exact_keyword_match() {
+    let conn = migrated_conn();
+    knowledge_corpus(&conn);
+    let hits = retrieve::recall(&conn, &recall_opts("PgBouncer"));
+    assert!(!hits.is_empty());
+    assert_eq!(hits[0].owner_id, "db-pool", "got {:?}", ids(&hits));
+}
+
+fn ids(hits: &[retrieve::RankedMemory]) -> Vec<&str> {
+    hits.iter().map(|h| h.owner_id.as_str()).collect()
+}
+
+#[test]
+fn recall_survives_an_empty_index() {
+    let conn = migrated_conn();
+    assert!(retrieve::recall(&conn, &recall_opts("anything")).is_empty());
+}
+
+#[test]
+fn recall_excludes_a_superseded_memory() {
+    // Review Focus 3. A superseded row is history, not something to
+    // inject into a prompt — but it stays readable in the item list.
+    let conn = migrated_conn();
+    knowledge_corpus(&conn);
+    conn.execute(
+        "UPDATE memory_items SET superseded_by = 'db-choice' WHERE id = 'migrate'",
+        [],
+    )
+    .unwrap();
+    let hits = retrieve::recall(&conn, &recall_opts("migrations"));
+    assert!(!ids(&hits).contains(&"migrate"), "got {:?}", ids(&hits));
+    let still_there: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memory_items WHERE id = 'migrate'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(still_there, 1, "supersede retains the row for history");
+}
+
+#[test]
+fn recall_excludes_a_disabled_memory() {
+    let conn = migrated_conn();
+    knowledge_corpus(&conn);
+    conn.execute(
+        "UPDATE memory_items SET is_enabled = 0 WHERE id = 'editor'",
+        [],
+    )
+    .unwrap();
+    assert!(!ids(&retrieve::recall(&conn, &recall_opts("neovim"))).contains(&"editor"));
+}
+
+#[test]
+fn recall_without_an_embedding_model_is_keyword_only_and_still_works() {
+    // Review Focus 1. The most likely first-run state.
+    let conn = migrated_conn();
+    knowledge_corpus(&conn);
+    let hits = retrieve::recall(&conn, &recall_opts("postgres"));
+    assert!(
+        !hits.is_empty(),
+        "keyword recall must work with no embedder"
+    );
+    assert!(hits.len() <= config::TOP_K_DEFAULT as usize);
+    assert!(
+        hits.iter().all(|h| h.reason.contains("keyword")),
+        "no vector route was configured, so nothing may claim a semantic match"
+    );
+}
+
+#[test]
+fn recall_honours_a_per_session_allowlist() {
+    // A non-empty override list is an allowlist, matching the semantics
+    // buildContextBlock already has.
+    let conn = migrated_conn();
+    knowledge_corpus(&conn);
+    conn.execute("INSERT INTO sessions (id, title) VALUES ('s1','S')", [])
+        .unwrap();
+    conn.execute(
+        "INSERT INTO session_overrides (session_id, item_id) VALUES ('s1','db-choice')",
+        [],
+    )
+    .unwrap();
+    let mut o = recall_opts("postgres");
+    o.session_id = Some("s1");
+    let hits = retrieve::recall(&conn, &o);
+    assert!(!hits.is_empty());
+    assert!(
+        hits.iter().all(|h| h.owner_id == "db-choice"),
+        "allowlist not applied: {:?}",
+        ids(&hits)
+    );
+}
+
+#[test]
+fn recall_with_no_overrides_includes_everything() {
+    let conn = migrated_conn();
+    knowledge_corpus(&conn);
+    conn.execute("INSERT INTO sessions (id, title) VALUES ('s1','S')", [])
+        .unwrap();
+    let mut o = recall_opts("postgres");
+    o.session_id = Some("s1");
+    let hits = retrieve::recall(&conn, &o);
+    assert!(
+        hits.len() > 1,
+        "an empty override list must not filter to nothing"
+    );
+}
+
+#[test]
+fn recall_is_deterministic() {
+    // Rank comes from a fused score. Two calls over unchanged data must
+    // agree exactly, or the Memory tab shuffles on every turn for no
+    // reason and the user stops trusting it.
+    let conn = migrated_conn();
+    knowledge_corpus(&conn);
+    assert_eq!(
+        retrieve::recall(&conn, &recall_opts("postgres pooling")),
+        retrieve::recall(&conn, &recall_opts("postgres pooling"))
+    );
+}
+
+#[test]
+fn recall_respects_top_k() {
+    let conn = migrated_conn();
+    knowledge_corpus(&conn);
+    let mut o = recall_opts("postgres neovim deploy");
+    o.top_k = 2;
+    assert_eq!(retrieve::recall(&conn, &o).len(), 2);
+}
+
+#[test]
+fn recall_with_a_nonsense_query_returns_nothing_rather_than_erroring() {
+    let conn = migrated_conn();
+    knowledge_corpus(&conn);
+    for q in ["", "   ", "!!!", "\"", "*", "AND OR NOT", "a to"] {
+        assert!(
+            retrieve::recall(&conn, &recall_opts(q)).is_empty(),
+            "query {:?} returned {:?}",
+            q,
+            ids(&retrieve::recall(&conn, &recall_opts(q)))
+        );
+    }
+}
+
+#[test]
+fn every_recalled_item_carries_a_reason() {
+    let conn = migrated_conn();
+    knowledge_corpus(&conn);
+    for hit in retrieve::recall(&conn, &recall_opts("postgres")) {
+        assert!(
+            !hit.reason.trim().is_empty(),
+            "no reason for {}",
+            hit.owner_id
+        );
+    }
+}
+
+#[test]
+fn recall_can_find_a_pinned_note() {
+    // Notes are in the same index. A pinned one is the kind a query is
+    // most likely to want.
+    let conn = migrated_conn();
+    knowledge_corpus(&conn);
+    let hits = retrieve::recall(&conn, &recall_opts("pgbouncer failover"));
+    assert!(ids(&hits).contains(&"db-runbook"), "got {:?}", ids(&hits));
+}
+
+#[test]
+fn recall_respects_a_kind_filter() {
+    let conn = migrated_conn();
+    knowledge_corpus(&conn);
+    let mut o = recall_opts("postgres neovim");
+    o.kinds = Some(vec!["decision".to_string()]);
+    let hits = retrieve::recall(&conn, &o);
+    assert!(!hits.is_empty());
+    assert!(
+        hits.iter().all(|h| h.kind == "decision"),
+        "got {:?}",
+        ids(&hits)
+    );
 }
