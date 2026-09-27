@@ -46,6 +46,7 @@ interface TextInputProps {
   type?: string;
   autoFocus?: boolean;
   onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
+  onBlur?: (e: React.FocusEvent<HTMLInputElement>) => void;
   className?: string;
   disabled?: boolean;
   maxLength?: number;
@@ -55,7 +56,7 @@ interface TextInputProps {
   "aria-describedby"?: string;
 }
 
-export function TextInput({ value, onChange, placeholder, type = "text", autoFocus, onKeyDown, className = "", disabled, maxLength, id, "aria-label": ariaLabel, "aria-labelledby": ariaLabelledBy, "aria-describedby": ariaDescribedBy }: TextInputProps) {
+export function TextInput({ value, onChange, placeholder, type = "text", autoFocus, onKeyDown, onBlur, className = "", disabled, maxLength, id, "aria-label": ariaLabel, "aria-labelledby": ariaLabelledBy, "aria-describedby": ariaDescribedBy }: TextInputProps) {
   return (
     <input
       type={type}
@@ -64,6 +65,7 @@ export function TextInput({ value, onChange, placeholder, type = "text", autoFoc
       placeholder={placeholder}
       autoFocus={autoFocus}
       onKeyDown={onKeyDown}
+      onBlur={onBlur}
       disabled={disabled}
       maxLength={maxLength}
       id={id}

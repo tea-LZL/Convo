@@ -7,6 +7,7 @@ import { useTourStore } from "../stores/tour";
 import { api, Provider, SearchConfig } from "../lib/api";
 import { errorClass, recordLog } from "../lib/logger";
 import { ModelsSection as ProviderModelsSection } from "./settings/ModelsSection";
+import { KnowledgeSection } from "./settings/KnowledgeSection";
 import { Button } from "../components/ui/Button";
 import { RouteShell } from "../components/ui/RouteShell";
 import { Modal } from "../components/ui/Modal";
@@ -14,7 +15,7 @@ import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { Switch, Tabs, TextInput, TextArea, Select, Badge } from "../components/ui/Form";
 import { Dropdown } from "../components/ui/Dropdown";
 import { toast } from "../stores/toasts";
-import { Cpu, Palette, KeyRound, Search, Keyboard, Info, Plus, Trash2, CheckCircle2, AlertCircle, X, Save } from "lucide-react";
+import { Cpu, Palette, KeyRound, Search, Keyboard, Info, Plus, Trash2, CheckCircle2, AlertCircle, X, Save, Brain } from "lucide-react";
 
 export function SettingsRoute() {
   const location = useLocation();
@@ -34,6 +35,7 @@ export function SettingsRoute() {
           <SettingsLink to="/settings/general" icon={<Info size={14} />} label="General" active={section === "general"} />
           <SettingsLink to="/settings/providers" icon={<KeyRound size={14} />} label="Providers" active={section === "providers"} />
           <SettingsLink to="/settings/models" icon={<Cpu size={14} />} label="Models" active={section === "models"} />
+          <SettingsLink to="/settings/knowledge" icon={<Brain size={14} />} label="Knowledge" active={section === "knowledge"} />
           <SettingsLink to="/settings/search" icon={<Search size={14} />} label="Web search" active={section === "search"} />
           <SettingsLink to="/settings/theme" icon={<Palette size={14} />} label="Theme" active={section === "theme"} />
           <SettingsLink to="/settings/shortcuts" icon={<Keyboard size={14} />} label="Shortcuts" active={section === "shortcuts"} />
@@ -44,6 +46,7 @@ export function SettingsRoute() {
           {section === "general" && <GeneralSection />}
           {section === "providers" && <ProvidersSection />}
           {section === "models" && <ModelsSection />}
+          {section === "knowledge" && <KnowledgeSection />}
           {section === "search" && <SearchSection />}
           {section === "theme" && <ThemeSection />}
           {section === "shortcuts" && <ShortcutsSection />}
