@@ -24,13 +24,16 @@ interface NavItem {
   path: string;
 }
 
+// Order is spec section 9: Chat, Notes, Memory, Compare, Documents,
+// Tasks. Paths are load-bearing (bookmarks and in-app navigation depend
+// on them), so a reorder of this array must never move a path.
 const NAV: NavItem[] = [
   { id: "chat", label: "Chat", icon: <MessageSquare size={16} />, path: "/chat" },
+  { id: "notes", label: "Notes", icon: <StickyNote size={16} />, path: "/notes" },
+  { id: "memory", label: "Memory", icon: <Brain size={16} />, path: "/memory" },
   { id: "compare", label: "Compare", icon: <GitCompareArrows size={16} />, path: "/compare" },
   { id: "documents", label: "Documents", icon: <FileText size={16} />, path: "/documents" },
-  { id: "notes", label: "Notes", icon: <StickyNote size={16} />, path: "/notes" },
   { id: "tasks", label: "Tasks", icon: <ListTodo size={16} />, path: "/tasks" },
-  { id: "memory", label: "Memory", icon: <Brain size={16} />, path: "/memory" },
 ];
 
 interface SessionContextMenu {
