@@ -1,6 +1,8 @@
 use rusqlite::Connection;
 
+use super::super::commands::chat_stream::plan_send;
 use super::context::*;
+use crate::memory::context::PERSONA;
 
 fn row(owner_type: &str, owner_id: &str, label: &str, text: &str) -> ContextRow {
     ContextRow {
@@ -495,4 +497,526 @@ fn a_failed_event_write_rolls_the_counter_back_with_it() {
         "last_seen_at committed even though the event write failed"
     );
     assert_eq!(events, 0);
+}
+
+// ---------------------------------------------------------------------------
+// The live send path
+// ---------------------------------------------------------------------------
+//
+// These reach `plan_send`, which is what `chat_stream_v2` calls. What they
+// protect is not a return value but the property that there always is one:
+// spec §6.4 says recall must never fail a send, and a degraded result beats
+// a missing message. Every test here therefore asserts two things — that the
+// turn still goes out, and that the thing which degraded is the reason the
+// answer is thinner rather than the reason nothing was sent.
+
+/// A migrated in-memory pool, sized to one connection so the `:memory:`
+/// database is the same one on every `get()`.
+///
+/// Duplicated from `super::tests` rather than imported. `memory/tests.rs`
+/// holds Plan 3's fixtures and this task is scoped away from changing that
+/// file; the fixture is ten lines of pool construction and, unlike an
+/// embedder stub, it cannot drift in a way that changes what these tests
+/// prove — a pool that was not the real migrated schema would fail loudly
+/// rather than quietly test something else. No provider stub is duplicated:
+/// a broken embed route is staged through the database, which is where a
+/// real broken route lives.
+fn migrated_pool() -> std::sync::Arc<crate::db::DbPool> {
+    use r2d2::Pool;
+    use r2d2_sqlite::SqliteConnectionManager;
+    let pool = Pool::builder()
+        .max_size(1)
+        .build(SqliteConnectionManager::memory())
+        .expect("pool");
+    {
+        let mut conn = pool.get().unwrap();
+        crate::db::migrations_for_tests()
+            .to_latest(&mut conn)
+            .unwrap();
+    }
+    std::sync::Arc::new(pool)
+}
+
+/// A memory with an explicit kind and title, matching what the index holds.
+fn add_memory(conn: &Connection, id: &str, kind: &str, title: &str, content: &str) {
+    conn.execute(
+        "INSERT INTO memory_items (id, kind, title, content) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![id, kind, title, content],
+    )
+    .unwrap();
+}
+
+/// A send with no memories gets the persona and no memory block, and still
+/// sends. The whole degradation contract is that a memory failure is
+/// invisible to the user.
+#[tokio::test]
+async fn a_send_with_no_memories_plans_a_persona_only_prompt() {
+    let pool = migrated_pool();
+    let plan = plan_send(&pool, "s1", "hello", "m", None).await;
+    assert!(!plan.system.is_empty());
+    assert_eq!(plan.recalled, 0);
+    assert!(!plan.system.contains("<memory-context>"));
+}
+
+/// A retrieval that returns nothing still produces a sendable plan. This is
+/// the "index empty" row of §6.4 and it is the common first-run state.
+#[tokio::test]
+async fn a_send_with_an_empty_index_still_plans_a_prompt() {
+    let pool = migrated_pool();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute("INSERT INTO sessions (id, title) VALUES ('s1','S')", [])
+            .unwrap();
+    }
+    let plan = plan_send(&pool, "s1", "hello", "m", None).await;
+    assert!(plan.system.contains(PERSONA));
+    assert_eq!(plan.recalled, 0);
+}
+
+/// A pinned note is injected without any retrieval at all — no embedding
+/// model, no query match. A pin is the user saying "always".
+#[tokio::test]
+async fn a_pinned_note_is_injected_without_an_embedding_model() {
+    let pool = migrated_pool();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute("INSERT INTO sessions (id, title) VALUES ('s1','S')", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO notes (id, title, body, pinned) VALUES ('n1','Runbook','deploy steps live here',1)",
+            [],
+        )
+        .unwrap();
+    }
+    let plan = plan_send(&pool, "s1", "unrelated question", "m", None).await;
+    assert!(plan.system.contains("deploy steps live here"));
+    assert!(plan.recalled >= 1);
+}
+
+/// §6.4: a failing embed call must not fail the send, and BM25 has to reach
+/// the prompt without it.
+///
+/// The route is broken at *resolution*: a `memory.routing` row naming a
+/// provider whose `kind` is not one `embed_query` can build, so the embed
+/// call fails before any HTTP happens. Staging the breakage in the database
+/// rather than with a provider stub is deliberate — `embed_query` constructs
+/// the provider from the `providers` table, so a stub swapped in here would
+/// be testing a second implementation of provider resolution instead of
+/// this one.
+///
+/// The test would fail if the degradation were removed: the embed error has
+/// to become keyword-only recall, and the memory below is only findable by
+/// keyword.
+#[tokio::test]
+async fn a_failing_embed_route_still_produces_a_sendable_prompt() {
+    let pool = migrated_pool();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute("INSERT INTO sessions (id, title) VALUES ('s1','S')", [])
+            .unwrap();
+        add_memory(
+            &conn,
+            "m1",
+            "project_fact",
+            "Build",
+            "builds with npm run build",
+        );
+        conn.execute(
+            "INSERT INTO providers (id, kind, name) VALUES ('p1','nonexistent_kind','Broken')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('memory.routing', ?1)",
+            rusqlite::params![r#"{"embedding":{"provider_id":"p1","model":"e"}}"#],
+        )
+        .unwrap();
+    }
+    let plan = plan_send(&pool, "s1", "how do I build", "m", None).await;
+    // BM25 found it, so it is in the prompt despite the dead vector route.
+    assert!(
+        plan.system.contains("npm run build"),
+        "the keyword route must still reach the prompt: {}",
+        plan.system
+    );
+    assert_eq!(plan.recalled, 1);
+}
+
+/// A route that cannot be resolved at all is the same degradation one step
+/// earlier, and it is the first-run state most users are actually in: no
+/// embedding model configured, so the embed call is never made. The pinned
+/// row still arrives and retrieval still runs without a query vector rather
+/// than being skipped for want of one.
+#[tokio::test]
+async fn no_embedding_route_at_all_still_injects_pinned_and_recalled_rows() {
+    let pool = migrated_pool();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute("INSERT INTO sessions (id, title) VALUES ('s1','S')", [])
+            .unwrap();
+        add_memory(
+            &conn,
+            "m1",
+            "project_fact",
+            "Database",
+            "the billing service runs on Postgres",
+        );
+        conn.execute(
+            "INSERT INTO notes (id, title, body, pinned) VALUES ('n1','Runbook','restart PgBouncer first',1)",
+            [],
+        )
+        .unwrap();
+    }
+    let plan = plan_send(&pool, "s1", "which database", "m", None).await;
+    assert!(
+        plan.system.contains("restart PgBouncer first"),
+        "a pinned note is unconditional: {}",
+        plan.system
+    );
+    assert!(
+        plan.system.contains("Postgres"),
+        "retrieval must still run without a query vector: {}",
+        plan.system
+    );
+    assert_eq!(plan.recalled, 2);
+}
+
+/// The send path is what makes reinforcement happen at all. Before this
+/// task nothing on the send path wrote to `memory_events` or moved
+/// `access_count`, and both effects look identical to "working" from the
+/// outside: retrieval still returns the memory, the prompt still contains
+/// it, and only the numbers are flat. So the assertion has to read the
+/// numbers, not the prompt.
+///
+/// Both writes, because they are one fact stated twice: the counter the
+/// boost reads and the log the boost is auditable from. A send that logged
+/// without incrementing, or the reverse, is the half-write
+/// `record_injection` refuses to commit.
+#[tokio::test]
+async fn a_row_the_model_was_shown_is_reinforced_by_the_send() {
+    let pool = migrated_pool();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute("INSERT INTO sessions (id, title) VALUES ('s1','S')", [])
+            .unwrap();
+        add_memory(
+            &conn,
+            "m1",
+            "project_fact",
+            "Database",
+            "the billing service runs on Postgres",
+        );
+    }
+    assert_eq!(
+        plan_send(&pool, "s1", "which database", "m", None)
+            .await
+            .recalled,
+        1
+    );
+
+    let conn = pool.get().unwrap();
+    let (count, events): (i64, i64) = conn
+        .query_row(
+            "SELECT (SELECT access_count FROM memory_items WHERE id = 'm1'),
+                    (SELECT COUNT(*) FROM memory_events
+                     WHERE owner_id = 'm1' AND event = 'recall' AND session_id = 's1')",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(count, 1, "the model saw the memory, so the counter moved");
+    assert_eq!(events, 1, "and the log says it was shown");
+}
+
+/// A row that the index embedded with its title must reach the model with
+/// it. A heading is how a fact is recognised when the content alone reads as
+/// an orphaned clause — "the billing service runs on Postgres" is much weaker
+/// under a bullet than "Database: the billing service runs on Postgres", and
+/// the vector route already treats the two as different documents.
+#[tokio::test]
+async fn a_recalled_row_reaches_the_prompt_with_its_title_and_its_content() {
+    let pool = migrated_pool();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute("INSERT INTO sessions (id, title) VALUES ('s1','S')", [])
+            .unwrap();
+        add_memory(
+            &conn,
+            "m1",
+            "project_fact",
+            "Database",
+            "the billing service runs on Postgres",
+        );
+        // A memory with no title at all still has to reach the model, with
+        // its content and nothing invented in front of it.
+        add_memory(
+            &conn,
+            "m2",
+            "project_fact",
+            "",
+            "the search service runs on Meilisearch",
+        );
+    }
+    let plan = plan_send(&pool, "s1", "which services run where", "m", None).await;
+
+    assert!(
+        plan.system
+            .contains("Database the billing service runs on Postgres"),
+        "title and content together, collapsed to one bullet: {}",
+        plan.system
+    );
+    assert!(
+        plan.system
+            .contains("the search service runs on Meilisearch"),
+        "a titleless memory still reaches the prompt: {}",
+        plan.system
+    );
+}
+
+/// The pinned-row query failing is a degradation with its own arm, and it is
+/// not the same failure as having no connection: a schema that no longer has
+/// the table, a locked database, a corrupt index. The recall that already
+/// succeeded must still reach the prompt.
+///
+/// The table is dropped rather than the connection broken, because the
+/// dead-pool test already covers the no-connection route and this is the
+/// other one.
+#[tokio::test]
+async fn a_failed_pinned_row_query_still_sends_the_recalled_memory() {
+    let pool = migrated_pool();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute("INSERT INTO sessions (id, title) VALUES ('s1','S')", [])
+            .unwrap();
+        add_memory(
+            &conn,
+            "m1",
+            "project_fact",
+            "Database",
+            "the billing service runs on Postgres",
+        );
+        conn.execute(
+            "INSERT INTO notes (id, title, body, pinned) VALUES ('n1','N','b',1)",
+            [],
+        )
+        .unwrap();
+        conn.execute_batch("DROP TABLE notes;").unwrap();
+    }
+    let plan = plan_send(&pool, "s1", "which database", "m", None).await;
+
+    assert!(
+        plan.system.contains("Postgres"),
+        "retrieval already succeeded, so it still reaches the prompt: {}",
+        plan.system
+    );
+    assert_eq!(
+        plan.recalled, 1,
+        "only the retrieved row, not a phantom note"
+    );
+    // And the reinforcement still happened for the row that was shown.
+    let count: i64 = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT access_count FROM memory_items WHERE id = 'm1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+}
+
+/// An unpinned note is not injected by retrieval. `recall` includes notes
+/// whenever `kinds` is unset, which is right for the Memory tab — a user
+/// browsing memory wants to see their notes — and wrong here, where every
+/// note in the library would compete with the memories the budget is
+/// actually for. Pinned notes still arrive, from `pinned_rows`; this is
+/// about the ones nobody asked for.
+///
+/// The note is seeded unpinned and owned by no session, so the only route
+/// that could bring it in is the one under test. It matches the query as
+/// well as the memory does, so a filter that did nothing would let it
+/// through.
+#[tokio::test]
+async fn an_unpinned_note_is_not_pulled_into_the_prompt_by_retrieval() {
+    let pool = migrated_pool();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute("INSERT INTO sessions (id, title) VALUES ('s1','S')", [])
+            .unwrap();
+        add_memory(
+            &conn,
+            "m1",
+            "project_fact",
+            "Runbook",
+            "the deploy runbook is the source of truth",
+        );
+        conn.execute(
+            "INSERT INTO notes (id, title, body, pinned, source_session_id)
+             VALUES ('n1','Journal','a deploy runbook entry from another session',0,NULL)",
+            [],
+        )
+        .unwrap();
+    }
+    let plan = plan_send(&pool, "s1", "deploy runbook", "m", None).await;
+
+    assert!(
+        plan.system
+            .contains("the deploy runbook is the source of truth"),
+        "the memory should be there: {}",
+        plan.system
+    );
+    assert!(
+        !plan.system.contains("another session"),
+        "an unpinned note crowded into the prompt: {}",
+        plan.system
+    );
+    assert_eq!(plan.recalled, 1, "only the memory, not the note");
+}
+
+/// into the rendering, and it only shows up once a memory is actually
+/// injected — which is why it is pinned here, on the send path, and not only
+/// on the pure label function.
+#[tokio::test]
+async fn a_recalled_memory_reaches_the_prompt_under_a_human_heading() {
+    let pool = migrated_pool();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute("INSERT INTO sessions (id, title) VALUES ('s1','S')", [])
+            .unwrap();
+        add_memory(
+            &conn,
+            "m1",
+            "user_pref",
+            "Editor",
+            "prefers Neovim with lazy.nvim",
+        );
+    }
+    let plan = plan_send(&pool, "s1", "which editor", "m", None).await;
+    assert!(
+        plan.system.contains("## User preferences"),
+        "a kind is not a heading: {}",
+        plan.system
+    );
+    assert!(!plan.system.contains("## user_pref"), "{}", plan.system);
+}
+
+/// An unknown context length falls back to a small local model's window, not
+/// to an unlimited budget. An unlimited budget is how memory eats a whole
+/// context window and breaks the conversation, and the unknown-length case
+/// is the one that reaches it.
+///
+/// Two sends over one fixture, differing only in whether the model is
+/// known, so the fallback is the only variable: the same memory is admitted
+/// against a real 8192-token window and left out against the 4096 fallback.
+#[tokio::test]
+async fn an_unknown_context_length_falls_back_to_a_small_window() {
+    let pool = migrated_pool();
+    {
+        let conn = pool.get().unwrap();
+        conn.execute("INSERT INTO sessions (id, title) VALUES ('s1','S')", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO providers (id, kind, name) VALUES ('p1','ollama','Local')",
+            [],
+        )
+        .unwrap();
+        // Comfortably over the fallback budget and comfortably under a real
+        // one, so the two sends below differ only because of the window.
+        add_memory(
+            &conn,
+            "m1",
+            "project_fact",
+            "Deploy runbook",
+            &format!("deploy runbook steps {}", "y".repeat(3000)),
+        );
+    }
+
+    // The model is not in `models`, so its window is unknown.
+    let unknown = plan_send(&pool, "s1", "deploy runbook", "never-seen", None).await;
+    assert_eq!(
+        unknown.recalled, 0,
+        "an unknown window must not admit memory that a 4096 window cannot hold"
+    );
+    assert!(
+        !unknown.system.contains("<memory-context>"),
+        "a send still has to happen, with no memory block: {}",
+        unknown.system
+    );
+    assert!(unknown.system.contains(PERSONA));
+
+    // The same memory, against a model whose window is known to be 8192.
+    {
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO models (id, provider_id, name, context_length)
+             VALUES ('p1::big','p1','big',8192)",
+            [],
+        )
+        .unwrap();
+    }
+    let known = plan_send(&pool, "s1", "deploy runbook", "big", None).await;
+    assert_eq!(
+        known.recalled, 1,
+        "a known 8192-token window should admit what the 4096 fallback does not"
+    );
+    assert!(
+        known.system.contains("deploy runbook steps"),
+        "{}",
+        known.system
+    );
+}
+
+/// The fallback is a number, and the number is the point: it has to be the
+/// 4096 window the smallest local model is likely to have, at the pinned
+/// fraction. Asserted apart from the behaviour above so a change to the
+/// constant is a visible diff rather than a test that quietly still passes.
+#[test]
+fn the_default_budget_is_the_four_thousand_token_window_at_the_pinned_fraction() {
+    let default = super::super::commands::chat_stream::default_budget();
+    assert_eq!(
+        default,
+        (4096.0 * crate::memory::config::CONTEXT_BUDGET_FRACTION) as usize,
+    );
+    assert_eq!(default, 614);
+}
+
+/// Every `pool.get()` failing is the worst case in this path, and the one
+/// the degradation contract exists for: no budget, no recall, no pinned
+/// rows, no reinforcement. It must still produce a prompt.
+///
+/// A pool whose connections cannot be opened is how that state is reached.
+/// `r2d2` 0.8 has no `Pool::close`, so the failure is staged in the
+/// connection manager instead: a path whose parent directory does not exist
+/// cannot be opened. `build_unchecked` rather than `build`, because `build`
+/// tests the connection while constructing the pool and would fail here
+/// instead of handing back a pool that fails on every `get()`. A
+/// millisecond connection timeout means the retry loop gives up at once
+/// rather than sitting out the default 30 seconds.
+#[tokio::test]
+async fn a_send_with_no_usable_connection_still_plans_a_persona_only_prompt() {
+    use r2d2::Pool;
+    use r2d2_sqlite::SqliteConnectionManager;
+    let pool = std::sync::Arc::new(
+        Pool::builder()
+            .connection_timeout(std::time::Duration::from_millis(1))
+            .max_size(1)
+            .build_unchecked(SqliteConnectionManager::file(
+                "/no-such-directory/convo-test.db",
+            )),
+    );
+    // Stated rather than assumed: this fixture is worthless if the pool
+    // actually works, and the test would then pass without proving anything.
+    assert!(
+        pool.get().is_err(),
+        "the fixture must be a pool that cannot be opened"
+    );
+
+    let plan = plan_send(&pool, "s1", "hello", "m", None).await;
+
+    assert_eq!(
+        plan.system, PERSONA,
+        "nothing was readable, so the prompt is the persona and nothing else"
+    );
+    assert_eq!(plan.recalled, 0);
 }

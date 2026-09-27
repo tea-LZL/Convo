@@ -75,7 +75,14 @@ pub async fn memory_recall(
 
 /// The configured embedding route, or `None`. Read inside its own scope so
 /// the connection is released before any await.
-fn embedding_route(pool: &State<'_, Arc<DbPool>>) -> Option<(String, String)> {
+///
+/// `&Arc<DbPool>` rather than `&State<'_, Arc<DbPool>>` so a caller that is
+/// not a Tauri command can reach it. `State` derefs to the `Arc`, so every
+/// command-side call site is unaffected. `chat_stream.rs` embeds a query on
+/// the send path and resolves its own route, because a route handed down by
+/// a caller is a route a caller can get wrong — and the answer to "which
+/// provider embeds" must have exactly one copy.
+pub(crate) fn embedding_route(pool: &Arc<DbPool>) -> Option<(String, String)> {
     let conn = pool.get().ok()?;
     config::load_routing(&conn)
         .embedding
@@ -84,8 +91,12 @@ fn embedding_route(pool: &State<'_, Arc<DbPool>>) -> Option<(String, String)> {
 
 /// Embed one string, or `None`. Never surfaces an error to the caller:
 /// every failure is a reason to fall back to keyword recall.
-async fn embed_query(
-    pool: &State<'_, Arc<DbPool>>,
+///
+/// `&Arc<DbPool>` for the same reason as [`embedding_route`]. No connection
+/// is held across the `embed` call, or the future would not be `Send` and
+/// the command could not be spawned.
+pub(crate) async fn embed_query(
+    pool: &Arc<DbPool>,
     provider_id: &str,
     model: &str,
     text: &str,
