@@ -1,11 +1,16 @@
 /**
- * Markdown rendering for the streaming tail.
+ * A second markdown renderer, not on any render path.
  *
- * Provides a single canonical `renderMarkdown(text)` function used by
- * the streaming renderer (src/lib/streamingRenderer.ts). The
- * function is also the canonical renderer for the segmenter's
- * self-verifying `cutIsRenderSafe` check, so it must be
- * deterministic.
+ * Streaming and settled messages both render through
+ * `MarkdownRenderer` (react-markdown). This module is a hand-rolled
+ * regex -> HTML string implementation that predates that, kept because
+ * the block-splitter tests use it as a pure oracle: it is a total
+ * function from source to HTML with no React, no DOM and no syntax
+ * highlighter, which makes it a convenient thing to assert a split
+ * against. It is deterministic for the same reason.
+ *
+ * Slated for removal once the splitter's contracts are covered by
+ * React-level assertions alone.
  *
  * v0.6.7: extracted from the previous streamingRenderer.ts
  * (blockToHtml + inlineToHtml were private helpers there) and
@@ -43,11 +48,12 @@ function blockToHtml(block: string): string {
   if (!trimmed) return "";
 
   if (trimmed.startsWith("```") || trimmed.startsWith("~~~")) {
-    // Fenced code block. If unclosed (live tail mid-stream), use the
-    // partial as the body. The streaming renderer treats open fences
-    // specially via describeOpenFence, so this branch mostly handles
-    // closed fences here; the open-fence case still produces valid
-    // HTML for the cutIsRenderSafe check.
+    // Fenced code block. If unclosed, use the partial as the body.
+    //
+    // This renderer is no longer on any render path: StreamingTail and
+    // settled messages both go through MarkdownRenderer. It is kept as
+    // the pure oracle that markdownBlocks.test.ts and streaming's
+    // block-split contracts are checked against.
     const lines = trimmed.split("\n");
     const openLine = lines[0];
     const langMatch = openLine.match(/^[`~]{3,}(\w*)/);
@@ -119,11 +125,6 @@ function blockToHtml(block: string): string {
 
 /**
  * Inline emphasis: **x** → <strong>, *x* → <em>, `x` → <code>.
- * Applied to the visible prefix in the live tail. Note: this is the
- * same regex pipeline the static React MarkdownRenderer uses
- * (ChatViewNew's MarkdownRenderer), so the cutIsRenderSafe check
- * (which uses renderMarkdown in the segmenter) and the production
- * render produce equivalent output at block boundaries.
  */
 function inlineToHtml(s: string): string {
   return escapeHtml(s)
@@ -133,36 +134,19 @@ function inlineToHtml(s: string): string {
 }
 
 /**
- * Canonical renderer: split the text into blocks via the
- * segmenter, render each block, join with empty separator. This is
- * what the streaming renderer's `render` option is set to, and
- * what the segmenter's self-verifying `cutIsRenderSafe` calls.
+ * Canonical renderer for this module: split the text into blocks,
+ * render each block, join with an empty separator.
  *
- * Determinism: no Date.now(), no Math.random(), no async — the
- * output is a pure function of the input. Important for the
- * cutIsRenderSafe equivalence check, which calls render on
- * prefix + suffix vs. joined.
+ * Deterministic: no Date.now(), no Math.random(), no async — the output
+ * is a pure function of the input. That is what makes it usable as a
+ * test oracle.
  */
 export function renderMarkdown(text: string): string {
   if (!text) return "";
-  // Lazy import to avoid a circular dep: streamingRenderer.ts
-  // imports from streamingSegmenter.ts, and markdown.ts uses the
-  // same segmenter.
-  // (segment is also re-used inside streamingRenderer for the
-  // block split; here we use it for the full render.)
-  // We can't use the streamingSegmenter's segment directly here
-  // because the streaming renderer's `render` must be independent
-  // of any prior state. So we use a simple per-block detection.
   return renderBlocks(text);
 }
 
-/**
- * Render the text by splitting on blank lines and code-fence
- * boundaries. This is the unified render for the streaming
- * renderer. Distinct from `segment()` in streamingSegmenter.ts
- * (which is used for the safe-freeze boundary detection); here we
- * just want a simple block split for the render.
- */
+/** Render by splitting on blank lines and code-fence boundaries. */
 function renderBlocks(text: string): string {
   const lines = text.split("\n");
   const blocks: string[] = [];

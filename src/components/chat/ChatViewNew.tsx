@@ -4,7 +4,7 @@
  * Phase 3 (v0.7): decomposed from 1219 lines into focused modules.
  * This file now only holds state, effects, callbacks, and JSX
  * composition of the extracted children:
- *   - ChatHeader, MessageList, StreamingSection, ChatInput,
+ *   - ChatHeader, MessageList, StreamingTail, ChatInput,
  *     ChatContextMenu, AttachmentStripItem
  */
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -18,7 +18,7 @@ import { ErrorBoundary } from "../ui/ErrorBoundary";
 
 import { ChatHeader } from "./ChatHeader";
 import { MessageList } from "./MessageList";
-import { StreamingSection } from "./StreamingSection";
+import { StreamingTail } from "./StreamingTail";
 import { ChatInput } from "./ChatInput";
 import { ChatContextMenu } from "./ChatContextMenu";
 import { AttachmentStripItem } from "./AttachmentChip";
@@ -270,7 +270,7 @@ export function ChatViewNew({ sessionId, providers, session }: { sessionId: stri
               onResend={onResend}
             />
             <ErrorBoundary label="Streaming">
-              <StreamingSection
+              <StreamingTail
                 sessionId={sessionId}
                 stickToBottomRef={stickToBottom}
                 onBumpScroll={bumpScroll}

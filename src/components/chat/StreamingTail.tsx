@@ -2,7 +2,7 @@ import React, { useEffect, useMemo } from "react";
 import { useChatStreamStore } from "../../stores/chatStream";
 import { splitBlocks } from "../../lib/markdownBlocks";
 import { MarkdownRenderer } from "./MarkdownRenderer";
-import type { StreamingSectionProps } from "./types";
+import type { StreamingTailProps } from "./types";
 
 /**
  * Streaming markdown, rendered with React.
@@ -64,7 +64,7 @@ export const MarkdownBlocks = React.memo(function MarkdownBlocks({ text }: { tex
  * Returns null when not streaming: the stream's final content is
  * persisted and re-rendered from source as a normal message.
  */
-export function StreamingTail({ sessionId, stickToBottomRef, onBumpScroll }: StreamingSectionProps) {
+export function StreamingTail({ sessionId, stickToBottomRef, onBumpScroll }: StreamingTailProps) {
   const streaming = useChatStreamStore(
     (s) => s.sessions[sessionId]?.streaming ?? false
   );

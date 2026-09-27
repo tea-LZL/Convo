@@ -8,10 +8,57 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render } from "@testing-library/react";
 import React from "react";
-import { MarkdownBlocks } from "../StreamingTail";
+import { MarkdownBlocks, StreamingTail } from "../StreamingTail";
 import { MarkdownRenderer } from "../MarkdownRenderer";
+import { useChatStreamStore } from "../../../stores/chatStream";
+import type { SessionState } from "../../../stores/chatStream";
 import { STREAM_SHAPES, shapeNamed } from "./fixtures/streamShapes";
 import { canonicalElement } from "./fixtures/domCompare";
+
+/** Carries both a GFM table and a task list — neither rendered by the old tail. */
+const EMPTY_SESSION: SessionState = {
+  messages: [],
+  status: "idle",
+  streaming: false,
+  streamContent: "",
+  streamThinking: "",
+  error: null,
+  loadingMessages: false,
+};
+
+const GFM_SHAPE = [
+  "## Findings",
+  "",
+  "| col a | col b |",
+  "| ----- | ----- |",
+  "| one   | two   |",
+  "",
+  "- [x] done",
+  "- [ ] pending",
+  "",
+  "Done.",
+].join("\n");
+
+/** Drives `StreamingTail` from a session seeded directly into the store. */
+function StreamingTailHarness({ streaming, text }: { streaming: boolean; text: string }) {
+  const stickToBottomRef = React.useRef(true);
+  useChatStreamStore.setState({
+    sessions: {
+      "boundary-session": {
+        ...EMPTY_SESSION,
+        streaming,
+        streamContent: text,
+      },
+    },
+  });
+  return (
+    <StreamingTail
+      sessionId="boundary-session"
+      stickToBottomRef={stickToBottomRef}
+      onBumpScroll={() => {}}
+    />
+  );
+}
 
 /** Counts how many times react-markdown is invoked, and with what source. */
 const markdownRenders: string[] = [];
@@ -132,6 +179,37 @@ describe("MarkdownBlocks on degenerate input", () => {
       // all be there and in order.
       expect(container.textContent).toBe(full.slice(0, n).trimEnd());
     }
+  });
+});
+
+describe("the streaming to settled boundary", () => {
+  // The defect the rewrite exists to fix. The old path rendered the live
+  // tail with a hand-rolled regex-to-HTML string and settled messages
+  // with react-markdown + remark-gfm + Prism, so every completed message
+  // restyled itself the instant its stream ended. `StreamingTail` must
+  // hand off to `MarkdownRenderer` with no visual change.
+  it("does not change the rendered message when a stream completes", () => {
+    const { rerender, container } = render(
+      <StreamingTailHarness streaming text={GFM_SHAPE} />,
+    );
+    // Compare the markdown subtree only — the tail wraps it in a
+    // max-width container and an aria-live region that MarkdownRenderer
+    // does not have.
+    const tailMarkdown = container.querySelector('[role="status"]');
+    expect(tailMarkdown).not.toBeNull();
+    const whileStreaming = canonicalElement(tailMarkdown!);
+
+    const settled = render(<MarkdownRenderer content={GFM_SHAPE} />);
+    expect(whileStreaming).toBe(canonicalElement(settled.container));
+  });
+
+  it("carries no GFM gap between tail and settled output", () => {
+    // Guards against a vacuous pass: the shape really does contain a
+    // table and a task list, neither of which the old tail renderer
+    // supported.
+    const { container } = render(<StreamingTailHarness streaming text={GFM_SHAPE} />);
+    expect(container.querySelector("table")).not.toBeNull();
+    expect(container.querySelector("input[type=checkbox]")).not.toBeNull();
   });
 });
 

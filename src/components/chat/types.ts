@@ -32,7 +32,7 @@ export interface MessageListProps {
   onResend: (msgIndex: number, content: string) => Promise<void>;
 }
 
-export interface StreamingSectionProps {
+export interface StreamingTailProps {
   sessionId: string;
   stickToBottomRef: React.MutableRefObject<boolean>;
   onBumpScroll: () => void;
