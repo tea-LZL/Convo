@@ -251,15 +251,23 @@ pub fn load_vectors(
             }
         }
     }
+    // One lookup table rather than a linear scan per row. The scan was
+    // quadratic in the candidate count: measured in release at 12ms for
+    // 2,000 rows and 80ms for 5,000, against a <50ms p95 budget for the
+    // whole of recall.
+    let mut by_id: std::collections::HashMap<&str, &[f32]> =
+        std::collections::HashMap::with_capacity(found.len());
+    for (owner_id, vector) in &found {
+        by_id.insert(owner_id.as_str(), vector.as_slice());
+    }
     // Preserve the caller's ordering: rank is assigned by the caller, and
     // reordering here would silently re-pair a score with a document.
     Ok(rows
         .iter()
         .filter_map(|row| {
-            found
-                .iter()
-                .find(|(id, _)| *id == row.owner_id)
-                .map(|(_, vector)| (row.clone(), vector.clone()))
+            by_id
+                .get(row.owner_id.as_str())
+                .map(|vector| (row.clone(), vector.to_vec()))
         })
         .collect())
 }

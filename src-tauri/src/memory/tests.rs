@@ -650,3 +650,63 @@ fn recall_count_counts_only_recall_events() {
     assert_eq!(count, 2, "reinforce is not a recall");
     assert_eq!(recall_count(&conn, "memory", "nope").unwrap(), 0);
 }
+
+// ---------------------------------------------------------------------------
+// Vector lookup at corpus scale
+// ---------------------------------------------------------------------------
+
+fn knowledge_row(id: &str) -> KnowledgeRow {
+    KnowledgeRow {
+        owner_type: "memory".into(),
+        owner_id: id.into(),
+        kind: "project_fact".into(),
+        title: None,
+        content: LONG.into(),
+        is_enabled: true,
+        superseded_by: None,
+        access_count: 0,
+        updated_at: "2026-01-01T00:00:00.000Z".into(),
+    }
+}
+
+#[test]
+fn load_vectors_resolves_a_large_id_list_in_one_pass() {
+    // Ordering and pairing are what a per-row linear scan could get wrong
+    // at scale: rank is assigned by the caller, so a vector paired with
+    // the wrong row silently corrupts ranking rather than erroring.
+    let conn = migrated_conn();
+    let mut expected: Vec<String> = Vec::new();
+    for i in 0..600 {
+        let id = format!("m{}", i);
+        add_memory(&conn, &id, LONG);
+        upsert_embedding(&conn, "memory", &id, "m", &[i as f32, 1.0]).unwrap();
+        expected.push(id);
+    }
+    let rows: Vec<KnowledgeRow> = expected.iter().map(|id| knowledge_row(id)).collect();
+
+    let loaded = load_vectors(&conn, "m", &rows).unwrap();
+    assert_eq!(loaded.len(), 600, "every requested row must come back");
+    let got: Vec<&str> = loaded.iter().map(|(r, _)| r.owner_id.as_str()).collect();
+    let want: Vec<&str> = expected.iter().map(|s| s.as_str()).collect();
+    assert_eq!(got, want, "ordering must follow the caller's row order");
+    for (row, vector) in &loaded {
+        let i: f32 = row.owner_id[1..].parse().unwrap();
+        assert_eq!(vector[0], i, "vector paired with the wrong row");
+    }
+}
+
+#[test]
+fn load_vectors_chunks_past_the_sqlite_variable_limit() {
+    // SQLITE_MAX_VARIABLE_NUMBER defaults to 999. A 2,000-id request must
+    // split without a bind error.
+    let conn = migrated_conn();
+    let mut rows = Vec::new();
+    for i in 0..2000 {
+        let id = format!("m{}", i);
+        add_memory(&conn, &id, LONG);
+        upsert_embedding(&conn, "memory", &id, "m", &[i as f32]).unwrap();
+        rows.push(knowledge_row(&id));
+    }
+    let loaded = load_vectors(&conn, "m", &rows).unwrap();
+    assert_eq!(loaded.len(), 2000);
+}
