@@ -486,6 +486,29 @@ fn rows_are_grouped_by_label_in_first_seen_order() {
     assert_eq!(block.matches("## User preferences").count(), 1);
 }
 
+/// A row the budget cut is absent from `injected`, not merely absent from
+/// the rendered text. Task 4 writes reinforcement from `injected`, so a
+/// dropped row leaking in there would record a memory the model never saw —
+/// a silent wrong signal into the next turn's boost, which is the exact
+/// failure `record_injection` exists to make visible.
+#[test]
+fn a_dropped_row_is_not_reported_as_injected() {
+    let out = assemble(ContextInput {
+        override_prompt: None,
+        rows: vec![
+            row("note", "n1", "Notes", &"x".repeat(4000)),
+            row("memory", "m1", "User preferences", "uses Neovim"),
+        ],
+        budget_tokens: 100,
+    });
+    let injected: Vec<&str> = out.injected.iter().map(|r| r.owner_id.as_str()).collect();
+    assert_eq!(injected, vec!["m1"]);
+    assert_eq!(out.dropped, vec!["n1".to_string()]);
+    // The two lists partition the input: nothing is in both, nothing is in
+    // neither.
+    assert!(!out.injected.iter().any(|r| r.owner_id == "n1"));
+}
+
 /// `used_tokens` accounts for what was actually emitted, so a caller can
 /// log the real cost rather than estimating it again.
 #[test]
@@ -540,7 +563,7 @@ with a leading line `[System note: The following is persistent memory, not new u
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml context_tests`
-Expected: PASS, 8 tests.
+Expected: PASS, 9 tests.
 
 - [ ] **Step 5: Add the pinned-row query tests**
 
