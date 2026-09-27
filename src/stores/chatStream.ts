@@ -807,6 +807,29 @@ export async function retryLastMessage(
 }
 
 /**
+ * @deprecated Superseded by the Rust `memory_recall` command. DO NOT EDIT.
+ *
+ * This is the pre-V006 substring scorer: it scans the whole enabled-memory
+ * array per send, scoring by `content.includes(word)` with a hardcoded
+ * `topK` of 3, a hardcoded 2x title weight, and 20 hardcoded stop words.
+ * It has no index, no IDF, and no semantic route, so a memory sharing no
+ * words with the question is unreachable — measured at 94% precision on the
+ * known-answer corpus, with the misses being exactly the paraphrases the
+ * vector route exists to answer.
+ *
+ * The replacement is `src-tauri/src/memory/retrieve.rs`: BM25 over both FTS
+ * tables fused with cosine over stored vectors, RRF, reinforcement and
+ * recency boosts, MMR, and a reason string on every result.
+ *
+ * It is still the live recall path and is NOT yet dead code —
+ * `chat_stream_v2` receives the system prompt this assembles. It is deleted
+ * when Plan 4 wires `memory_recall` into `chat_stream_v2` and moves context
+ * assembly into Rust. Until then, changes here are throwaway.
+ *
+ * The rest of this doc comment is kept for the tests that still exercise it.
+ */
+
+/**
  * Recall: find memories whose content or title shares words with the
  * user's message. Uses keyword overlap (similar to Odysseus's BM25)
  * rather than FTS5 AND matching — FTS5 requires ALL query tokens to

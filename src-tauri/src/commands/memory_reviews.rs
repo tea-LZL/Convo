@@ -196,6 +196,9 @@ mod tests {
             title: Some("Nickname".into()),
             content: "Nickname is Kevin.".into(),
             tags: None,
+            confidence: 0.9,
+            is_note: false,
+            note_body: None,
         }];
 
         finish_review(&conn, &id, &facts).unwrap();
@@ -279,6 +282,9 @@ mod tests {
             title: None,
             content: "Prefers concise replies.".into(),
             tags: None,
+            confidence: 0.9,
+            is_note: false,
+            note_body: None,
         }];
         finish_review(&conn, &id, &facts).unwrap();
 

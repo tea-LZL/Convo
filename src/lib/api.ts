@@ -194,6 +194,19 @@ export interface ExtractedFact {
   title: string | null;
   content: string;
   tags: string | null;
+  /**
+   * The extractor's own confidence, 0..1. Optional because rows written
+   * before the field existed deserialize without it, and the Rust side
+   * defaults a missing value to 0.5 rather than to full confidence.
+   */
+  confidence?: number;
+  /**
+   * The extractor marked this as long-form or structured, so it should
+   * become a note rather than a one-line memory. That is how the agent
+   * writes notes during a session.
+   */
+  is_note?: boolean;
+  note_body?: string | null;
 }
 
 export interface MemoryReview {

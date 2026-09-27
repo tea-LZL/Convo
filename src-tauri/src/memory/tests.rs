@@ -1152,3 +1152,399 @@ fn index_status_reports_what_needs_embedding_and_whether_a_reindex_is_due() {
     let (_, reindex) = retrieve::knowledge_status(&conn, "mxbai-embed-large", 1024);
     assert!(reindex, "a model switch means the index is stale");
 }
+
+// ---------------------------------------------------------------------------
+// Extraction
+// ---------------------------------------------------------------------------
+
+use super::extract;
+
+/// Approximate token count. Cheap, and only ever used as a window bound, so
+/// a real tokenizer would cost more than it buys.
+fn rough_tokens(text: &str) -> usize {
+    text.len() / 4
+}
+
+/// Message ids must be unique across a whole test, not just within one
+/// `seed_session` call, or a second call for the same session collides on
+/// the primary key.
+static MESSAGE_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn seed_session(conn: &Connection, session_id: &str, pairs: &[(&str, &str)]) {
+    conn.execute(
+        "INSERT OR IGNORE INTO sessions (id, title) VALUES (?1, 'S')",
+        params![session_id],
+    )
+    .unwrap();
+    for (i, (role, content)) in pairs.iter().enumerate() {
+        conn.execute(
+            "INSERT INTO messages (id, session_id, role, content) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                format!(
+                    "{}-{}-{}",
+                    session_id,
+                    MESSAGE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                    i
+                ),
+                session_id,
+                role,
+                content
+            ],
+        )
+        .unwrap();
+    }
+}
+
+fn set_watermark(conn: &Connection, session_id: &str, message_id: &str) {
+    conn.execute(
+        "INSERT INTO memory_watermark (session_id, message_id) VALUES (?1, ?2)
+         ON CONFLICT(session_id) DO UPDATE SET message_id = excluded.message_id",
+        params![session_id, message_id],
+    )
+    .unwrap();
+}
+
+#[test]
+fn kinds_expand_to_the_documented_six() {
+    assert_eq!(extract::KINDS.len(), 6);
+    for kind in extract::KINDS {
+        assert!(
+            extract::normalize_kind(kind).is_some(),
+            "{} should normalize",
+            kind
+        );
+    }
+}
+
+#[test]
+fn an_unknown_kind_is_dropped_rather_than_stored() {
+    for kind in ["task", "", "chore", "todo"] {
+        assert!(
+            extract::normalize_kind(kind).is_none(),
+            "{:?} should not normalize",
+            kind
+        );
+    }
+}
+
+#[test]
+fn a_missing_confidence_defaults_to_half_not_to_one() {
+    // A model that omitted the field has not expressed confidence.
+    // Defaulting to 1.0 would let every legacy-shaped response past the
+    // 0.80 auto-write gate.
+    let raw = r#"[{"kind":"user_pref","title":"T","content":"c","tags":null}]"#;
+    let facts = extract::parse_candidates(raw).unwrap();
+    assert_eq!(facts.len(), 1);
+    assert_eq!(facts[0].confidence, 0.5);
+}
+
+#[test]
+fn confidence_outside_zero_to_one_is_clamped() {
+    for (input, want) in [(1.7, 1.0), (-3.0, 0.0), (0.42, 0.42)] {
+        let raw = format!(
+            r#"[{{"kind":"user_pref","content":"c","confidence":{}}}]"#,
+            input
+        );
+        let facts = extract::parse_candidates(&raw).unwrap();
+        assert_eq!(facts[0].confidence, want, "input {}", input);
+    }
+}
+
+#[test]
+fn a_note_candidate_is_recognised() {
+    let raw = r#"[{"kind":"project_fact","title":"Runbook","content":"summary",
+                    "confidence":0.9,"is_note":true,"note_body":"the long form"}]"#;
+    let facts = extract::parse_candidates(raw).unwrap();
+    assert!(facts[0].is_note);
+    assert_eq!(facts[0].note_body.as_deref(), Some("the long form"));
+}
+
+#[test]
+fn a_note_candidate_without_a_body_is_still_a_note() {
+    let raw = r#"[{"kind":"project_fact","content":"s","is_note":true}]"#;
+    let facts = extract::parse_candidates(raw).unwrap();
+    assert!(facts[0].is_note);
+    assert!(facts[0].note_body.is_none());
+}
+
+#[test]
+fn the_legacy_parser_shapes_still_parse() {
+    // Every shape the existing parser was built to survive, because those
+    // are real observations about what local models emit.
+    // `fact` is the title and `value` the content in this shape; a fact
+    // with no content is dropped on purpose, because a title is not a
+    // durable fact. The eight existing tests in `commands/memory.rs`
+    // remain the authority on these observed shapes; this adds the three
+    // kinds the taxonomy gained.
+    for raw in [
+        r#"[{"type":"personal_information","fact":"Birthday","value":"February 18th"}]"#,
+        r#"[{"fact_type":"personal_information","detail":"Born","value":"1990"}]"#,
+        r#"{"extracted_facts":[{"kind":"project_fact","content":"c"}]}"#,
+        r#"[{"category":"skill","value":"Always run the tests","labels":["ci"]}]"#,
+        r#"[{"kind":"decision","content":"Use Rust for the CLI"}]"#,
+        r#"[{"kind":"constraint","content":"Never deploy on a Friday"}]"#,
+        r#"[{"kind":"entity","content":"The billing service is owned by Priya"}]"#,
+    ] {
+        let facts = extract::parse_candidates(raw).expect(raw);
+        assert!(!facts.is_empty(), "legacy shape stopped parsing: {}", raw);
+    }
+}
+
+#[test]
+fn a_title_with_no_content_is_dropped_rather_than_stored_empty() {
+    // A heading is not a durable fact. Storing it would fill memory with
+    // titles that answer nothing.
+    let facts = extract::parse_candidates(r#"[{"kind":"user_pref","title":"T"}]"#).unwrap();
+    assert!(facts.is_empty());
+}
+
+#[test]
+fn a_think_wrapped_response_still_parses() {
+    let raw =
+        "<think>reasoning about the answer</think>\n[{\"kind\":\"user_pref\",\"content\":\"c\"}]";
+    let facts = extract::parse_candidates(raw).unwrap();
+    assert_eq!(facts.len(), 1);
+}
+
+#[test]
+fn a_response_that_is_not_a_fact_list_is_rejected() {
+    // An empty array is NOT an error: it is the correct answer for
+    // "nothing durable in this conversation", and the review flow treats
+    // it as an automatic pass.
+    assert!(extract::parse_candidates("[]").unwrap().is_empty());
+    for raw in ["not json at all", "{}", r#"{"other":1}"#, "42"] {
+        assert!(
+            extract::parse_candidates(raw).is_err(),
+            "should have been rejected: {:?}",
+            raw
+        );
+    }
+}
+
+#[test]
+fn no_extraction_runs_before_the_second_exchange() {
+    let conn = migrated_conn();
+    seed_session(&conn, "s1", &[("user", "hello")]);
+    assert!(extract::should_extract(&conn, "s1", 2).unwrap().is_none());
+}
+
+#[test]
+fn no_extraction_runs_twice_for_the_same_messages() {
+    // Review Focus 4. Without a watermark the second pass re-proposes
+    // every fact and REINFORCE fires on all of them, so the user's memory
+    // fills with near-duplicates they never asked for.
+    let conn = migrated_conn();
+    seed_session(
+        &conn,
+        "s1",
+        &[
+            ("user", "a"),
+            ("assistant", "b"),
+            ("user", "c"),
+            ("assistant", "d"),
+        ],
+    );
+    let first = extract::should_extract(&conn, "s1", 2)
+        .unwrap()
+        .expect("should extract");
+    set_watermark(&conn, "s1", &first.watermark_message_id);
+    assert!(
+        extract::should_extract(&conn, "s1", 2).unwrap().is_none(),
+        "the same messages must not extract twice"
+    );
+}
+
+#[test]
+fn extraction_resumes_after_the_watermark() {
+    let conn = migrated_conn();
+    seed_session(
+        &conn,
+        "s1",
+        &[
+            ("user", "a"),
+            ("assistant", "b"),
+            ("user", "c"),
+            ("assistant", "d"),
+        ],
+    );
+    let first = extract::should_extract(&conn, "s1", 2).unwrap().unwrap();
+    set_watermark(&conn, "s1", &first.watermark_message_id);
+    // `every_n` counts exchanges, and an exchange is a user turn plus an
+    // answer, so two exchanges is four messages.
+    seed_session(
+        &conn,
+        "s1",
+        &[
+            ("user", "e"),
+            ("assistant", "f"),
+            ("user", "g"),
+            ("assistant", "h"),
+        ],
+    );
+    let second = extract::should_extract(&conn, "s1", 2)
+        .unwrap()
+        .expect("new messages should extract");
+    assert_ne!(second.watermark_message_id, first.watermark_message_id);
+}
+
+#[test]
+fn the_window_is_bounded_by_message_count() {
+    let conn = migrated_conn();
+    let pairs: Vec<(String, String)> = (0..80)
+        .map(|i| ("user".to_string(), format!("short message {}", i)))
+        .collect();
+    let borrowed: Vec<(&str, &str)> = pairs
+        .iter()
+        .map(|(a, b)| (a.as_str(), b.as_str()))
+        .collect();
+    seed_session(&conn, "s1", &borrowed);
+    let window = extract::should_extract(&conn, "s1", 2)
+        .unwrap()
+        .expect("should extract");
+    assert!(
+        window.messages.len() <= extract::MAX_WINDOW_MESSAGES,
+        "message bound not applied: {}",
+        window.messages.len()
+    );
+}
+
+#[test]
+fn the_window_is_bounded_by_tokens() {
+    // Each message is ~1,000 tokens, so 30 of them are well over the
+    // 6,000 budget while each one individually fits. Trimming from the
+    // front has to land inside the budget.
+    let conn = migrated_conn();
+    let chunky = "word ".repeat(1000);
+    let pairs: Vec<(String, String)> = (0..30)
+        .map(|i| ("user".to_string(), format!("{} message {}", chunky, i)))
+        .collect();
+    let borrowed: Vec<(&str, &str)> = pairs
+        .iter()
+        .map(|(a, b)| (a.as_str(), b.as_str()))
+        .collect();
+    seed_session(&conn, "s1", &borrowed);
+    let window = extract::should_extract(&conn, "s1", 2)
+        .unwrap()
+        .expect("should extract");
+    let tokens: usize = window.messages.iter().map(|(_, c)| rough_tokens(c)).sum();
+    assert!(
+        tokens <= extract::MAX_WINDOW_TOKENS,
+        "token bound not applied: {}",
+        tokens
+    );
+    assert!(window.messages.len() >= 2, "the window must stay usable");
+}
+
+#[test]
+fn a_message_too_large_for_the_budget_still_yields_a_window() {
+    // One message can exceed the whole budget on its own. The bound is a
+    // target, not a reason to refuse to extract — dropping below two
+    // messages would be worse than overshooting.
+    let conn = migrated_conn();
+    let huge = "word ".repeat(20_000);
+    let borrowed: Vec<(&str, &str)> = vec![
+        ("user", huge.as_str()),
+        ("assistant", "ok"),
+        ("user", "and again"),
+        ("assistant", "understood"),
+    ];
+    seed_session(&conn, "s1", &borrowed);
+    let window = extract::should_extract(&conn, "s1", 2)
+        .unwrap()
+        .expect("should extract");
+    // Trimming stops at the minimum rather than continuing, so the
+    // window stays usable even though it overshoots the budget.
+    assert!(
+        window.messages.len() >= extract::MIN_EXTRACT_MESSAGES,
+        "must not go below a usable window, got {}",
+        window.messages.len()
+    );
+    assert!(
+        window.messages.len() < 4,
+        "should still have trimmed, kept {}",
+        window.messages.len()
+    );
+}
+
+#[test]
+fn the_window_keeps_the_newest_messages() {
+    // Trimming happens from the front, so the most recent exchange — the
+    // one that produced the facts — must always survive.
+    let conn = migrated_conn();
+    let long = "word ".repeat(3000);
+    let mut pairs: Vec<(String, String)> = (0..20)
+        .map(|i| ("user".to_string(), format!("{} filler {}", long, i)))
+        .collect();
+    pairs.push(("user".to_string(), "MARKER_NEWEST".to_string()));
+    pairs.push(("assistant".to_string(), "MARKER_NEWEST_REPLY".to_string()));
+    let borrowed: Vec<(&str, &str)> = pairs
+        .iter()
+        .map(|(a, b)| (a.as_str(), b.as_str()))
+        .collect();
+    seed_session(&conn, "s1", &borrowed);
+    let window = extract::should_extract(&conn, "s1", 2).unwrap().unwrap();
+    let all: String = window
+        .messages
+        .iter()
+        .map(|(_, c)| c.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        all.contains("MARKER_NEWEST"),
+        "the newest turn was trimmed away"
+    );
+}
+
+#[test]
+fn the_window_starts_after_the_watermark() {
+    let conn = migrated_conn();
+    seed_session(
+        &conn,
+        "s1",
+        &[
+            ("user", "OLD_ONE"),
+            ("assistant", "OLD_TWO"),
+            ("user", "OLD_THREE"),
+            ("assistant", "OLD_FOUR"),
+        ],
+    );
+    let first = extract::should_extract(&conn, "s1", 2).unwrap().unwrap();
+    set_watermark(&conn, "s1", &first.watermark_message_id);
+    seed_session(
+        &conn,
+        "s1",
+        &[
+            ("user", "NEW_ONE"),
+            ("assistant", "NEW_TWO"),
+            ("user", "NEW_THREE"),
+            ("assistant", "NEW_FOUR"),
+        ],
+    );
+    let second = extract::should_extract(&conn, "s1", 2).unwrap().unwrap();
+    let all: String = second
+        .messages
+        .iter()
+        .map(|(_, c)| c.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(all.contains("NEW_ONE"));
+    assert!(
+        !all.contains("OLD_ONE"),
+        "the window must start after the watermark"
+    );
+}
+
+#[test]
+fn an_extraction_every_n_of_zero_or_one_never_blocks_extraction() {
+    let conn = migrated_conn();
+    seed_session(&conn, "s1", &[("user", "a"), ("assistant", "b")]);
+    for every_n in [0, 1] {
+        assert!(
+            extract::should_extract(&conn, "s1", every_n)
+                .unwrap()
+                .is_some(),
+            "every_n={} should not stall extraction",
+            every_n
+        );
+    }
+}

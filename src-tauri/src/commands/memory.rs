@@ -1,11 +1,14 @@
 use crate::db::models::{MemoryItem, MemorySearchHit};
 use rusqlite::{params, OptionalExtension};
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::State;
 use uuid::Uuid;
 
 use crate::db::DbPool;
+
+// The fact type and its parser live in the core module; the command re-exports
+// them so `memory_reviews.rs` and the frontend contract are unchanged.
+pub use crate::memory::extract::{parse_candidates, ExtractedFact};
 
 fn now() -> String {
     chrono::Utc::now().to_rfc3339()
@@ -255,213 +258,6 @@ pub struct MemoryInput {
     pub is_enabled: i64,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ExtractedFact {
-    pub kind: String,
-    pub title: Option<String>,
-    pub content: String,
-    pub tags: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ExtractedFactCandidate {
-    kind: Option<String>,
-    #[serde(rename = "type")]
-    legacy_kind: Option<String>,
-    category: Option<String>,
-    #[serde(rename = "fact_type")]
-    fact_type: Option<String>,
-    title: Option<String>,
-    fact: Option<String>,
-    detail: Option<String>,
-    content: Option<String>,
-    value: Option<String>,
-    details: Option<String>,
-    context: Option<String>,
-    notes: Option<String>,
-    tags: Option<serde_json::Value>,
-    labels: Option<serde_json::Value>,
-}
-
-fn normalize_fact_kind(value: &str) -> Option<&'static str> {
-    // ponytail: keep compatibility explicit; unknown model schemas are ignored rather than guessed.
-    match value.trim().to_ascii_lowercase().as_str() {
-        "user_pref"
-        | "personal_information"
-        | "personal information"
-        | "personal information / date"
-        | "personal information/date"
-        | "personal detail" => Some("user_pref"),
-        "project_fact" | "project fact" => Some("project_fact"),
-        "skill" | "instruction" | "reusable instruction" => Some("skill"),
-        _ => None,
-    }
-}
-
-fn trimmed_optional(value: Option<String>) -> Option<String> {
-    value.and_then(|value| {
-        let trimmed = value.trim();
-        (!trimmed.is_empty()).then(|| trimmed.to_string())
-    })
-}
-
-fn normalize_tags(value: Option<serde_json::Value>) -> Option<String> {
-    match value {
-        Some(serde_json::Value::String(value)) => trimmed_optional(Some(value)),
-        Some(serde_json::Value::Array(values)) => {
-            let tags = values
-                .into_iter()
-                .filter_map(|value| value.as_str().map(|tag| tag.trim().to_string()))
-                .filter(|tag| !tag.is_empty())
-                .collect::<Vec<_>>();
-            (!tags.is_empty()).then(|| tags.join(", "))
-        }
-        _ => None,
-    }
-}
-
-fn inferred_personal_fact_kind(title: Option<&str>, content: Option<&str>) -> Option<&'static str> {
-    let haystack = [title.unwrap_or(""), content.unwrap_or("")]
-        .join(" ")
-        .to_ascii_lowercase();
-    let transient_markers = [
-        "task",
-        "goal",
-        "draft",
-        "email",
-        "meeting",
-        "communication",
-        "request",
-        "recent",
-        "output",
-        "event",
-        "planning",
-        "gathering",
-        "invitation",
-        "template",
-        "setting up",
-    ];
-    if transient_markers
-        .iter()
-        .any(|marker| haystack.contains(marker))
-    {
-        return None;
-    }
-
-    let durable_markers = [
-        "birthday",
-        "birth date",
-        "nickname",
-        "user name",
-        "username",
-        "preferred",
-        "preference",
-        "prefers",
-        "likes",
-        "dislikes",
-        "timezone",
-        "time zone",
-        "location",
-        "city",
-        "country",
-        "occupation",
-        "pronoun",
-        "language",
-    ];
-    durable_markers
-        .iter()
-        .any(|marker| haystack.contains(marker))
-        .then_some("user_pref")
-}
-
-fn parse_json_value(raw: &str) -> Result<serde_json::Value, String> {
-    let trimmed = raw.trim();
-    if let Ok(value) = serde_json::from_str(trimmed) {
-        return Ok(value);
-    }
-
-    // Local reasoning models commonly add <think> blocks or prose around the
-    // JSON. Try the two bounded JSON spans without accepting arbitrary text.
-    for (open, close) in [('[', ']'), ('{', '}')] {
-        if let (Some(start), Some(end)) = (trimmed.find(open), trimmed.rfind(close)) {
-            if start < end {
-                if let Ok(value) = serde_json::from_str(&trimmed[start..=end]) {
-                    return Ok(value);
-                }
-            }
-        }
-    }
-
-    Err("Invalid extraction JSON".into())
-}
-
-fn parse_extracted_facts(raw: &str) -> Result<Vec<ExtractedFact>, String> {
-    let value = parse_json_value(raw)?;
-    let items: Vec<&serde_json::Value> = match &value {
-        serde_json::Value::Array(items) => items.iter().collect(),
-        serde_json::Value::Object(object) => {
-            ["extracted_facts", "facts", "memories", "items"]
-                .into_iter()
-                .find_map(|key| object.get(key).and_then(serde_json::Value::as_array))
-                .map(|items| items.iter().collect())
-                .or_else(|| {
-                    // A single fact object is accepted only when it has an
-                    // explicit fact-shaped field; arbitrary objects remain invalid.
-                    object.contains_key("kind").then_some(vec![&value])
-                })
-                .ok_or_else(|| "Expected extracted facts to be a JSON array".to_string())?
-        }
-        _ => return Err("Expected extracted facts to be a JSON array".into()),
-    };
-
-    let mut facts = Vec::with_capacity(items.len());
-    for item in items {
-        let Some(object) = item.as_object() else {
-            continue;
-        };
-        let candidate: ExtractedFactCandidate =
-            serde_json::from_value(serde_json::Value::Object(object.clone()))
-                .map_err(|e| format!("Invalid extracted fact object: {}", e))?;
-        let explicit_kind = [
-            candidate.kind.as_deref(),
-            candidate.legacy_kind.as_deref(),
-            candidate.category.as_deref(),
-            candidate.fact_type.as_deref(),
-        ]
-        .into_iter()
-        .flatten()
-        .find_map(normalize_fact_kind);
-        let title = trimmed_optional(
-            candidate
-                .title
-                .or(candidate.fact)
-                .or(candidate.detail)
-                .or(candidate.fact_type),
-        );
-        let Some(content) = trimmed_optional(
-            candidate
-                .content
-                .or(candidate.value)
-                .or(candidate.details)
-                .or(candidate.context)
-                .or(candidate.notes),
-        ) else {
-            continue;
-        };
-        let kind =
-            explicit_kind.or_else(|| inferred_personal_fact_kind(title.as_deref(), Some(&content)));
-        let Some(kind) = kind else { continue };
-
-        facts.push(ExtractedFact {
-            kind: kind.into(),
-            title,
-            content,
-            tags: normalize_tags(candidate.tags.or(candidate.labels)),
-        });
-    }
-    Ok(facts)
-}
-
 /// Ask the LLM to extract facts (user prefs, project facts, skills) from a
 /// session. Returns a list of candidate facts for the user to review and
 /// save individually.
@@ -597,8 +393,8 @@ pub async fn extract_facts_from_session(
             Err(e) => return Err(format!("LLM error: {}", e)),
         }
     }
-    let facts = parse_extracted_facts(&out)
-        .map_err(|e| format!("Could not parse extracted facts: {}", e))?;
+    let facts =
+        parse_candidates(&out).map_err(|e| format!("Could not parse extracted facts: {}", e))?;
     Ok(facts)
 }
 
@@ -608,7 +404,7 @@ mod tests {
 
     #[test]
     fn normalizes_observed_legacy_fact_shape_and_drops_task_requests() {
-        let facts = parse_extracted_facts(
+        let facts = parse_candidates(
             r#"[
                 {"type":"personal_information","fact":"User's Birthday Date","value":"February 18th"},
                 {"type":"task/request","fact":"Email Draft Setup","details":"Drafting a birthday invitation email for friends."}
@@ -625,7 +421,7 @@ mod tests {
 
     #[test]
     fn normalizes_gemma_fact_type_shape_and_drops_communication_tasks() {
-        let facts = parse_extracted_facts(
+        let facts = parse_candidates(
             r#"```json
             [
               {"fact_type":"Personal Detail","detail":"Birthday Date","value":"February 18th"},
@@ -657,7 +453,7 @@ mod tests {
             ]
             ```"#,
         ] {
-            let facts = parse_extracted_facts(response).unwrap();
+            let facts = parse_candidates(response).unwrap();
 
             assert_eq!(facts.len(), 1);
             assert_eq!(facts[0].kind, "user_pref");
@@ -668,7 +464,7 @@ mod tests {
 
     #[test]
     fn normalizes_gemma_extracted_facts_wrapper_and_infers_birthday() {
-        let facts = parse_extracted_facts(
+        let facts = parse_candidates(
             r#"```json
             {
               "extracted_facts": [
@@ -696,7 +492,7 @@ mod tests {
 
     #[test]
     fn drops_live_gemma_milestone_and_event_planning_artifacts() {
-        let facts = parse_extracted_facts(
+        let facts = parse_candidates(
             r#"```json
             {
               "extracted_facts": [
@@ -717,7 +513,7 @@ mod tests {
 
     #[test]
     fn accepts_array_tags_and_normalizes_them_for_the_existing_schema() {
-        let facts = parse_extracted_facts(
+        let facts = parse_candidates(
             r#"[{"kind":"user_pref","title":"Style","content":"Prefers concise replies.","tags":["preference","communication"]}]"#,
         )
         .unwrap();
@@ -727,7 +523,7 @@ mod tests {
 
     #[test]
     fn preserves_canonical_fact_shape() {
-        let facts = parse_extracted_facts(
+        let facts = parse_candidates(
             r#"[{"kind":"project_fact","title":"Stack","content":"Convo uses Tauri.","tags":"stack"}]"#,
         )
         .unwrap();
@@ -762,10 +558,10 @@ mod tests {
 
     #[test]
     fn rejects_invalid_json_and_non_array_responses() {
-        let invalid_json = parse_extracted_facts("not json").unwrap_err();
+        let invalid_json = parse_candidates("not json").unwrap_err();
         assert!(invalid_json.contains("JSON"));
 
-        let non_array = parse_extracted_facts(r#"{"status":"ok"}"#).unwrap_err();
+        let non_array = parse_candidates(r#"{"status":"ok"}"#).unwrap_err();
         assert!(non_array.contains("array"));
     }
 }
