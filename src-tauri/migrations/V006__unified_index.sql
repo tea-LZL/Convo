@@ -80,8 +80,14 @@ END;
 -- Backfill. Triggers only fire on write, so every row that existed before
 -- this migration is invisible to FTS until it is next edited. Without
 -- this, a user's entire existing note library is unsearchable.
-INSERT INTO notes_fts(rowid, title, body, tags)
-SELECT rowid, COALESCE(title, ''), body, COALESCE(tags, '') FROM notes;
+--
+-- 'rebuild' rather than INSERT ... SELECT: a raw re-insert would add a
+-- second posting for every row the V002 triggers had already indexed,
+-- doubling its term frequency and inflating its BM25 score. Measured:
+-- one row's rank went from -1.73 to -2.46 across this migration, i.e.
+-- every existing memory would have gained a spurious relevance boost.
+-- 'rebuild' regenerates the index from the content table exactly once.
+INSERT INTO notes_fts(notes_fts) VALUES ('rebuild');
 
 -- ---------------------------------------------------------------------------
 -- Embeddings
@@ -106,12 +112,17 @@ CREATE TABLE IF NOT EXISTS memory_embeddings (
 CREATE INDEX IF NOT EXISTS idx_emb_owner ON memory_embeddings(owner_type, owner_id);
 CREATE INDEX IF NOT EXISTS idx_emb_model ON memory_embeddings(model, dim);
 
--- The same backfill for memory_fts, which has had this defect since V002:
+-- The same repair for memory_fts, which has had this defect since V002:
 -- its triggers were created after memory_items already had rows, so any
--- memory written before V002 has never been searchable. Repairing it here
+-- memory written before v0.2 has never been searchable. Fixed here
 -- because V006 is the first migration where the index actually matters.
-INSERT INTO memory_fts(rowid, title, content, tags)
-SELECT rowid, COALESCE(title, ''), content, COALESCE(tags, '') FROM memory_items;
+--
+-- 'rebuild' because a raw re-insert would double the term frequency of
+-- every row V002's triggers already indexed, and inflate its rank.
+-- Measured: one row's BM25 went from -1.73 to -2.46 across this
+-- migration, i.e. every existing memory would gain a relevance boost it
+-- had not earned.
+INSERT INTO memory_fts(memory_fts) VALUES ('rebuild');
 
 -- ---------------------------------------------------------------------------
 -- Access log

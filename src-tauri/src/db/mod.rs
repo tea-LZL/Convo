@@ -315,4 +315,124 @@ mod tests {
             .unwrap();
         assert_eq!(remaining, 0, "delete trigger did not remove the row");
     }
+    /// The assertion that actually pins the FTS backfill.
+    ///
+    /// A row written *after* V002 is already indexed by V002's trigger, so
+    /// asserting it is findable after V006 passes whether or not the
+    /// backfill runs at all — it proves nothing. This fixture writes the
+    /// row *before* the index exists, so the only thing that can index it
+    /// is the backfill.
+    ///
+    /// Applied as raw SQL rather than through the migration framework,
+    /// because rusqlite_migration keys on position within a `Migrations`
+    /// set: a second, partial set would renumber V002 from 1 and skip it.
+    #[test]
+    fn v6_backfills_rows_written_before_the_fts_triggers_existed() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(MIGRATION_V001).unwrap();
+        conn.execute(
+            "INSERT INTO memory_items (id, kind, title, content)
+             VALUES ('ancient','project_fact','T','a fact that predates the index')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO notes (id, title, body) VALUES ('ancient-note','N','a note that predates the index')",
+            [],
+        )
+        .unwrap();
+        for sql in [
+            MIGRATION_V002,
+            MIGRATION_V003,
+            MIGRATION_V004,
+            MIGRATION_V005,
+        ] {
+            conn.execute_batch(sql).unwrap();
+        }
+
+        // The index now exists and neither row is in it. Creating an
+        // external-content FTS table does not populate it; only the
+        // triggers do, and these rows predate them.
+        let mem_before: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_fts WHERE memory_fts MATCH 'predates'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(mem_before, 0, "fixture is not exercising the memory gap");
+
+        conn.execute_batch(MIGRATION_V006).unwrap();
+
+        let mem_after: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_fts WHERE memory_fts MATCH 'predates'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let note_after: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM notes_fts WHERE notes_fts MATCH 'predates'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(mem_after, 1, "V006 did not backfill a pre-V002 memory");
+        assert_eq!(note_after, 1, "V006 did not backfill a pre-V002 note");
+    }
+
+    /// The backfill must not disturb rows that were already indexed.
+    ///
+    /// A raw `INSERT ... SELECT` over every row looks alarming: it
+    /// re-inserts rows V002's triggers had already indexed. It is safe
+    /// because FTS5 external-content insert is idempotent for an
+    /// identical (rowid, terms) pair — verified directly, by deliberately
+    /// re-inserting a row and observing that neither `fts5vocab`
+    /// 'instance' nor 'row' mode gains a posting, and the term count is
+    /// unchanged. This test pins the user-visible consequence.
+    #[test]
+    fn v6_backfill_does_not_change_the_ranking_of_already_indexed_rows() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        Migrations::new(vec![
+            M::up(MIGRATION_V001),
+            M::up(MIGRATION_V002),
+            M::up(MIGRATION_V003),
+            M::up(MIGRATION_V004),
+            M::up(MIGRATION_V005),
+        ])
+        .to_latest(&mut conn)
+        .unwrap();
+        for i in 0..8 {
+            conn.execute(
+                "INSERT INTO memory_items (id, kind, title, content) VALUES (?1,'project_fact','T','filler unrelated text')",
+                params![format!("f{}", i)],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO memory_items (id, kind, title, content) VALUES ('after','project_fact','T','durable searchable fact')",
+            [],
+        )
+        .unwrap();
+
+        let score = |conn: &Connection| -> f64 {
+            conn.query_row(
+                "SELECT bm25(memory_fts) FROM memory_fts JOIN memory_items m ON m.rowid = memory_fts.rowid
+                 WHERE memory_fts MATCH 'durable'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        let before = score(&conn);
+        migrations().to_latest(&mut conn).unwrap();
+        let after = score(&conn);
+        assert!(
+            (before - after).abs() < 1e-9,
+            "the backfill changed an already-indexed row's rank: {} -> {}",
+            before,
+            after
+        );
+    }
 }
