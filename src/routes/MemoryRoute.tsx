@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Plus, Trash2, Brain, Power, PowerOff, Search, Tag, X, Save, Sparkles, Filter, Edit3, Check, Bell } from "lucide-react";
+import { Plus, Trash2, Brain, Power, PowerOff, Pin, PinOff, Search, Tag, X, Save, Sparkles, Filter, Edit3, Check, Bell, StickyNote } from "lucide-react";
 import { api, ExtractableSession, ExtractedFact, MemoryItem, MemorySearchHit } from "../lib/api";
 import { Button } from "../components/ui/Button";
 import { Dropdown } from "../components/ui/Dropdown";
@@ -30,6 +30,14 @@ const KIND_COLOR: Record<string, string> = {
 
 export function MemoryRoute() {
   const [items, setItems] = useState<MemoryItem[]>([]);
+  /**
+   * memory id → the title of the note that produced it, resolved once per
+   * refresh rather than per row. `list_notes` already returns every note
+   * with the memories it produced, so the reverse direction is one call and
+   * a `Map` lookup at render: a per-row lookup is invisible at ten memories
+   * and obvious at two hundred.
+   */
+  const [provenance, setProvenance] = useState<Map<string, string>>(new Map());
   const [filter, setFilter] = useState<KindFilter>("all");
   const [query, setQuery] = useState("");
   const [searchHits, setSearchHits] = useState<MemorySearchHit[] | null>(null);
@@ -59,8 +67,19 @@ export function MemoryRoute() {
   const navigate = useNavigate();
 
   const refresh = async () => {
-    const list = await api.listMemory(filter === "all" ? undefined : filter);
+    const [list, withLinks] = await Promise.all([
+      api.listMemory(filter === "all" ? undefined : filter),
+      // Provenance is decoration. A note library that will not load must not
+      // cost the list it decorates, so this failure is swallowed and the
+      // rows render without a "from note" line.
+      api.listNotes().catch(() => []),
+    ]);
     setItems(list);
+    setProvenance(new Map(
+      withLinks.flatMap((entry) =>
+        entry.linked_memories.map((link) => [link.id, entry.note.title || "Untitled"] as const),
+      ),
+    ));
     setSearchHits(null);
   };
 
@@ -84,6 +103,19 @@ export function MemoryRoute() {
   const toggle = async (item: MemoryItem) => {
     await toggleMemory(item.id, !item.is_enabled);
     await refresh();
+  };
+
+  // `set_memory_pinned` is the deliberate path: `upsert_memory` does not
+  // carry a pin, so writing the editor's draft back would unpin a memory
+  // pinned here. Errors for an id that is not there rather than reporting a
+  // pin that never took.
+  const setPinned = async (item: MemoryItem, pinned: boolean) => {
+    try {
+      await api.setMemoryPinned(item.id, pinned);
+      await refresh();
+    } catch (e) {
+      toast.error(String(e), "Pin could not be changed");
+    }
   };
 
   const remove = async (id: string) => {
@@ -269,7 +301,7 @@ export function MemoryRoute() {
                 <Brain size={32} className="mx-auto text-text-subtle mb-3" />
                 <h2 className="text-sm font-semibold text-text">No memories yet</h2>
                 <p className="text-xs text-text-muted mt-1">Add user preferences, project facts, and skills.
-                They're included as context in every chat.</p>
+                Convo picks the ones relevant to what you are asking. Pin a memory to always include it.</p>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                 <button
@@ -301,26 +333,52 @@ export function MemoryRoute() {
             {visible.map((entry, i) => {
               const item = entry.item;
               const tags = (item.tags ?? "").split(",").map((t) => t.trim()).filter(Boolean);
+              const fromNote = provenance.get(item.id);
+              const label = item.title || "memory item";
               return (
                 <li key={item.id} className={`bg-surface-1 border border-border rounded-lg p-3 group ${!item.is_enabled ? "opacity-50" : ""}`}>
                   <div className="flex items-start gap-2">
                     <span className={`inline-flex items-center text-[10px] uppercase tracking-wider font-medium px-1.5 py-0.5 rounded border ${KIND_COLOR[item.kind] || KIND_COLOR.skill}`}>
                       {KIND_LABEL[item.kind as KindFilter] || item.kind}
                     </span>
+                    {item.pinned && (
+                      <span
+                        className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full border border-accent/30 text-accent"
+                        title="Pinned — always included in every chat, budget permitting, and never at the mercy of what recall ranks."
+                      >
+                        <Pin size={8} /> pinned
+                      </span>
+                    )}
                     {item.title && <div className="text-sm font-medium text-text">{item.title}</div>}
                     <div className="flex-1" />
                     <button
                       type="button"
-                      aria-label={item.is_enabled ? `Disable ${item.title || "memory item"}` : `Enable ${item.title || "memory item"}`}
+                      aria-pressed={item.pinned}
+                      aria-label={item.pinned ? `Unpin ${label} — stop including it in every chat` : `Pin ${label} — always include it in every chat`}
+                      onClick={() => void setPinned(item, !item.pinned)}
+                      className={`p-1 ${item.pinned ? "text-accent" : "text-text-subtle hover:text-text"}`}
+                      title={item.pinned
+                        ? "Pinned: always included in every chat, budget permitting, whether or not recall ranks it. Unpin to make it recall-only."
+                        : "Unpinned: included only when recall ranks it for what you are asking. Pin it to always include it."}
+                    >
+                      {item.pinned ? <PinOff size={12} /> : <Pin size={12} />}
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={item.is_enabled
+                        ? `Disable ${label} — stop it being eligible for recall`
+                        : `Enable ${label} — let recall choose it when relevant`}
                       onClick={() => toggle(item)}
                       className="text-text-subtle hover:text-text p-1"
-                      title={item.is_enabled ? "Disable" : "Enable"}
+                      title={item.is_enabled
+                        ? "Enabled: eligible for recall, so it is included when it is relevant to what you are asking. Disable to leave it out entirely — a disabled memory is not injected even when pinned."
+                        : "Disabled: left out of every prompt, and not eligible for recall. Enable to let recall choose it again."}
                     >
                       {item.is_enabled ? <Power size={12} /> : <PowerOff size={12} />}
                     </button>
                     <button
                       type="button"
-                      aria-label={`Edit ${item.title || "memory item"}`}
+                      aria-label={`Edit ${label}`}
                       onClick={() => startEdit(item)}
                       className="text-text-subtle hover:text-text p-1"
                       title="Edit"
@@ -329,7 +387,7 @@ export function MemoryRoute() {
                     </button>
                     <button
                       type="button"
-                      aria-label={`Delete ${item.title || "memory item"}`}
+                      aria-label={`Delete ${label}`}
                       onClick={() => setDeleteMemoryId(item.id)}
                       className="text-text-subtle hover:text-error p-1"
                       title="Delete"
@@ -349,8 +407,16 @@ export function MemoryRoute() {
                   ) : (
                     <div className="text-xs text-text-muted leading-relaxed mt-1.5 whitespace-pre-wrap">{item.content}</div>
                   )}
-                  {tags.length > 0 && (
-                    <div className="flex flex-wrap gap-1 mt-2">
+                  {(tags.length > 0 || fromNote) && (
+                    <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                      {fromNote && (
+                        <span
+                          className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border border-border bg-surface-2 text-text-muted"
+                          title="This memory was extracted from that note."
+                        >
+                          <StickyNote size={8} /> from note: {fromNote}
+                        </span>
+                      )}
                       {tags.map((t, j) => (
                         <span key={j} className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border border-border bg-surface-2 text-text-subtle">
                           <Tag size={8} /> {t}
@@ -415,14 +481,21 @@ export function MemoryRoute() {
               <label htmlFor="memory-tags" className="text-xs text-text-muted block mb-1">Tags (comma-separated)</label>
               <TextInput id="memory-tags" value={draft.tags} onChange={(v) => setDraft({ ...draft, tags: v })} placeholder="preference, code-style, project-x" />
             </div>
-            <label className="flex items-center gap-2 text-sm text-text-muted cursor-pointer">
+            <label className="flex items-start gap-2 text-xs text-text-muted cursor-pointer">
               <input
                 type="checkbox"
                 checked={draft.is_enabled}
                 onChange={(e) => setDraft({ ...draft, is_enabled: e.target.checked })}
-                className="accent-[var(--color-accent)]"
+                className="accent-[var(--color-accent)] mt-0.5"
               />
-              Include in chat context
+              <span>
+                Enabled — eligible for recall
+                <span className="block text-[10px] text-text-subtle">
+                  Included when it is relevant to what you are being asked. This is not the
+                  same as pinning, which injects a memory into every chat whether or not recall
+                  ranks it; pin it from the list with the pin button.
+                </span>
+              </span>
             </label>
           </div>
         )}

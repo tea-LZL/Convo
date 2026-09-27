@@ -1,15 +1,23 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Plus, Trash2, Save, Search, StickyNote, Tag, MessageSquare } from "lucide-react";
-import { api, Note } from "../lib/api";
+import { Plus, Trash2, Save, Search, StickyNote, Tag, MessageSquare, Pin, PinOff, Unlink } from "lucide-react";
+import { api, Note, NoteLink } from "../lib/api";
 import { Button } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
 import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { RouteShell } from "../components/ui/RouteShell";
 import { toast } from "../stores/toasts";
 
+/**
+ * One row in the sidebar. `links` is what `list_notes` attached to the note
+ * and `null` when the row came from `search_notes`, which returns plain
+ * notes. `null` means "not loaded" and renders nothing; an empty array means
+ * "loaded, and this note produced nothing", and those are different claims.
+ */
+type NoteRow = { note: Note; links: NoteLink[] | null };
+
 export function NotesRoute() {
-  const [notes, setNotes] = useState<Note[]>([]);
+  const [rows, setRows] = useState<NoteRow[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
@@ -29,12 +37,15 @@ export function NotesRoute() {
     try {
       // list_notes returns each note with the memories it produced; search
       // returns plain notes. The list is what the editor works on, so the
-      // links are unwrapped here rather than threaded through every read.
-      const n = query.trim()
-        ? await api.searchNotes(query)
-        : (await api.listNotes()).map((linked) => linked.note);
-      setNotes(n);
-      const next = n.find((note) => note.id === activeId) ?? n[0];
+      // links ride along here rather than through every read — a second
+      // fetch per open note would be a query per row for data this call
+      // already delivered.
+      const n: NoteRow[] = query.trim()
+        ? (await api.searchNotes(query)).map((note) => ({ note, links: null }))
+        : (await api.listNotes()).map((linked) => ({ note: linked.note, links: linked.linked_memories }));
+      setRows(n);
+      const notes = n.map((r) => r.note);
+      const next = notes.find((note) => note.id === activeId) ?? notes[0];
       if (next && !activeId) {
         setActiveId(next.id);
         setTitle(next.title ?? "");
@@ -108,7 +119,35 @@ export function NotesRoute() {
     }
   };
 
-  const active = notes.find((n) => n.id === activeId);
+  // Deliberate path, not the editor's save: `upsert_note` ignores `pinned`
+  // on update, so writing it back from a save would unpin a note the user
+  // pinned here. `set_note_pinned` also errors for an id that is not there
+  // rather than reporting a pin that never took.
+  const setPinned = async (note: Note, pinned: boolean) => {
+    try {
+      await api.setNotePinned(note.id, pinned);
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+      toast.error(String(e), "Pin could not be changed");
+    }
+  };
+
+  const unlinkMemory = async (noteId: string, memoryId: string) => {
+    try {
+      await api.unlinkMemoryFromNote(noteId, memoryId);
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+      toast.error(String(e), "Memory could not be unlinked");
+    }
+  };
+
+  const notes = rows.map((r) => r.note);
+  const activeRow = rows.find((r) => r.note.id === activeId);
+  const active = activeRow?.note;
+  // One lookup while rendering, not a scan per linked row.
+  const activeLinks = activeRow?.links ?? null;
   const visibleNotes = notes.filter((note) => {
     if (!tagFilter.trim()) return true;
     return (note.tags ?? "").split(",").map((tag) => tag.trim().toLowerCase()).includes(tagFilter.trim().toLowerCase());
@@ -177,7 +216,10 @@ export function NotesRoute() {
                   }}
                   className={`w-full text-left px-3 py-2 text-xs flex flex-col gap-0.5 hover:bg-surface-2 ${n.id === activeId ? "bg-surface-2" : ""}`}
                 >
-                  <span className="text-text font-medium truncate">{n.title || "Untitled"}</span>
+                  <span className="flex items-center gap-1">
+                    {n.pinned && <Pin size={9} className="text-accent shrink-0" />}
+                    <span className="text-text font-medium truncate">{n.title || "Untitled"}</span>
+                  </span>
                   <span className="text-text-subtle text-[10px] truncate">{n.body.slice(0, 60) || "(empty)"}</span>
                   {(nt.length > 0 || n.source_session_id) && (
                     <span className="flex flex-wrap gap-1 mt-0.5">
@@ -204,6 +246,18 @@ export function NotesRoute() {
                 className="bg-transparent text-sm font-medium text-text placeholder:text-text-subtle focus:outline-none flex-1 min-w-0"
               />
               {dirty && <span className="text-[10px] text-warn">●</span>}
+              <button
+                type="button"
+                onClick={() => void setPinned(active, !active.pinned)}
+                aria-pressed={active.pinned}
+                aria-label={active.pinned ? `Unpin ${active.title || "Untitled"}` : `Pin ${active.title || "Untitled"}`}
+                title={active.pinned
+                  ? "Pinned — this note is included in every chat, budget permitting. Unpin to make it recall-only."
+                  : "Unpinned — this note is included only when it is relevant to what you are asking. Pin it to always include it."}
+                className={`p-1.5 rounded-md ${active.pinned ? "text-accent" : "text-text-subtle hover:text-text"}`}
+              >
+                {active.pinned ? <PinOff size={13} /> : <Pin size={13} />}
+              </button>
               <Button size="sm" variant="ghost" onClick={() => setDeleteTargetId(activeId)} icon={<Trash2 size={12} />}>Delete</Button>
               <Button size="sm" variant="primary" onClick={save} loading={saving} disabled={!dirty} icon={<Save size={12} />}>Save</Button>
             </div>
@@ -225,6 +279,56 @@ export function NotesRoute() {
                 </Link>
               )}
             </div>
+            {activeLinks !== null && activeLinks.length > 0 && (
+              <div className="border-b border-border bg-surface-1/20 px-4 py-2 shrink-0 max-h-48 overflow-y-auto">
+                <div className="text-[10px] uppercase tracking-wider text-text-subtle mb-1.5">
+                  Produced {activeLinks.length === 1 ? "1 memory" : `${activeLinks.length} memories`}
+                </div>
+                <ul className="space-y-1">
+                  {activeLinks.map((link) => {
+                    const replaced = link.superseded_by !== null;
+                    return (
+                      <li
+                        key={link.id}
+                        className="group flex items-start gap-2 rounded-md border border-border bg-surface-2 px-2 py-1.5"
+                      >
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            {link.title && (
+                              <span className={`text-xs font-medium truncate ${replaced ? "text-text-subtle line-through" : "text-text"}`}>
+                                {link.title}
+                              </span>
+                            )}
+                            {replaced && (
+                              <span className="text-[9px] px-1 py-0.5 rounded-full border border-border text-text-subtle">
+                                replaced
+                              </span>
+                            )}
+                            {!link.is_enabled && (
+                              <span className="text-[9px] px-1 py-0.5 rounded-full border border-border text-text-subtle">
+                                disabled
+                              </span>
+                            )}
+                          </div>
+                          <div className={`text-[11px] leading-relaxed text-text-muted mt-0.5 line-clamp-2 ${replaced ? "line-through" : ""}`}>
+                            {link.content}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => void unlinkMemory(active.id, link.id)}
+                          aria-label={`Unlink ${link.title || "memory"} from this note`}
+                          title="Unlink — this memory is kept, only the claim that this note produced it is cleared."
+                          className="text-text-subtle hover:text-error p-1 shrink-0"
+                        >
+                          <Unlink size={11} />
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
             <textarea
               value={body}
               onChange={(e) => { setBody(e.target.value); setDirty(true); }}

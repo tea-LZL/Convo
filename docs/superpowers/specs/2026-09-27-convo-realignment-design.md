@@ -462,19 +462,35 @@ Plan 4, which deletes that scorer and moves context assembly into Rust.
 - [x] `memory/index.rs` — embed off the send path; `memory_extract_and_revise` command
 - [x] **Gate:** decision table fully covered, extraction end-to-end test green
 
-### Phase 6 — Notes
-- [ ] `note_pin`, `note_unlink_memory`; pinned notes always injected
-- [ ] Bidirectional provenance (§5.4)
-- [ ] Notes never injected beyond the context budget (§12.3)
-- [ ] **Gate:** note lifecycle tests, budget test
+### Phase 6 — Notes — **complete**
+- [x] `note_pin`, `note_unlink_memory`; pinned notes always injected
+- [x] Bidirectional provenance (§5.4)
+- [x] Notes never injected beyond the context budget (§12.3)
+- [x] **Gate:** note lifecycle tests, budget test
 
-### Phase 7 — Context assembly
-- [ ] `memory/context.rs` — single block, one directive, no contradictory duplication
-- [ ] Precedence: pinned notes → pinned memories → session notes → retrieved topK
-- [ ] Delete `chatStream.ts:736-787` (`recallMemories`) and `stores/memory.ts buildContextBlock`
-- [ ] `chat_stream.rs` gains a memory-aware path; frontend passes raw input only
-- [ ] Prompt-snapshot tests for the assembled block
-- [ ] **Gate:** snapshot tests, typecheck, no retrieval logic left in TypeScript
+### Phase 7 — Context assembly — **complete**
+- [x] `memory/context.rs` — single block, one directive, no contradictory duplication
+- [x] Precedence: pinned notes → pinned memories → session notes → retrieved topK
+- [x] Delete `chatStream.ts:736-787` (`recallMemories`) and `stores/memory.ts buildContextBlock`
+- [x] `chat_stream.rs` gains a memory-aware path; frontend passes raw input only
+- [x] Prompt-snapshot tests for the assembled block
+- [x] **Gate:** snapshot tests, typecheck, no retrieval logic left in TypeScript
+
+**Measured TypeScript floor change: 372 → 359, then 364.** The 13-test drop is
+the deleted code taking its own tests with it — the substring scorer
+(`recallMemories` and its corpus) and the second context block
+(`buildContextBlock` and its session-override injection). No test covering
+surviving behaviour was deleted: two were re-targeted, because every one of
+their assertions had been about frontend memory injection, which no longer
+exists. The count has never fallen below 359 at any commit on this plan.
+
+**A behaviour change that ships with Phase 7, stated rather than discovered.**
+The always-on set moves from *every enabled memory, session-scoped* to *pinned
+only*. A user with memories already stored gets a different prompt until they
+pin what they relied on. That is the design — rank, budget, and a pin for the
+rest — and §5.3's Memory tab is where a pin is now set, with "enabled"
+(eligible for recall) and "pinned" (injected regardless of recall) labelled
+separately because confusing the two fails silently.
 
 ### Phase 8 — UI
 - [ ] Nav reorder + default landing (§9)
