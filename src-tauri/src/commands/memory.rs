@@ -132,7 +132,19 @@ pub fn search_memory(
     limit: Option<i64>,
 ) -> Result<Vec<MemorySearchHit>, String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
-    let lim = limit.unwrap_or(30);
+    search(&conn, &query, kind.as_deref(), limit.unwrap_or(30))
+}
+
+/// The query behind `search_memory`, over `&Connection` so it is callable
+/// from a test. A command that can only be reached through a `State` is a
+/// command nothing can test, which is how the two bugs below survived: a
+/// kind-less search had never been run.
+pub fn search(
+    conn: &rusqlite::Connection,
+    query: &str,
+    kind: Option<&str>,
+    lim: i64,
+) -> Result<Vec<MemorySearchHit>, String> {
     let q = query.trim();
     if q.is_empty() {
         return Ok(vec![]);
@@ -159,8 +171,13 @@ pub fn search_memory(
         return Ok(vec![]);
     }
     let mut sql = String::from(
+        // `snippet`'s column index is 0-based over
+        // `memory_fts (title, content, tags)`, so 1 is content. It was 2,
+        // which is tags: every excerpt came from the tag list, and a memory
+        // with no tags is a NULL in that column, so the row could not be
+        // read at all.
         "SELECT m.id, m.kind, m.title, m.content, m.tags, m.is_enabled, m.created_at, m.updated_at,
-                snippet(memory_fts, 2, '<mark>', '</mark>', '…', 16)
+                snippet(memory_fts, 1, '<mark>', '</mark>', '…', 16)
          FROM memory_fts JOIN memory_items m ON m.rowid = memory_fts.rowid
          WHERE memory_fts MATCH ?1",
     );
@@ -175,17 +192,15 @@ pub fn search_memory(
             snippet: row.get::<_, String>(8)?,
         })
     };
-    let hits: Vec<MemorySearchHit> = if let Some(k) = kind {
-        stmt.query_map(params![fts_q, k, lim], mapper)
-            .map_err(|e| e.to_string())?
-            .collect::<Result<_, _>>()
-            .map_err(|e| e.to_string())?
-    } else {
-        stmt.query_map(params![fts_q, lim], mapper)
-            .map_err(|e| e.to_string())?
-            .collect::<Result<_, _>>()
-            .map_err(|e| e.to_string())?
-    };
+    // `?2` is bound even when its clause is absent. SQLite counts a
+    // statement's parameters by its highest index, and `LIMIT ?3` is there
+    // either way, so binding two is a "wrong number of parameters" error —
+    // which is what every kind-less search returned, always.
+    let hits: Vec<MemorySearchHit> = stmt
+        .query_map(params![fts_q, kind, lim], mapper)
+        .map_err(|e| e.to_string())?
+        .collect::<Result<_, _>>()
+        .map_err(|e| e.to_string())?;
     Ok(hits)
 }
 

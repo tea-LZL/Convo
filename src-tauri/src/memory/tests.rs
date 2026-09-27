@@ -1,5 +1,6 @@
 use rusqlite::{params, Connection};
 
+use crate::commands::memory;
 use crate::commands::notes;
 
 /// An in-memory `settings` table, matching the real one from V001:
@@ -2721,4 +2722,64 @@ fn unlinking_a_memory_through_the_wrong_note_changes_nothing() {
     notes::unlink(&conn, "n2", "m1").unwrap_err();
     assert_eq!(notes::memories_for_note(&conn, "n1").unwrap().len(), 1);
     assert!(notes::memories_for_note(&conn, "n2").unwrap().is_empty());
+}
+
+/// A memory search with no kind filter is the shape the Memory tab uses, and
+/// it was an error every time: the query names three parameters and the
+/// kind-less branch bound two, which SQLite rejects outright.
+#[test]
+fn a_memory_search_without_a_kind_filter_returns_its_hits() {
+    let conn = migrated_conn();
+    add_memory_full(
+        &conn,
+        "m1",
+        "user_pref",
+        "Build",
+        "npm run build and then vite build",
+    );
+
+    let hits = memory::search(&conn, "vite", None, 30).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].item.id, "m1");
+
+    // The filter still applies when it is given.
+    assert!(memory::search(&conn, "vite", Some("skill"), 30)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        memory::search(&conn, "vite", Some("user_pref"), 30)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+/// The excerpt is built from the content, not from the tag list. `snippet`'s
+/// column index is 0-based over `memory_fts (title, content, tags)`, so 2 was
+/// the tags: a memory with tags got a tag list as its excerpt, and a memory
+/// without them got a NULL, which failed to read as a String and took the
+/// whole search result down with it.
+#[test]
+fn a_memory_search_excerpts_the_content_and_survives_a_memory_without_tags() {
+    let conn = migrated_conn();
+    conn.execute(
+        "INSERT INTO memory_items (id, kind, title, content, tags)
+         VALUES ('m1','user_pref','Build','npm run build and then vite build', NULL)",
+        [],
+    )
+    .unwrap();
+
+    let hits = memory::search(&conn, "vite", None, 30).unwrap();
+    assert_eq!(hits.len(), 1, "a tagless memory could not be read back");
+    assert_eq!(hits[0].item.content, "npm run build and then vite build");
+    assert!(
+        hits[0].snippet.contains("<mark>"),
+        "excerpt: {}",
+        hits[0].snippet
+    );
+    assert!(
+        hits[0].snippet.contains("vite") && !hits[0].snippet.contains("Build"),
+        "the excerpt is not the matched content: {}",
+        hits[0].snippet
+    );
 }
