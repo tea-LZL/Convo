@@ -96,7 +96,7 @@ export function SessionSearch() {
       <div
         ref={dialogRef}
         data-session-search
-        className="relative w-full max-w-2xl bg-surface-1 border border-border rounded-2xl shadow-modal overflow-hidden animate-scale-in"
+        className="relative w-full max-w-2xl bg-surface-1 border border-border rounded-xl shadow-modal overflow-hidden animate-scale-in"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-2.5 px-4 py-3 border-b border-border/50">
