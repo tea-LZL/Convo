@@ -374,6 +374,57 @@ describe("MemoryRoute pinning", () => {
     ...overrides,
   });
 
+  /**
+   * Every control on the page, by its computed accessible name.
+   *
+   * The same sweep as the sidebar's, and the same reason: the recall
+   * panel's search field and the four row controls beside it are the ones
+   * with no visible text of their own, so they are exactly the ones a
+   * per-control assertion forgets. Rendered rather than scanned, because
+   * only the DOM knows that a `<label>` wrapped round a checkbox is its
+   * name.
+   */
+  it("names every control, so none of them is announced as 'button'", async () => {
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "list_memory") return [memory("m-1"), memory("m-2")];
+      if (command === "list_note_titles") return [];
+      if (command === "list_memory_reviews") return [];
+      return null;
+    });
+
+    render(
+      <MemoryRouter>
+        <MemoryRoute />
+      </MemoryRouter>,
+    );
+    const recall = await screen.findByRole("textbox", { name: "Search memory" });
+    expect(recall, "the recall panel's input must be reachable by name").toBeInTheDocument();
+
+    const container = document.body;
+    const INTERACTIVE = [
+      "a[href]", "button", "input", "select", "textarea",
+      "[role='switch']", "[role='tab']", "[role='menuitem']",
+      "[tabindex]:not([tabindex='-1'])",
+    ].join(", ");
+    const controls = Array.from(container.querySelectorAll<HTMLElement>(INTERACTIVE))
+      .filter((el) => !el.closest('[aria-hidden="true"]'));
+    expect(controls.length, "the sweep must have controls to look at").toBeGreaterThan(8);
+
+    // `aria-label`, `aria-labelledby` or the control's own text. A `title`
+    // is not accepted on its own: it is last in the name computation, it
+    // is announced inconsistently, and it is not a name on a touch device.
+    // The sidebar's sweep has the same rule and the same reason.
+    const unnamed = controls.filter(
+      (el) =>
+        !el.getAttribute("aria-label")?.trim() &&
+        !el.getAttribute("aria-labelledby") &&
+        !(el.textContent ?? "").trim(),
+    );
+    expect(
+      unnamed.map((el) => `<${el.tagName.toLowerCase()}> ${el.getAttribute("class")?.slice(0, 50) ?? ""}`),
+    ).toEqual([]);
+  });
+
   it("pins through set_memory_pinned and says so, separately from enabling", async () => {
     let pinned = false;
     vi.mocked(invoke).mockImplementation(async (command, args) => {
@@ -416,6 +467,73 @@ describe("MemoryRoute pinning", () => {
     expect(invoke).not.toHaveBeenCalledWith("toggle_memory", expect.anything());
     fireEvent.click(screen.getByRole("button", { name: /Disable Pref m-1/ }));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("toggle_memory", { id: "m-1", enabled: false }));
+  });
+
+  // The agreement, rendered, for the control that had no state to agree
+  // with. Every other aria assertion in this plan checked a value; this one
+  // checks that four channels describe the same thing, and it is here
+  // rather than in `stateAgreement.test.tsx` because a source scan cannot
+  // see a rendering. Two of the four are the announcement a screen reader
+  // gets — the name and `aria-pressed` — and two are not, which is what
+  // makes it an agreement test: the `title` is prose written separately,
+  // and the row's own `opacity-50` is the page's visual channel. If any
+  // one of the four drifted, the assertion would fail on the drift rather
+  // than on a hard-coded expectation.
+  it("announces the enable state, and it agrees with the name, the title and the row", async () => {
+    let enabled = true;
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      if (command === "list_memory") return [memory("m-1", { is_enabled: enabled })];
+      if (command === "list_note_titles") return [];
+      if (command === "list_memory_reviews") return [];
+      if (command === "toggle_memory") enabled = (args as { enabled: boolean }).enabled;
+      return null;
+    });
+
+    render(
+      <MemoryRouter>
+        <MemoryRoute />
+      </MemoryRouter>,
+    );
+
+    const read = () => {
+      const control = screen.getByRole("button", { name: /^Disable Pref m-1|^Enable Pref m-1/ });
+      const row = control.closest("li")!;
+      return {
+        name: control.getAttribute("aria-label")!.split(" — ")[0],
+        announced: control.getAttribute("aria-pressed"),
+        // An independently written sentence about the same state. It does
+        // not share an expression with the name, which is the point: two
+        // channels that can only be wrong together if a person wrote them
+        // wrong.
+        title: control.getAttribute("title")!.split(":")[0],
+        // The page's own visual channel for the same state.
+        dimmed: row.className.includes("opacity-50"),
+      };
+    };
+
+    // Enabled: the control offers "Disable" because it is enabled, says so,
+    // writes "Enabled" in the tooltip, and the row is not dimmed.
+    await waitFor(() => expect(read().name).toBe("Disable Pref m-1"));
+    expect(read()).toEqual({
+      name: "Disable Pref m-1",
+      announced: "true",
+      title: "Enabled",
+      dimmed: false,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /Disable Pref m-1/ }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("toggle_memory", { id: "m-1", enabled: false }));
+
+    // Disabled: all four move together, and the label's polarity is the
+    // one the pin above it uses — the name is the next action, so "Enable"
+    // is offered precisely because the state is off.
+    await waitFor(() => expect(read().name).toBe("Enable Pref m-1"));
+    expect(read()).toEqual({
+      name: "Enable Pref m-1",
+      announced: "false",
+      title: "Disabled",
+      dimmed: true,
+    });
   });
 
   // The provenance labels are worth one call per refresh, not one per row —

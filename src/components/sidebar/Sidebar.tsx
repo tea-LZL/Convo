@@ -394,6 +394,14 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
             </div>
             <button
               type="button"
+              // The label has always flipped with the state, and nothing
+              // said what the state was: a screen reader read "Show
+              // archived chats, button" while the list underneath it was
+              // already showing archived chats. Found by
+              // `stateAgreement.test.tsx`, not by reading this file. The
+              // group header two lines up ("Recent" / "Archived") is the
+              // independent observable the agreement is against.
+              aria-pressed={showArchived}
               aria-label={showArchived ? "Show active chats" : "Show archived chats"}
               onClick={() => setShowArchived((v) => !v)}
               className={`text-[10px] text-text-subtle hover:text-text flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-surface-2 ${
@@ -552,6 +560,14 @@ function SessionRow({
       <div className={`opacity-0 group-hover:opacity-100 flex items-center pr-1.5 gap-0.5 ${reducedMotion ? "" : "transition-opacity"}`}>
         <button
           type="button"
+          // The two session toggles, and the reason the guard is worth
+          // having on a file this plan restyled but did not write these
+          // lines in: a label that flips between "Pin" and "Unpin" is a
+          // promise that the state is being announced, and neither of
+          // them had a state channel. Both are pre-existing, both were
+          // found by `stateAgreement.test.tsx`, and the polarity matches
+          // the pin toggle on the Memory row.
+          aria-pressed={session.is_pinned}
           aria-label={session.is_pinned ? "Unpin" : "Pin"}
           onClick={(e) => { e.stopPropagation(); onPin(); }}
           className="text-text-subtle hover:text-accent p-0.5"
@@ -561,6 +577,7 @@ function SessionRow({
         </button>
         <button
           type="button"
+          aria-pressed={session.is_archived}
           aria-label={session.is_archived ? "Unarchive" : "Archive"}
           onClick={(e) => { e.stopPropagation(); onArchive(); }}
           className="text-text-subtle hover:text-text p-0.5"

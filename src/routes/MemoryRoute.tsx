@@ -125,7 +125,7 @@ const KIND_VARIANT: Record<string, KindVariant> = {
  * fixed cost would not show up as a smaller number anyway.
  */
 const ROW_ACTION =
-  "h-6 w-6 inline-flex items-center justify-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40";
+  "h-6 w-6 inline-flex items-center justify-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg";
 const ROW_ACTION_IDLE = "text-text-subtle hover:text-text";
 
 /**
@@ -396,7 +396,7 @@ export function MemoryRoute() {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search memory…"
-            className="w-full bg-surface-2 border border-border rounded-md pl-7 pr-2.5 py-1 text-xs text-text placeholder:text-text-subtle focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/30"
+            className="w-full bg-surface-2 border border-border rounded-md pl-7 pr-2.5 py-1 text-xs text-text placeholder:text-text-subtle focus:outline-none focus:border-accent focus:ring-2 focus:ring-text focus:ring-offset-2 focus:ring-offset-bg"
           />
         </div>
       </div>
@@ -520,6 +520,21 @@ export function MemoryRoute() {
                       </button>
                       <button
                         type="button"
+                        // The pin above states its state; this one did not,
+                        // and the gap is the whole class of defect Task 6
+                        // found on Compare: a name that changes with the
+                        // state ("Enable" / "Disable") promises the state
+                        // is being announced, and without a state channel
+                        // nothing is. A screen reader read "Disable Pref
+                        // m-1 — stop it being eligible for recall, button"
+                        // and could not tell whether it was enabled, which
+                        // is the one fact the control exists to change.
+                        // The polarity matches the pin: the name is the next
+                        // action, so pressed says the governed state is
+                        // currently on. `stateAgreement.test.ts` asserts
+                        // the name, the state and the title all branch on
+                        // the same expression.
+                        aria-pressed={item.is_enabled}
                         aria-label={item.is_enabled
                           ? `Disable ${label} — stop it being eligible for recall`
                           : `Enable ${label} — let recall choose it when relevant`}

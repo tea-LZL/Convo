@@ -98,6 +98,10 @@ async function renderSidebar(collapsed = false, opts: SidebarOptions = {}) {
     removeEventListener: vi.fn(),
     dispatchEvent: vi.fn(),
   }));
+  // Deliberately returns nothing: an existing assertion in this file pins
+  // that, and rewriting a helper's signature to serve a new test is not
+  // worth editing a passing assertion for. The sweep below reads
+  // `document.body`, which is where `render` puts it anyway.
   render(
     <MemoryRouter initialEntries={["/chat"]}>
       <Sidebar collapsed={collapsed} onToggle={() => {}} />
@@ -259,6 +263,95 @@ describe("prefers-reduced-motion", () => {
         /(^|[\s:])((transition|animate|duration|ease)-[\w-]+)/,
       );
     }
+  });
+});
+
+/**
+ * Every control in the sidebar, by its computed accessible name.
+ *
+ * The plan's a11y pass asks for a reachable name on every interactive
+ * element, and the four surfaces it names — the nav rows, the search row,
+ * the status card's chips, the per-session pin and archive — are all
+ * here. A source scan cannot answer this question: a control's name comes
+ * from its own text, from a `title`, from an `aria-label`, or from a
+ * `<label>` wrapped around it, and only the DOM knows which. So this is a
+ * rendered sweep over the real accessibility computation, which is also
+ * why it is a *sweep* and not four lookups: four lookups each pass for
+ * the control they name, and the finding this pass is guarding against is
+ * a control nobody thought to look up.
+ */
+const INTERACTIVE = [
+  "a[href]", "button", "input", "select", "textarea",
+  "[role='switch']", "[role='tab']", "[role='menuitem']",
+  "[tabindex]:not([tabindex='-1'])",
+].join(", ");
+
+/**
+ * A control is named if any of `aria-label`, `aria-labelledby`, its own
+ * text, or a `title` says something.
+ *
+ * The `title` is the weak one and it is deliberately **not** enough on its
+ * own for a control with no text of its own. `title` is last in the
+ * accessible-name computation, screen readers announce it inconsistently,
+ * and it is not a name at all on a touch device — so accepting it would
+ * let an icon button pass on the strength of the tooltip the same control
+ * shows on hover. An icon-only control has to carry an `aria-label`.
+ * That distinction is not theoretical: dropping the `aria-label` from the
+ * Memory page's enable control left its `title` behind, and a sweep that
+ * accepted `title` stayed green.
+ *
+ * `aria-labelledby` is not resolved: the id could point at anything, and a
+ * name that exists but is spelled wrong is a different defect from a
+ * missing one, which the per-surface tests cover by querying the name they
+ * expect.
+ */
+function withoutNames(root: HTMLElement): string[] {
+  const out: string[] = [];
+  for (const el of Array.from(root.querySelectorAll<HTMLElement>(INTERACTIVE))) {
+    // An `aria-hidden` subtree is not in the accessibility tree, so it is
+    // not a control anyone reaches.
+    if (el.closest('[aria-hidden="true"]')) continue;
+    if (el.getAttribute("aria-label")?.trim() || el.getAttribute("aria-labelledby")) continue;
+    if ((el.textContent ?? "").trim()) continue;
+    if (!el.getAttribute("title")?.trim()) {
+      out.push(`<${el.tagName.toLowerCase()}> class="${el.getAttribute("class") ?? ""}"`);
+    } else {
+      out.push(
+        `<${el.tagName.toLowerCase()}> has only a title: class="${el.getAttribute("class") ?? ""}"`,
+      );
+    }
+  }
+  return out;
+}
+
+describe("Sidebar accessible names", () => {
+  beforeEach(() => {
+    useSessionsStore.setState({
+      sessions: [session("s1"), session("s2")],
+      activeId: "s1",
+      loading: false,
+      error: null,
+    });
+  });
+
+  it("names every control, with sessions present and the status card live", async () => {
+    await renderSidebar(false, { sessions: [session("s1"), session("s2")] });
+    const container = document.body;
+    // Not a count the sweep is trusted to produce: a floor, so that a
+    // harness that rendered an empty sidebar would not pass it.
+    expect(container.querySelectorAll(INTERACTIVE).length).toBeGreaterThan(12);
+    expect(withoutNames(container)).toEqual([]);
+  });
+
+  it("names every control on the collapsed rail, where the labels are gone", async () => {
+    // The rail is the harder half: the visible text is replaced by an
+    // icon, so a name that came from the text no longer exists and the
+    // `aria-label` is the only thing left. If one of these is missing it
+    // is six controls named "button".
+    await renderSidebar(true, { sessions: [session("s1"), session("s2")] });
+    const container = document.body;
+    expect(container.querySelectorAll(INTERACTIVE).length).toBeGreaterThan(6);
+    expect(withoutNames(container)).toEqual([]);
   });
 });
 
