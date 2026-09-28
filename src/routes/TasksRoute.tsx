@@ -30,14 +30,14 @@
  * `ring-*` out of `box-shadow` and an unscoped ring would paint a shadow on
  * every row at rest while the flatness check called the page clean.
  *
- * ── The two row controls are hand-composed, and the reason is the
- * transition rule ──────────────────────────────────────────────────────
+ * ── The two row controls ──────────────────────────────────────────────
  * `IconButton` would have been the obvious choice and it is not used: it
  * carries an unconditional `transition-colors`, and putting one on every
  * row of a list that scales to hundreds is the thing this page is deciding
- * not to do. `ROW_ACTION` below is the same definition the Memory and
- * Compare pages use — 24px, `focus-visible:`, no transition — so three
- * pages of row controls cannot drift apart.
+ * not to do. They are `ROW_ACTION` from `components/ui/rowAction`, which
+ * is where the reasoning for 24px, for `focus-visible:` and for the
+ * absence of a transition lives — and which the other three pages import
+ * rather than re-spell, so four pages of row controls cannot drift apart.
  */
 import { useEffect, useState } from "react";
 import { Calendar, Check, Edit3, ListTodo, Plus, Save, Trash2, X } from "lucide-react";
@@ -47,6 +47,7 @@ import { EmptyState } from "../components/ui/EmptyState";
 import { Select, TextArea, TextInput, Badge } from "../components/ui/Form";
 import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { RouteShell } from "../components/ui/RouteShell";
+import { ROW_ACTION, ROW_ACTION_IDLE } from "../components/ui/rowAction";
 import { toast } from "../stores/toasts";
 
 interface TaskDraft {
@@ -56,18 +57,6 @@ interface TaskDraft {
   priority: string;
 }
 
-/**
- * The two row controls, as one definition.
- *
- * 24px rather than the 18px a `Button size="xs"` icon button gives, for
- * WCAG 2.2's target size — the same ruling the Memory page took when it
- * grew its four row controls from 20px. A task row is a list row, so
- * `focus-visible:` rather than `focus:`: clicking one acts immediately and
- * there is nothing left to disambiguate.
- */
-const ROW_ACTION =
-  "h-6 w-6 shrink-0 inline-flex items-center justify-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg";
-const ROW_ACTION_IDLE = "text-text-subtle hover:text-text";
 
 const EMPTY_DRAFT: TaskDraft = { title: "", body: "", dueAt: "", priority: "0" };
 const PRIORITIES = [

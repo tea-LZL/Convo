@@ -88,6 +88,7 @@ import { toast } from "../stores/toasts";
 import { useMemoryStore } from "../stores/memory";
 import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { RouteShell } from "../components/ui/RouteShell";
+import { ROW_ACTION, ROW_ACTION_IDLE } from "../components/ui/rowAction";
 import { useNavigate } from "react-router-dom";
 
 type KindFilter = "all" | "user_pref" | "project_fact" | "skill";
@@ -112,21 +113,6 @@ const KIND_VARIANT: Record<string, KindVariant> = {
   skill: "warn",
 };
 
-/**
- * One definition for the four controls at the end of a row. They were
- * four near-identical class strings, which is how a row ends up with a
- * pin button that is 2px larger than the delete button next to it.
- *
- * 24px, not the 20px these were: the compact rhythm is about how many
- * rows fit, and the control column is a fixed 102px of every row — four
- * targets and three 2px gaps — whether the pane is wide or not. Spending
- * it on targets that meet the minimum is the better trade, and the
- * density is expressed in the gaps between rows, not in the one place a
- * fixed cost would not show up as a smaller number anyway.
- */
-const ROW_ACTION =
-  "h-6 w-6 inline-flex items-center justify-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg";
-const ROW_ACTION_IDLE = "text-text-subtle hover:text-text";
 
 /**
  * The 10px chip geometry, stated once.

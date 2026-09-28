@@ -55,6 +55,7 @@ import { Button } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
 import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { RouteShell } from "../components/ui/RouteShell";
+import { ROW_ACTION } from "../components/ui/rowAction";
 import { Badge } from "../components/ui/Form";
 import { toast } from "../stores/toasts";
 
@@ -66,13 +67,6 @@ import { toast } from "../stores/toasts";
  */
 type NoteRow = { note: Note; links: NoteLink[] | null };
 
-/**
- * One definition for the row controls at the end of a line, so the pin in
- * the editor's header and the unlink in the produced-memories list cannot
- * drift a pixel apart. 24px, for the target-size reason in the header.
- */
-const ROW_ACTION =
-  "h-6 w-6 shrink-0 inline-flex items-center justify-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg";
 
 /**
  * The 10px tag chip, stated once.

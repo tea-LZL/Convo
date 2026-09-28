@@ -46,6 +46,7 @@ import { EmptyState } from "../components/ui/EmptyState";
 import { Modal } from "../components/ui/Modal";
 import { ErrorBoundary } from "../components/ui/ErrorBoundary";
 import { RouteShell } from "../components/ui/RouteShell";
+import { ROW_ACTION } from "../components/ui/rowAction";
 import { MarkdownRenderer } from "../components/chat/MarkdownRenderer";
 import { escapeThinkTags } from "../components/chat/MessageRow";
 import { GitCompareArrows, Play, Plus, Square, Trophy, Eye, EyeOff, History, Save, ExternalLink, Sparkles, X } from "lucide-react";
@@ -55,16 +56,6 @@ import { useSessionsStore } from "../stores/sessions";
 import { toast } from "../stores/toasts";
 import { errorClass, recordLog } from "../lib/logger";
 
-/**
- * One definition for the four icon controls on this page: the two that
- * remove a model from the picker, the one that stops a column, and the
- * one that picks a winner. They were four hand-written buttons with 4px
- * of padding and no focus ring — about 17px targets — and they are now
- * 24px with the ring behind `focus-visible:`, which is the right state
- * for a control that acts the moment it is clicked.
- */
-const ROW_ACTION =
-  "h-6 w-6 shrink-0 inline-flex items-center justify-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg";
 
 interface ColumnState {
   startedAt: number;
