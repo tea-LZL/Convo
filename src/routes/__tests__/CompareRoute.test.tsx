@@ -700,13 +700,14 @@ describe("CompareRoute in the shared vocabulary", () => {
     // In blind mode the column headers are A and B, not model names.
     expect(within(container).getByText("A")).toBeInTheDocument();
     const toggle = screen.getByRole("button", { name: "Blind" });
-    // `aria-pressed={!blind}` is pre-existing and this task changes nothing
-    // about it, so it is pinned rather than redesigned. Note what it pins:
-    // the button's *name* is the mode it is currently in, so it reads
-    // "Blind, not pressed" while blind mode is on. The name and the pressed
-    // state point in opposite directions. That is a real a11y question and
-    // it belongs to Task 7's pass, not to a visual restyle.
-    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    // The button's name is the mode it is currently in, and it is in "Blind",
+    // so it is pressed. This asserted `"false"` for the whole of the first
+    // round, which pinned the pre-existing inversion rather than the
+    // behaviour: it was `aria-pressed={!blind}`, so the state announced was
+    // the opposite of the state the control was in. Corrected in the route
+    // and re-pinned here, so a re-inversion is red. The agreement itself is
+    // the next test; this one is here because the control's metrics are.
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
     // The primitive, not a hand-written control that happens to look like
     // one: it resolves to the same metrics as the button beside it.
     await prewarm(container);
@@ -734,9 +735,52 @@ describe("CompareRoute in the shared vocabulary", () => {
     // …and pressing it still flips both the name and the pinned state, so
     // the cluster control is not a decoration over dead state.
     fireEvent.click(toggle);
-    expect(await screen.findByRole("button", { name: "Labeled" })).toHaveAttribute("aria-pressed", "true");
+    expect(await screen.findByRole("button", { name: "Labeled" })).toHaveAttribute("aria-pressed", "false");
     // With the labels on, the headers carry the model name rather than A/B.
     expect(within(container).getAllByText("model").length).toBeGreaterThan(0);
+  });
+
+  it("announces blind mode's state, and it agrees with the mode the control is in", async () => {
+    const { container } = await renderRunning();
+    await columns(container);
+
+    // The claim is not "the attribute has some value" — it is that the value
+    // a screen reader is given is the state the page is actually in, and the
+    // state is observable in the column headers: in blind mode they are `A`
+    // and `B`, and with the labels on they are the model name. So all three
+    // are read: the header, the name, and the pressed state.
+    const pressOf = (name: string) =>
+      screen.getByRole("button", { name }).getAttribute("aria-pressed");
+
+    // Read the state off a *column header*, not off the page. The model
+    // picker above already shows "model" twice, so a page-wide text query
+    // for the same string matches the wrong thing — which is the V44 shape
+    // one level up: a query that cannot tell which instance it is looking
+    // at. Scoped to a card it is unambiguous.
+    const [card] = await columns(container);
+    const blind = pressOf("Blind");
+    expect(within(card).getByText("A"), "blind mode labels the columns A and B").toBeInTheDocument();
+    expect(within(card).queryByText("model"), "…and not by model name").not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Blind" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Labeled" })).toBeInTheDocument());
+    const labelled = pressOf("Labeled");
+    expect(within(card).getByText("model"), "revealing puts the model name back").toBeInTheDocument();
+    expect(within(card).queryByText("A"), "…and takes the letter away").not.toBeInTheDocument();
+
+    // Blind is the default and it is on, so the control named "Blind" is
+    // pressed and the one named "Labeled" is not. It was the other way
+    // round for the whole of the first round: `aria-pressed={!blind}`, so a
+    // screen reader was told "Blind, not pressed" while blind mode was on —
+    // and blind mode is what decides whether the model labels in this
+    // comparison are visible at all.
+    expect(blind).toBe("true");
+    expect(labelled).toBe("false");
+    // The control on the agreement. The two assertions above each pass for
+    // *one* of two values, so an `aria-pressed` frozen at a constant would
+    // satisfy one of them; asserting that the two differ is what makes
+    // "tracks the state" true rather than plausible.
+    expect(blind).not.toBe(labelled);
   });
 
   it("still stops one column without stopping the run", async () => {

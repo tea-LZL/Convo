@@ -829,6 +829,62 @@ describe("SettingsRoute in the shared vocabulary", () => {
     expect(within(row).getAllByRole("button")).toHaveLength(3);
   });
 
+  /**
+   * The six switches of the general section, by the name a screen reader is
+   * given. Read out of the DOM as the six `label` props the route passes.
+   */
+  const SWITCH_LABELS = [
+    "Sound effects",
+    "Desktop notifications",
+    "Enter to send",
+    "Show token count",
+    "Show thinking by default",
+    "Auto-extract memory from chat",
+  ] as const;
+
+  it("gives every settings switch a non-empty, distinct accessible name", async () => {
+    // The first round of this task added the six `label` props and asserted
+    // nothing about them: the test reached the switches with
+    // `getAllByRole("switch")` and no name filter, so a later edit that
+    // dropped one label passed green and that switch went back to being
+    // announced as "Toggle". This is the sixth guard of that shape in this
+    // plan, and three of the first five were mine.
+    const { container } = renderSettings();
+    await openSection(container, "general");
+
+    // Six switches, so a name query that matched nothing and one that
+    // matched two are both distinguishable from the real thing.
+    expect(screen.getAllByRole("switch"), "the general section has six switches").toHaveLength(SWITCH_LABELS.length);
+
+    // Each label, by the accessible name — not by the visible text. A
+    // `Switch` with no `label` prop falls back to `aria-label="Toggle"`, so
+    // a dropped label fails here rather than producing a control nothing can
+    // tell apart from its five neighbours.
+    const found = SWITCH_LABELS.map((label) => screen.getByRole("switch", { name: label }));
+    // Distinct. Two switches sharing a name is a finding rather than a
+    // cosmetic one, and this is the assertion that says so: each label must
+    // resolve to a *different* element, so a copy-pasted label is red even
+    // though both queries succeed.
+    expect(new Set(found).size, "each label must name a different switch").toBe(SWITCH_LABELS.length);
+    // …and none of them is the primitive's fallback. Six identically-named
+    // switches in one row is exactly the defect, so its absence is the claim.
+    expect(
+      screen.queryByRole("switch", { name: "Toggle" }),
+      "no switch may fall back to the primitive's unnamed label",
+    ).not.toBeInTheDocument();
+
+    // The seventh switch on this page is the Knowledge section's, and it
+    // already passed `label` before this task. Named here so "every switch"
+    // means every switch rather than the six in one section.
+    cleanup();
+    const knowledge = renderSettings();
+    await openSection(knowledge.container, "knowledge");
+    expect(screen.getAllByRole("switch"), "the knowledge section has one switch").toHaveLength(1);
+    expect(
+      screen.getByRole("switch", { name: "Extract memories automatically" }),
+    ).toBeInTheDocument();
+  });
+
   it("still renders every section, and still says which one you are in", async () => {
     const { container } = renderSettings();
     await openSection(container, "general");

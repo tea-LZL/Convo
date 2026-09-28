@@ -328,12 +328,21 @@ export function CompareRoute() {
           {/* A `Button`, where this was a hand-written toggle: the primitive
               is 12px and 24px, it carries the focus ring, and it is the same
               control as the two beside it rather than a second design system
-              in the same cluster. `aria-pressed` is the toggle semantics and
-              is unchanged. */}
+              in the same cluster.
+
+              `aria-pressed` was `!blind`, which is a pre-existing inversion
+              and not a naming preference. The control's name is the mode it
+              is currently in, so it announced "Blind, not pressed" while
+              blind mode was on — and blind mode is what decides whether the
+              model labels in this comparison are visible at all. A state
+              announced as the opposite of the state the control is in is
+              worse than an inconsistently named control, so it now tracks
+              the mode the name reports. `CompareRoute.test.tsx` asserts both
+              halves, so a re-inversion is red. */}
           <Button
             size="sm"
             variant="secondary"
-            aria-pressed={!blind}
+            aria-pressed={blind}
             icon={blind ? <EyeOff size={12} /> : <Eye size={12} />}
             onClick={() => setBlind(!blind)}
           >
