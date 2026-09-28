@@ -84,7 +84,16 @@ export function StreamingTail({ sessionId, stickToBottomRef, onBumpScroll }: Str
   return (
     <div className="max-w-3xl mx-auto w-full px-3 sm:px-4 py-2.5">
       {streamThinking && (
-        <div className="mb-3 bg-surface-2/50 border border-border rounded-xl p-3 text-xs text-text-muted">
+        // `data-thinking-panel` is a shared hook, not decoration: this
+        // panel and the settled row's are two hand-written renderings of
+        // one thing, and the user's first sight of the difference is the
+        // instant the stream ends. The marker lets a test compare the two
+        // geometries instead of trusting that nobody has edited one of
+        // them.
+        <div
+          data-thinking-panel
+          className="mb-3 bg-surface-2/50 border border-border rounded-xl p-3 text-xs text-text-muted"
+        >
           <span className="text-text-muted font-medium block mb-1">✦ Thinking</span>
           <div className="whitespace-pre-wrap">{streamThinking}</div>
         </div>

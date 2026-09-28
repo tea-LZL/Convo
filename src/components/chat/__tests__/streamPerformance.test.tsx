@@ -74,6 +74,37 @@ function emitChunk(
   } as never);
 }
 
+/**
+ * A chunk of *thinking* rather than answer text.
+ *
+ * The thinking panel is a conditional subtree: it renders only while
+ * `streamThinking` is non-empty, and `emitChunk` sends answer text on
+ * `chat-chunk` — which the store's handler accumulates into
+ * `streamContent` and never into `streamThinking`. Thinking arrives on
+ * its own `chat-thinking` event, so until Task 5 added this, the panel
+ * was never in the tree the paint guard walked. The guard was reporting
+ * a clean subtree while inspecting two thirds of it.
+ *
+ * Found by mutation, not by reading: a `transition-colors` planted on the
+ * streaming panel came back green. The first version of this helper sent
+ * `thinking` on `chat-chunk`, which the store ignores — also green, and
+ * for a second reason.
+ */
+function emitThinking(
+  handle: { streamId: string; assistantMessageId: string },
+  sessionId: string,
+  thinking: string,
+) {
+  callbacks["chat-thinking"]?.({
+    payload: {
+      conversation_id: sessionId,
+      stream_id: handle.streamId,
+      assistant_message_id: handle.assistantMessageId,
+      delta: thinking,
+    },
+  } as never);
+}
+
 let queuedFrames: FrameRequestCallback[] = [];
 
 beforeEach(() => {
@@ -337,6 +368,16 @@ describe("paint guard: the streaming subtree stays cheap to repaint", () => {
     expect(container.querySelector("pre")).toBeTruthy();
     expect(container.querySelector("blockquote")).toBeTruthy();
     expect(container.textContent).toContain("compute(1");
+
+    // The thinking panel is a third of the subtree and it is conditional,
+    // so it has to be *put* in the tree before the walk means anything.
+    // See `emitThinking`.
+    act(() => {
+      emitThinking(handle, id, "weighing the options");
+      drainFrames();
+    });
+    expect(container.querySelector("[data-thinking-panel]")).toBeTruthy();
+    expect(container.textContent).toContain("weighing the options");
 
     // `animate-pulse-dot` is allowed and is not in the list above: the
     // three dots are a transform animation on a 6px box, not a paint of

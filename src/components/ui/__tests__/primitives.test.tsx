@@ -719,7 +719,17 @@ describe("Skeleton", () => {
     // The bubble's radius is matched to MessageRow's, which Task 5 owns —
     // moving one half of a matched pair would make the loading state
     // disagree with the loaded one.
-    expect(container.querySelector(".rounded-2xl")).not.toBeNull();
+    //
+    // The *pairing* is asserted by comparison, not by these two literals
+    // agreeing: `chatSurface.test.tsx` renders both halves and compares
+    // the two renderings, so a commit that converts one and not the other
+    // fails there. What this file owns is the other half of the rule — the
+    // placeholder declares a *theme* radius — and both directions are
+    // pinned, because a check that only says "the expected class is
+    // present" also passes a placeholder that has grown a second radius.
+    expect(container.querySelector(".rounded-lg")).not.toBeNull();
+    expect(container.querySelector(".rounded-2xl")).toBeNull();
+    expect(container.querySelector(".rounded")).toBeNull();
   });
 });
 

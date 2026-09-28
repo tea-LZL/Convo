@@ -6,14 +6,49 @@
  * composition of the extracted children:
  *   - ChatHeader, MessageList, StreamingTail, ChatInput,
  *     ChatContextMenu, AttachmentStripItem
+ *
+ * ── This page is not a `RouteShell` page, on purpose ──────────────────
+ * Spec §4.2 gives every route a 28px title and a right-aligned action
+ * cluster, and `RouteShell`'s own docblock says the "View:" pill belongs
+ * to "Chat's model selector" — a sentence that reads as though Chat
+ * passed its selector through `actions`. It does not, and cannot: a
+ * conversation is a full-height scrolling column with a composer pinned
+ * to the bottom, and a title bar above it would take 90px of the one
+ * thing this surface is for. The model selector keeps the pill treatment
+ * spec §4.2 describes, in the compact utility bar it has always lived
+ * in, and the page below states the residual rather than hiding it.
+ *
+ * ── What re-renders at 60fps, and what does not ──────────────────────
+ * Only `StreamingTail` is on the frame path, and it re-renders alone
+ * because it subscribes to the streaming slices through a per-session
+ * selector. This component subscribes through `useChat`, to five slices
+ * that a chunk does not move, so the chrome below re-renders when a
+ * message is added and when the stream starts and stops — not once per
+ * frame. That is a property of the store's shape rather than of this
+ * file, and it is the reason restyling the chrome is free: a
+ * background, a radius or a border on a subtree that renders on message
+ * boundaries costs nothing per frame, while the same change inside
+ * `StreamingTail` would repaint it. `chatSurface.test.tsx` pins the
+ * subscription list so a sixth slice added to `useChat` has to be
+ * accounted for here.
+ *
+ * ── No shadow in the flow, and the three places there is one ─────────
+ * The design is a surface plus a 1px border. The three `shadow-modal`
+ * uses on this surface are overlays — the slash menu and the drag hint
+ * below, and `ChatContextMenu` — and a shadow is what separates
+ * something that floats from what it floats over. Nothing in the flow
+ * carries one. The composer lost the last card shadow in the app and
+ * took a surface step instead; see `ChatInput`.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { MessageSquare } from "lucide-react";
 import { api, Model, Provider, Session } from "../../lib/api";
 import { getLastUsedChatModel, getLastUsedModelForProvider, setLastUsedChatModel } from "../../lib/lastUsedChatModel";
 import { useChat } from "../../hooks/useChat";
 import { useAttachments } from "../../hooks/useAttachments";
 import { filterCommands, SlashCommandContext } from "../../lib/slashCommands";
+import { EmptyState } from "../ui/EmptyState";
 import { ErrorBoundary } from "../ui/ErrorBoundary";
 
 import { ChatHeader } from "./ChatHeader";
@@ -254,9 +289,23 @@ export function ChatViewNew({ sessionId, providers, session }: { sessionId: stri
         }
       }}>
         {isEmpty ? (
-          <div className="flex items-center justify-center h-full text-text-subtle text-sm">
-            Send a message to start the conversation.
-          </div>
+          // The primitive rather than a bare centred sentence, so this
+          // empty state is the same component as every other route's and
+          // cannot drift from it.
+          //
+          // `headingLevel={2}` because this page owns no `h1` — it is not
+          // a `RouteShell` page, for the reason in the header. An `h3`
+          // here would be a heading whose whole outline starts three
+          // levels down, which is worse than an `h2` that starts at two.
+          // The page's missing `h1` is pre-existing and is Task 7's to
+          // settle; this is the level that does not make it worse.
+          <EmptyState
+            className="h-full"
+            headingLevel={2}
+            icon={<MessageSquare size={28} />}
+            title="No messages yet"
+            description="Send a message to start the conversation."
+          />
         ) : (
           <>
             <MessageList

@@ -156,7 +156,17 @@ export function ChatInput({
   };
 
   return (
-    <div className="rounded-lg border border-border bg-surface-1 shadow-panel">
+    // A card is a surface and a 1px border. This composer was the last
+    // card shadow anywhere in the app — Task 2 found it, left it, and
+    // named this task as the one that owns it — and dropping it needed a
+    // replacement, because a `bg-surface-1` composer on a `bg-surface-1`
+    // bar has nothing but the shadow telling them apart.
+    //
+    // `bg-surface-2` is that replacement, and it is not only a step: it is
+    // the fill every other input in this app already wears, from
+    // `TextInput` to the model pill in the header above. The composer is
+    // an input, so it now looks like one.
+    <div className="rounded-lg border border-border bg-surface-2">
       <textarea
         ref={ref}
         data-chat-input

@@ -6,6 +6,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { Plus, Sparkles, Cpu, Search, BookOpen, Settings, KeyRound, FileText, ListTodo, StickyNote, Brain } from "lucide-react";
 import { ChatViewNew } from "../components/chat/ChatViewNew";
 import { ErrorBoundary } from "../components/ui/ErrorBoundary";
+import { Button } from "../components/ui/Button";
 import { ChatSkeleton } from "../components/ui/Skeleton";
 import { useSessionsStore } from "../stores/sessions";
 import { api, Provider } from "../lib/api";
@@ -148,7 +149,7 @@ function EmptyChat({ hasProviders }: { hasProviders: boolean | null }) {
   if (hasProviders === false) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center p-4 sm:p-8 max-w-2xl mx-auto">
-        <div className="w-16 h-16 rounded-2xl bg-accent flex items-center justify-center mb-6">
+        <div className="w-16 h-16 rounded-lg bg-accent flex items-center justify-center mb-6">
           <span className="text-3xl">✦</span>
         </div>
         <h1 className="text-2xl font-semibold text-text mb-2">Welcome to Convo</h1>
@@ -202,20 +203,27 @@ function EmptyChat({ hasProviders }: { hasProviders: boolean | null }) {
 
   return (
     <div className="flex-1 flex flex-col items-center justify-center p-4 sm:p-8">
-      <div className="w-16 h-16 rounded-2xl bg-accent flex items-center justify-center mb-6">
+      <div className="w-16 h-16 rounded-lg bg-accent flex items-center justify-center mb-6">
         <span className="text-3xl">✦</span>
       </div>
       <h1 className="text-2xl font-semibold text-text mb-2">Convo</h1>
       <p className="text-text-muted text-sm mb-8 text-center max-w-md">
         Your local AI workspace. Start a new conversation to begin.
       </p>
-      <button
+      {/* The primary button, as the primitive. A hand-written
+          `bg-accent text-white` beside every other filled control in the
+          app is a second definition of the same thing, and the second
+          definition is the one that drifts — the same reasoning Task 2
+          applied to `IconButton`'s active state. */}
+      <Button
+        variant="primary"
+        size="lg"
         onClick={handleNew}
-        className="inline-flex items-center gap-2 bg-accent hover:bg-accent-hover text-white rounded-lg px-6 py-3 text-sm font-medium transition-colors mb-8"
+        icon={<Plus size={16} />}
+        className="mb-8"
       >
-        <Plus size={16} />
         New conversation
-      </button>
+      </Button>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full max-w-2xl">
         {starters.map((s, i) => (
           <button

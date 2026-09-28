@@ -152,7 +152,7 @@ export function SessionMemoryModal({ open, onClose, sessionId }: SessionMemoryMo
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5 mb-0.5">
                       <span
-                        className={`inline-block text-[10px] uppercase tracking-wider font-medium px-1 py-0 rounded border ${
+                        className={`inline-block text-[10px] uppercase tracking-wider font-medium px-1 py-0 rounded-sm border ${
                           kindColors[item.kind] || kindColors.skill
                         }`}
                       >

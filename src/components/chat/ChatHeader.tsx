@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Brain, ChevronDown, MoreHorizontal, RefreshCw } from "lucide-react";
 import { Dropdown } from "../ui/Dropdown";
+import { IconButton } from "../ui/IconButton";
 import { api, Provider, Model } from "../../lib/api";
 import { toast } from "../../stores/toasts";
 import { formatModelLabel } from "./format";
@@ -101,9 +102,11 @@ export function ChatHeader({
         align="right"
         menuClassName="w-48"
         trigger={
-          <button className="text-text-subtle hover:text-text p-1.5 rounded-md hover:bg-surface-2" aria-label="Session actions">
-            <MoreHorizontal size={16} />
-          </button>
+          // `IconButton` rather than a hand-written button: same
+          // treatment (`ghost` is exactly the three classes this had), and
+          // it brings the focus ring the bare `<button>` was relying on
+          // the global outline to supply.
+          <IconButton icon={<MoreHorizontal size={16} />} label="Session actions" size="sm" />
         }
       >
         {() => (

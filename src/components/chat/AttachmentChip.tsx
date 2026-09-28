@@ -59,7 +59,7 @@ export function AttachmentStripItem({
         <button
           type="button"
           onClick={onRetry}
-          className="absolute inset-x-1 bottom-1 rounded bg-surface-1/90 px-1 py-0.5 text-[10px] text-error hover:text-text"
+          className="absolute inset-x-1 bottom-1 rounded-sm bg-surface-1/90 px-1 py-0.5 text-[10px] text-error hover:text-text"
         >
           Retry
         </button>
