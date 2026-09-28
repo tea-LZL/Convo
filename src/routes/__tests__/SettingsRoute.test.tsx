@@ -1123,10 +1123,18 @@ describe("one spelling of a group header", () => {
     // writing one name instead of the other would already be a colour
     // change rather than a naming one, and the urgency would be higher
     // rather than lower.
-    const config = repoTailwind as { theme: { extend: { colors: Record<string, string> } } };
+    // `theme.extend.colors` is a nested record with a few non-string
+    // leaves (`text` and `accent` are objects), so it is typed as
+    // `Record<string, unknown>` and each leaf is checked for being the
+    // string it is supposed to be. Annotating it `Record<string, string>`
+    // typechecks the *access* and lies about `colors.text`.
+    const config = repoTailwind as unknown as {
+      theme: { extend: { colors: Record<string, unknown> } };
+    };
     const alias = config.theme.extend.colors["group-header"];
     expect(alias, "group-header must be an alias, not a second colour").toBe("var(--color-text-subtle)");
-    expect(config.theme.extend.colors.text.subtle, "and the token it replaces must still exist")
+    const text = config.theme.extend.colors.text as Record<string, unknown>;
+    expect(text.subtle, "and the token it replaces must still exist")
       .toBe("var(--color-text-subtle)");
   });
 
