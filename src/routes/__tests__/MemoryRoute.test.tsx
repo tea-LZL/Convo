@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
 import { MemoryRouter } from "react-router-dom";
 import postcss from "postcss";
@@ -171,6 +171,70 @@ async function ruleOrder(classNames: string[]): Promise<Map<string, number>> {
     if (!order.has(name)) order.set(name, m.index);
   }
   return order;
+}
+
+/**
+ * A rule whose selector *contains* a class, rather than a rule a class
+ * is the subject of.
+ *
+ * `indexRules` above is deliberately strict — it keys on the class being
+ * the whole first token — because that is right for a plain utility. An
+ * arbitrary variant emits `.cls > button` or `.cls [data-actions]`, and
+ * those rules say something a strict index cannot reach: *what else* the
+ * rule applies to, which is the load-bearing half of an override. Both
+ * forms are returned, because the raw one is what specificity has to be
+ * counted on (an escaped `\[` inside a class name is not an attribute
+ * selector) and the readable one is what a failure message wants.
+ */
+const variantRules = new Map<string, { raw: string; selector: string; decls: Map<string, string> }>();
+
+async function variantRule(cls: string) {
+  const hit = variantRules.get(cls);
+  if (hit) return hit;
+  const css = await compileOnce([cls]);
+  for (const m of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const raw = m[1].trim();
+    if (!unescapeSelector(raw).includes(cls)) continue;
+    const decls = new Map<string, string>();
+    for (const d of m[2].split(";")) {
+      const colon = d.indexOf(":");
+      if (colon < 0) continue;
+      const prop = d.slice(0, colon).trim();
+      if (!prop || prop.startsWith("--")) continue;
+      decls.set(prop, d.slice(colon + 1).trim());
+    }
+    const found = { raw, selector: unescapeSelector(raw), decls };
+    variantRules.set(cls, found);
+    return found;
+  }
+  throw new Error(`no rule anywhere in the stylesheet matches ${cls}`);
+}
+
+/**
+ * The class-and-attribute component of a selector's specificity, counted
+ * on the *raw* selector.
+ *
+ * The rules this compares differ only in that component: neither uses an
+ * id and neither uses a type selector, both of which the callers assert,
+ * so this number is what decides. Counted on the raw form because the
+ * readable form cannot tell `[data-actions]` the attribute selector from
+ * `[data-actions]` inside a class name.
+ *
+ * First thing to revisit: two adjacent attribute selectors would be
+ * missed, since the match consumes the first one's closing bracket.
+ */
+function classishCount(selector: string): number {
+  return (selector.match(/(^|[^\\])\./g) ?? []).length + (selector.match(/(^|[^\\])\[/g) ?? []).length;
+}
+
+/** The pixels the first class on `el` that declares `prop` resolves to. */
+async function pxDeclaring(el: Element, prop: string): Promise<number> {
+  for (const c of Array.from(el.classList)) {
+    const decls = (await emitted([c])).get(c)!;
+    const v = decls.get(prop);
+    if (v !== undefined) return toPx(v, `${c} { ${prop} }`);
+  }
+  throw new Error(`no class on <${el.tagName.toLowerCase()}> declares ${prop}`);
 }
 
 /**
@@ -480,6 +544,12 @@ function serveMemories(items: unknown[]) {
     if (command === "list_memory") return items;
     if (command === "list_note_titles") return [];
     if (command === "list_memory_reviews") return [];
+    // Answered rather than left to fall through to `null`, because a state
+    // that opens the extract dialog reads `.length` on the result and a
+    // `null` there throws *after* an assertion has already passed — which
+    // is a flake waiting for the next assertion to move.
+    if (command === "list_extractable_sessions") return [];
+    if (command === "search_memory") return [];
     return null;
   });
 }
@@ -991,20 +1061,105 @@ describe("MemoryRoute in the shared vocabulary", () => {
       .toMatch(/^bg-(accent|success|warn)\/\d+$/);
   });
 
-  it("compensates the tab strip by exactly the toolbar's own padding", async () => {
+  it("puts the kind filter in the action cluster, and lets the cluster reflow rather than squeeze", async () => {
     const { container } = renderMemory();
+    const cluster = container.querySelector("[data-actions]")!;
     const tablist = screen.getByRole("tablist");
-    const holder = tablist.parentElement!;
-    const toolbar = holder.parentElement!;
 
-    // The active tab's underline sits one pixel below its own box, so
-    // without compensation it floats in the middle of the toolbar. The
-    // holder pulls itself down by the toolbar's padding and the underline
-    // lands on the toolbar's own rule — the one that says "this is the
-    // filter bar" rather than a stray line under one group of buttons.
-    const pad = await pxOn(toolbar, /^py-/, "padding-top");
-    const pull = Math.abs(await pxOn(holder, /^-mb-/, "margin-bottom"));
-    expect(pad).toBe(pull);
+    // The placement is the spec's. §4.2 gives a page with a real view
+    // toggle a pill in the action cluster and names this page as the one
+    // that has one; `RouteShell`'s own docstring says the same. A kind
+    // filter sitting in a body toolbar is the app's old arrangement, and
+    // this is the task that is supposed to replace it.
+    expect(cluster.contains(tablist), "the kind filter belongs in the action cluster").toBe(true);
+    expect(tablist.querySelectorAll("button")).toHaveLength(4);
+    // …beside the two actions rather than instead of them, and to their
+    // left, so the cluster still reads as "filter, then act".
+    expect(cluster.querySelectorAll(":scope > button")).toHaveLength(2);
+    expect(
+      tablist.compareDocumentPosition(cluster.lastElementChild!) & Node.DOCUMENT_POSITION_FOLLOWING,
+      "the filter must precede the actions",
+    ).toBeTruthy();
+
+    // The reflow half, and the reason the placement was hard. `RouteShell`
+    // puts `shrink-0` on the cluster, so a cluster this wide could not
+    // give, and a narrow window had to choose between the spec's
+    // placement and working at all. The header was the defect.
+    const frozen = await variantRule("shrink-0");
+    expect(frozen.decls.get("flex-shrink")).toBe("0");
+    const thawed = await variantRule("[&_[data-actions]]:shrink");
+    expect(thawed.decls.get("flex-shrink")).toBe("1");
+
+    // The override lives on the section and reaches the cluster by
+    // descendant, so its selector has to end on the marker it targets —
+    // otherwise it would thaw something else on the page entirely.
+    //
+    // The application is asserted before the declaration, and that order
+    // is the point: a rule that resolves to `flex-shrink: 1` proves
+    // Tailwind *can* be asked for it, which is a fact about the config
+    // and not about this page. Three of this round's guards started as
+    // the second kind and passed against a page that had stopped using
+    // them at all.
+    const section = container.querySelector("section")!;
+    // Containment rather than a regex: a regex literal here reads to
+    // Tailwind's content scanner as a class token, and `tailwind.config.ts`
+    // globs `src/**`, so the test tree is inside the production build. The
+    // escaped-bracket form emitted a dead rule with a literal `undefined`
+    // in its selector; the plain string does not.
+    expect(Array.from(section.classList), "the section must carry the shrink override")
+      .toContain("[&_[data-actions]]:shrink");
+    expect(thawed.selector).toMatch(/\[data-actions\]\s*$/);
+    // Specificity is the whole mechanism, because both rules declare the
+    // same property. Reduced to the component that differs — neither
+    // selector uses an id, which is asserted rather than assumed, and
+    // neither uses a type selector.
+    expect(thawed.selector).not.toContain("#");
+    expect(frozen.selector).not.toContain("#");
+    expect(thawed.selector).not.toMatch(/[> ]\w/);
+    expect(frozen.selector).not.toMatch(/[> ]\w/);
+    expect(classishCount(thawed.raw)).toBeGreaterThan(classishCount(frozen.raw));
+
+    // And the cluster already wraps, so a cluster that *can* shrink
+    // reflows its control set instead of overflowing. Without this the
+    // override would only trade one failure for another.
+    const wrap = classMatching(cluster, /\bflex-wrap\b/);
+    expect(declValue((await emitted([wrap])).get(wrap)!, "flex-wrap", wrap)).toBe("wrap");
+  });
+
+  it("sizes the filter's controls like the buttons beside them", async () => {
+    renderMemory();
+    const extract = screen.getByRole("button", { name: /extract from chat/i });
+    const tablist = screen.getByRole("tablist");
+    // Resolved, not spelled. `Tabs` is a 14px, 33px tab bar and the
+    // header's buttons are 12px and 24px; side by side in one cluster
+    // they read as two design systems, and the filter is the only control
+    // in there that is not a button. The overrides resolve to exactly
+    // `Button size="sm"`, so the claim is two numbers being equal.
+    for (const [prop, variant] of [
+      ["padding-left", "[&>button]:px-2.5"],
+      ["padding-top", "[&>button]:py-1"],
+      ["font-size", "[&>button]:text-xs"],
+    ] as const) {
+      // The page has to be *using* the override. A rule that resolves to
+      // the right number proves Tailwind can be asked for it, which says
+      // nothing about whether this page asked — and a comparison between
+      // two declarations the page may have stopped using passes happily.
+      expect(
+        Array.from(tablist.classList),
+        `${variant} must be on the tab strip`,
+      ).toContain(variant);
+      const rule = await variantRule(variant);
+      // …and it has to reach the tab rather than merely the container it
+      // is written on.
+      expect(rule.selector, `${variant} must target the tab`).toMatch(/>\s*button$/);
+      expect(
+        toPx(declValue(rule.decls, prop, variant), `${variant} { ${prop} }`),
+        `${prop}: the filter and the buttons beside it must match`,
+      ).toBe(await pxDeclaring(extract, prop));
+    }
+    // The control on the comparison: the primitive's own values are
+    // genuinely different, so equality above is not the default state.
+    expect(await pxDeclaring(screen.getByRole("tab", { name: "Skills" }), "font-size")).toBe(14);
   });
 
   it("takes the tab strip's own rule off, and the class that takes it wins the cascade", async () => {
@@ -1105,6 +1260,136 @@ describe("MemoryRoute in the shared vocabulary", () => {
     expect(dimmed).toHaveLength(1);
     expect(dimmed[0].textContent).toContain("Pref m-1");
     expect(rows[1].className).not.toMatch(/opacity-50/);
+  });
+});
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * The heading outline.
+ *
+ * A screen-reader user moves between headings by level, not by position,
+ * so `h1` followed by `h3` is a defect rather than a nit: the heading is
+ * not reachable by a level-keyed jump, and every level-keyed list built
+ * from the page inherits the gap. The empty state was doing exactly that
+ * — it used `EmptyState`, whose title is an `h3`, and `RouteShell` owns
+ * the page's `h1` with no `h2` between them.
+ *
+ * Every state the page can be in is checked, because the two empty states
+ * and the five modals are separate subtrees and a fix applied to one of
+ * them says nothing about the rest.
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+const headingLevels = (root: HTMLElement) =>
+  Array.from(root.querySelectorAll("h1,h2,h3,h4,h5,h6")).map((h) => ({
+    level: Number(h.tagName.slice(1)),
+    text: h.textContent ?? "",
+  }));
+
+function expectNoHeadingSkip(root: HTMLElement, where: string) {
+  const headings = headingLevels(root);
+  expect(headings.length, `${where} renders no heading at all`).toBeGreaterThan(0);
+  expect(headings[0].level, `${where} must open with the page's own h1`).toBe(1);
+  for (let i = 1; i < headings.length; i++) {
+    const prev = headings[i - 1];
+    expect(
+      headings[i].level,
+      `${where}: h${prev.level} "${prev.text}" is followed by h${headings[i].level} "${headings[i].text}"`,
+    ).toBeLessThanOrEqual(prev.level + 1);
+  }
+}
+
+describe("MemoryRoute heading outline", () => {
+  beforeEach(() => serveMemories([listed("m-1"), listed("m-2")]));
+
+  it("skips no heading level in any state the page can be in", async () => {
+    // 1 — the list, which is where a user spends their time and the only
+    // state with no heading but the page's own.
+    const list = renderMemory();
+    await firstRow(list.container);
+    expectNoHeadingSkip(list.container, "the memory list");
+
+    // 2 — an empty store. The heading that used to skip.
+    cleanup();
+    serveMemories([]);
+    const empty = renderMemory();
+    await screen.findByText("No memories yet");
+    expectNoHeadingSkip(empty.container, "the empty store");
+
+    // 3 — a search that matched nothing. A different heading, and a
+    // different branch, from the empty store's, and the only one of the
+    // six that depends on a debounced query resolving.
+    cleanup();
+    serveMemories([listed("m-1")]);
+    const search = renderMemory();
+    await firstRow(search.container);
+    fireEvent.change(screen.getByRole("textbox", { name: "Search memory" }), {
+      target: { value: "nothing matches this" },
+    });
+    await screen.findByText("No matches");
+    expectNoHeadingSkip(search.container, "a search with no matches");
+
+    // 4 — the add modal. `Modal` renders its own `h2`, so a dialog title
+    // lands at a level under the page's rather than beside it.
+    cleanup();
+    serveMemories([listed("m-1")]);
+    const add = renderMemory();
+    await firstRow(add.container);
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    await screen.findByRole("dialog");
+    expectNoHeadingSkip(add.container, "the add modal");
+
+    // 5 — the extract modal, the widest dialog on the page.
+    cleanup();
+    serveMemories([listed("m-1")]);
+    const extract = renderMemory();
+    await firstRow(extract.container);
+    fireEvent.click(screen.getByRole("button", { name: /extract from chat/i }));
+    await screen.findByRole("dialog");
+    expectNoHeadingSkip(extract.container, "the extract modal");
+
+    // 6 — the delete confirmation, which is a `Modal` behind a
+    // `ConfirmDialog` and the last heading-bearing subtree left.
+    cleanup();
+    serveMemories([listed("m-1")]);
+    const confirm = renderMemory();
+    await firstRow(confirm.container);
+    fireEvent.click(screen.getByRole("button", { name: /^Delete Pref m-1/ }));
+    await screen.findByRole("dialog");
+    expectNoHeadingSkip(confirm.container, "the delete confirmation");
+  });
+
+  it("catches a skipped level when one is planted", () => {
+    // The control. An assertion that no state ever skipped a level is
+    // equally consistent with a walk that found no headings, or one that
+    // only ever saw the page's own h1.
+    const skip = document.createElement("div");
+    skip.innerHTML = "<h1>Memory</h1><h3>No memories yet</h3>";
+    expect(() => expectNoHeadingSkip(skip, "planted skip")).toThrow(/h1 .* followed by h3/);
+    expect(headingLevels(skip)).toHaveLength(2);
+
+    // A clean outline passes, including a legal step down and a sibling
+    // at the same level, so the assertion is not "only one heading".
+    const clean = document.createElement("div");
+    clean.innerHTML = "<h1>Memory</h1><h2>One</h2><h2>Two</h2><h3>Nested</h3>";
+    expect(() => expectNoHeadingSkip(clean, "planted clean outline")).not.toThrow();
+    expect(headingLevels(clean)).toHaveLength(4);
+
+    // And a page that opens on something other than its own h1 fails,
+    // which is the other half of "the outline starts at the top".
+    const noTitle = document.createElement("div");
+    noTitle.innerHTML = "<h2>Orphan</h2>";
+    expect(() => expectNoHeadingSkip(noTitle, "planted orphan")).toThrow(/must open with the page's own h1/);
+  });
+
+  it("gives the empty store a heading that is a heading, not a styled paragraph", async () => {
+    serveMemories([]);
+    const { container } = renderMemory();
+    // A `div` with a heading's typography is the failure mode this is
+    // guarding, and it passes every visual check on the page.
+    const heading = await screen.findByRole("heading", { name: "No memories yet" });
+    expect(heading.tagName).toBe("H2");
+    // The empty store is the only state with a heading besides the page's
+    // own, and it is the one the old primitive got wrong.
+    expect(headingLevels(container).map((h) => h.level)).toEqual([1, 2]);
   });
 });
 

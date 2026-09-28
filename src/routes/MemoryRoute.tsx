@@ -42,17 +42,47 @@
  * hundreds of rows. The handful of controls that are not the list — the
  * three starter cards, the rows inside a modal — keep theirs.
  *
- * The kind filter stays in the toolbar rather than moving up into the
- * action cluster where `RouteShell` would let it go. A four-item filter
- * group in a `shrink-0` header is the one thing on this page that would
- * squeeze a narrow window, and the toolbar row already wraps.
+ * The one deliberate exception to the density work: the four controls at
+ * the end of a row went from 20px to 24px. Accessibility beats density,
+ * WCAG 2.2's target size is a requirement rather than a preference, and
+ * the column is a fixed 102px either way, so it costs no horizontal
+ * space. The density is expressed in the gaps between rows, not in the
+ * one place a bigger number would not have shown up as a smaller one.
+ *
+ * ── The kind filter, and the header it squeezes ─────────────────────────
+ * Spec §4.2 puts the filter in the right-aligned `actions` cluster, and
+ * that is where it is. The obstacle was that `RouteShell` puts
+ * `shrink-0` on that cluster, so a four-item filter group could not give
+ * and a narrow window had to choose between the spec's placement and
+ * working at all.
+ *
+ * The header is the defect, not the filter's placement, so the
+ * constraint goes: `[&_[data-actions]]:shrink` lets the cluster shrink
+ * and its own `flex-wrap` reflows the control set. No collapse-to-
+ * dropdown, which would be a new mechanism; reflow is the smaller honest
+ * answer to a narrow window.
+ *
+ * That override lives here rather than in `RouteShell.tsx` because
+ * `RouteShell.test.tsx` pins `shrink-0` on the cluster and the primitive
+ * API guard exists to stop a page from reaching into a primitive's
+ * internals by adding to its signature. Both are Task 2's and Task 3's
+ * calls and neither is this task's to reverse, so the page carries the
+ * override and the test pins what it resolves to and why it wins. The
+ * proper fix is one line in `RouteShell.tsx` and belongs to whoever owns
+ * that file.
+ *
+ * The same coupling applies to the tab strip's three size overrides
+ * below. `Tabs` is a 14px, 33px-tall underline tab bar; the header's
+ * buttons are 12px and 24px; side by side they read as two different
+ * design systems, and the filter is the only thing in the cluster that is
+ * not a button. `Badge` could not take the pinned and provenance chips
+ * for the same underlying reason — see `CHIP`.
  */
 import { useEffect, useState } from "react";
 import { Plus, Trash2, Brain, Power, PowerOff, Pin, PinOff, Search, Tag, X, Save, Sparkles, Filter, Edit3, Check, Bell, StickyNote } from "lucide-react";
 import { api, ExtractableSession, ExtractedFact, MemoryItem, MemorySearchHit } from "../lib/api";
 import { Button } from "../components/ui/Button";
 import { Dropdown } from "../components/ui/Dropdown";
-import { EmptyState } from "../components/ui/EmptyState";
 import { Modal } from "../components/ui/Modal";
 import { Tabs, TextArea, TextInput, Badge } from "../components/ui/Form";
 import { Spinner } from "../components/ui/Form";
@@ -112,6 +142,73 @@ const ROW_ACTION_IDLE = "text-text-subtle hover:text-text";
  * written out here and the page keeps one spelling of it.
  */
 const CHIP = "inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-sm border";
+
+/**
+ * The page's empty state, and it draws its own heading at `h2`.
+ *
+ * `EmptyState` renders its title as an `h3`, and under `RouteShell`'s
+ * `h1` that is a skipped heading level — a real accessibility defect,
+ * not a nit, because screen-reader users navigate by level rather than by
+ * position. There are two ways to fix it: give the primitive a level, or
+ * let the page supply its own heading. Neither is available here. A
+ * `headingLevel` prop is a signature change, and `primitiveApi.test.ts`
+ * pins all fourteen; and `src/components/ui/` is not this plan's to
+ * edit. So the page draws its own, which is unglamorous and correct, and
+ * the real fix belongs to whoever owns `EmptyState`.
+ *
+ * The geometry is `EmptyState`'s — an icon chip, a medium title, a muted
+ * description, the action a step below — and both branches share this one
+ * component, so the consolidation the primitive bought is not lost; only
+ * the primitive is bypassed, and for a stated reason.
+ */
+function MemoryEmpty({
+  query,
+  onAdd,
+}: {
+  query: string;
+  onAdd: (kind: "user_pref" | "project_fact" | "skill") => void;
+}) {
+  return (
+    <div className="flex flex-col items-center justify-center py-10 px-4 text-center">
+      <div className="inline-flex items-center justify-center rounded-lg bg-surface-2 p-2.5 text-text-muted mb-3">
+        <Brain size={28} />
+      </div>
+      <h2 className="text-sm font-medium text-text">
+        {query ? "No matches" : "No memories yet"}
+      </h2>
+      <p className="text-xs text-text-muted mt-1 max-w-xs">
+        {query
+          ? "Try a different query or filter."
+          : "Add user preferences, project facts, and skills. Convo picks the ones relevant to what you are asking. Pin a memory to always include it."}
+      </p>
+      {!query && (
+        <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-1.5">
+          <button
+            onClick={() => onAdd("user_pref")}
+            className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/30 rounded-lg p-2.5 text-left transition-colors"
+          >
+            <div className="text-xs font-medium text-text mb-0.5">Set a preference</div>
+            <div className="text-[10px] text-text-muted">"I prefer concise replies"</div>
+          </button>
+          <button
+            onClick={() => onAdd("project_fact")}
+            className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/30 rounded-lg p-2.5 text-left transition-colors"
+          >
+            <div className="text-xs font-medium text-text mb-0.5">Log a project fact</div>
+            <div className="text-[10px] text-text-muted">"This repo uses Tauri v2"</div>
+          </button>
+          <button
+            onClick={() => onAdd("skill")}
+            className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/30 rounded-lg p-2.5 text-left transition-colors"
+          >
+            <div className="text-xs font-medium text-text mb-0.5">Create a skill</div>
+            <div className="text-[10px] text-text-muted">"Run tests with `npm t` before push"</div>
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function MemoryRoute() {
   const [items, setItems] = useState<MemoryItem[]>([]);
@@ -309,8 +406,27 @@ export function MemoryRoute() {
     <RouteShell
       title="Memory"
       description={`${items.length} item(s) · durable context used when relevant.`}
+      className="[&_[data-actions]]:shrink"
       actions={
         <>
+          {/* The kind filter, in the cluster where spec §4.2 puts it. The
+              three size overrides exist because `Tabs` is a 14px, 33px
+              underline tab bar and the buttons beside it are 12px and
+              24px; they resolve to exactly `Button size="sm"`, and the
+              test compares the two sets of resolved values rather than
+              the two sets of class names. `border-b-0` is the same
+              emission-order claim as before and the same test. */}
+          <Tabs
+            active={filter}
+            onChange={(v) => setFilter(v as KindFilter)}
+            tabs={[
+              { id: "all", label: "All" },
+              { id: "user_pref", label: "Preferences" },
+              { id: "project_fact", label: "Project facts" },
+              { id: "skill", label: "Skills" },
+            ]}
+            className="border-b-0 [&>button]:px-2.5 [&>button]:py-1 [&>button]:text-xs"
+          />
           <Button size="sm" variant="secondary" icon={<Sparkles size={11} />} onClick={() => {
             setShowExtract(true);
             void runExtract();
@@ -326,8 +442,11 @@ export function MemoryRoute() {
       <div className="px-3 py-1.5 border-b border-border bg-surface-1/40 flex items-center gap-2 flex-wrap">
         {/* The page's only declared width floor, and it is deliberately
             smaller than the sidebar's own 240px: a window that narrows is
-            absorbed by the content pane, never by the chrome. */}
-        <div className="relative flex-1 min-w-[180px]">
+            absorbed by the content pane, never by the chrome. The
+            `max-w-sm` keeps a lone search field from running the full
+            672px measure on a wide monitor; a max-width cannot squeeze a
+            narrow one, so it plays no part in the floor above. */}
+        <div className="relative flex-1 min-w-[180px] max-w-sm">
           <Search
             size={12}
             aria-hidden="true"
@@ -339,35 +458,15 @@ export function MemoryRoute() {
               same-property utilities in, and a search field is the one
               control on this page worth 8px of height. Everything that
               does not fight the primitive — surface, radius, border, the
-              focus ring — is `TextInput`'s, copied. */}
+              focus ring — is `TextInput`'s, copied. That is the coupling
+              this comment exists to name: a second copy of the primitive's
+              treatment that will not notice if the primitive changes. */}
           <input
             aria-label="Search memory"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search memory…"
             className="w-full bg-surface-2 border border-border rounded-md pl-7 pr-2.5 py-1 text-xs text-text placeholder:text-text-subtle focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/30"
-          />
-        </div>
-        {/* The holder pulls itself down by the toolbar's own padding, so
-            the active tab's underline lands on the toolbar's rule rather
-            than floating in the middle of the bar. The pair is asserted
-            as two equal lengths, so changing one without the other is
-            caught instead of quietly detaching. */}
-        <div className="self-stretch flex items-end -mb-1.5">
-          <Tabs
-            active={filter}
-            onChange={(v) => setFilter(v as KindFilter)}
-            tabs={[
-              { id: "all", label: "All" },
-              { id: "user_pref", label: "Preferences" },
-              { id: "project_fact", label: "Project facts" },
-              { id: "skill", label: "Skills" },
-            ]}
-            // `Tabs` puts a rule under itself and the caller cannot take
-            // it off. Two same-specificity utilities, so the *emission
-            // order* is the entire mechanism; the test pins that order
-            // rather than trusting it.
-            className="border-b-0"
           />
         </div>
       </div>
@@ -404,38 +503,7 @@ export function MemoryRoute() {
       )}
       <div className="p-2 sm:p-3 max-w-2xl mx-auto w-full">
         {visible.length === 0 ? (
-          <EmptyState
-            icon={<Brain size={28} />}
-            title={query ? "No matches" : "No memories yet"}
-            description={query
-              ? "Try a different query or filter."
-              : "Add user preferences, project facts, and skills. Convo picks the ones relevant to what you are asking. Pin a memory to always include it."}
-            action={query ? undefined : (
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-1.5">
-                <button
-                  onClick={() => add("user_pref")}
-                  className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/30 rounded-lg p-2.5 text-left transition-colors"
-                >
-                  <div className="text-xs font-medium text-text mb-0.5">Set a preference</div>
-                  <div className="text-[10px] text-text-muted">"I prefer concise replies"</div>
-                </button>
-                <button
-                  onClick={() => add("project_fact")}
-                  className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/30 rounded-lg p-2.5 text-left transition-colors"
-                >
-                  <div className="text-xs font-medium text-text mb-0.5">Log a project fact</div>
-                  <div className="text-[10px] text-text-muted">"This repo uses Tauri v2"</div>
-                </button>
-                <button
-                  onClick={() => add("skill")}
-                  className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/30 rounded-lg p-2.5 text-left transition-colors"
-                >
-                  <div className="text-xs font-medium text-text mb-0.5">Create a skill</div>
-                  <div className="text-[10px] text-text-muted">"Run tests with `npm t` before push"</div>
-                </button>
-              </div>
-            )}
-          />
+          <MemoryEmpty query={query} onAdd={add} />
         ) : (
           <ul className="space-y-1">
             {visible.map((entry) => {
