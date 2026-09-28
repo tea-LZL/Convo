@@ -606,7 +606,7 @@ function ThemeSection() {
           }
         />
       </Card>
-      <h3 className="text-xs uppercase tracking-wider text-text-subtle font-semibold mb-2">Themes</h3>
+      <h3 className="text-[10px] uppercase tracking-wider text-group-header font-semibold mb-2">Themes</h3>
       <div className="grid grid-cols-2 gap-2">
         {themes.map((t) => (
           <button

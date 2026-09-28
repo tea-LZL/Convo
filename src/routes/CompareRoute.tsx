@@ -370,7 +370,7 @@ export function CompareRoute() {
                     type="button"
                     className="text-xs text-text-muted hover:text-text flex items-center gap-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
                   >
-                    <span className="text-[10px] uppercase text-group-header">Provider</span>
+                    <span className="text-[10px] uppercase tracking-wider font-semibold text-group-header">Provider</span>
                     <span>{providers.find((p) => p.id === sel.provider_id)?.name ?? "—"}</span>
                     <span className="text-text-subtle">›</span>
                   </button>
@@ -398,7 +398,7 @@ export function CompareRoute() {
                     type="button"
                     className="text-xs text-text-muted hover:text-text flex items-center gap-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
                   >
-                    <span className="text-[10px] uppercase text-group-header">Model</span>
+                    <span className="text-[10px] uppercase tracking-wider font-semibold text-group-header">Model</span>
                     <span className="text-text">{sel.model || "—"}</span>
                     <span className="text-text-subtle">›</span>
                   </button>

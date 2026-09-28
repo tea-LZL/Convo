@@ -1053,3 +1053,108 @@ describe("SettingsRoute heading outline", () => {
     }
   });
 });
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * One spelling of a group header, across every file that has one.
+ *
+ * `group-header` is literally `var(--color-text-subtle)`, so a site that
+ * wrote `text-text-subtle` and one that wrote `text-group-header` look
+ * identical today and diverge the moment anyone retunes either. That
+ * makes this a naming inconsistency *now* and a colour bug on the first
+ * retune — and there were three spellings, not two:
+ *
+ *   - this page's "Themes" heading was 12px `text-text-subtle`, while the
+ *     "Sections" label forty lines above it was 10px `text-group-header`
+ *   - Compare's two inline labels ("Provider", "Model") carried the
+ *     colour and the size but neither the tracking nor the weight
+ *
+ * Asserted as a *set* of the four type tokens, over every site in the
+ * app, so it does not matter in which order anybody writes them and a
+ * site that gained a padding class is not a new spelling. The alias
+ * itself is checked against `tailwind.config.ts` rather than trusted,
+ * because the whole argument is that the two names resolve to the same
+ * custom property *today*.
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+const GROUP_HEADER_TOKENS = ["text-[10px]", "uppercase", "tracking-wider", "font-semibold", "text-group-header"];
+
+/** Every element in `src` that carries the `text-group-header` alias. */
+function groupHeaderSites(): { file: string; label: string; classes: string[] }[] {
+  const SOURCES = [
+    "src/components/sidebar/Sidebar.tsx",
+    "src/routes/SettingsRoute.tsx",
+    "src/routes/NotesRoute.tsx",
+    "src/routes/CompareRoute.tsx",
+  ];
+  const sites: { file: string; label: string; classes: string[] }[] = [];
+  for (const file of SOURCES) {
+    const src = source(file);
+    // Comments stripped first: the docblocks on two of these files
+    // *quote* the treatment, and a guard that matched a sentence about
+    // the class would be a guard that could never pass.
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, " ");
+    for (const m of code.matchAll(/className="([^"]*\btext-group-header\b[^"]*)"/g)) {
+      sites.push({ file, label: m[1], classes: m[1].split(/\s+/) });
+    }
+  }
+  return sites;
+}
+
+describe("one spelling of a group header", () => {
+  it("carries the same five tokens at every site in the app", () => {
+    const sites = groupHeaderSites();
+    // The control on the scan, counted rather than assumed: three in the
+    // sidebar, two on the settings page, two in Notes and two in Compare.
+    // A scan that matched nothing would satisfy "they all agree"
+    // trivially, and a scan that matched one would satisfy it just as
+    // happily.
+    expect(sites.length, "every group-header site must be found by the scan").toBe(9);
+    expect(new Set(sites.map((s) => s.file)).size, "and across all four files").toBe(4);
+    for (const { file, label } of sites) {
+      for (const token of GROUP_HEADER_TOKENS) {
+        expect(label, `${file}: "${label}" is missing ${token}`).toContain(token);
+      }
+    }
+  });
+
+  it("resolves the alias and the raw token to the same custom property", () => {
+    // The premise of the whole rule, checked rather than assumed: if
+    // `group-header` were not literally `--color-text-subtle`, then
+    // writing one name instead of the other would already be a colour
+    // change rather than a naming one, and the urgency would be higher
+    // rather than lower.
+    const config = repoTailwind as { theme: { extend: { colors: Record<string, string> } } };
+    const alias = config.theme.extend.colors["group-header"];
+    expect(alias, "group-header must be an alias, not a second colour").toBe("var(--color-text-subtle)");
+    expect(config.theme.extend.colors.text.subtle, "and the token it replaces must still exist")
+      .toBe("var(--color-text-subtle)");
+  });
+
+  it("finds a site that drifted, so the sweep is not vacuous", () => {
+    // The control on the sweep above, over planted markup: one site
+    // missing a token must be reported, and one that merely *mentions*
+    // the alias inside a comment must not be counted as a site at all.
+    const planted = (markup: string) =>
+      [...markup.replace(/\/\*[\s\S]*?\*\//g, " ").matchAll(/className="([^"]*\btext-group-header\b[^"]*)"/g)]
+        .map((m) => m[1].split(/\s+/));
+    expect(planted(`<div className="${GROUP_HEADER_TOKENS.join(" ")}">x</div>`)[0])
+      .toEqual(expect.arrayContaining(GROUP_HEADER_TOKENS));
+    const drifted = planted(`<h3 className="text-xs uppercase tracking-wider text-text-subtle font-semibold">x</h3>`);
+    // The drifted site does not carry the alias, so the sweep reports it
+    // as *absent* rather than as wrong — which is the other half of the
+    // rule, checked here so a future reader knows the sweep is not
+    // silently ignoring it.
+    expect(drifted).toEqual([]);
+    // A site that carries the alias but drops the tracking and the
+    // weight — the exact shape Compare's two labels had — is caught, and
+    // the two tokens it *does* carry are not mistaken for the failure.
+    const halfSpelled = planted(`<span className="text-[10px] uppercase text-group-header">x</span>`)[0];
+    expect(halfSpelled).toContain("text-[10px]");
+    expect(halfSpelled).toContain("text-group-header");
+    for (const token of ["tracking-wider", "font-semibold"]) {
+      expect(halfSpelled, `a site that dropped ${token} must fail the sweep`).not.toContain(token);
+    }
+    // And the comment case: a docblock quoting the treatment is not a site.
+    expect(planted(`/* className="text-[10px] uppercase tracking-wider text-group-header font-semibold" */`)).toEqual([]);
+  });
+});
