@@ -429,7 +429,7 @@ export function DocumentsRoute() {
             // `RouteShell` owns this page's h1, so the title underneath
             // it is an h2 — an h3 here would be a skipped level.
             headingLevel={2}
-            icon={<FileText size={32} />}
+            icon={<FileText size={28} />}
             title="No document open"
             description="Create a new document or open one from disk."
           />

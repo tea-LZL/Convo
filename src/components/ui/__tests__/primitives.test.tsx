@@ -674,6 +674,43 @@ describe("EmptyState", () => {
  * guard that gets deleted, so the bias is the right way round. First
  * thing to revisit if a call site ever grows a `>` in an attribute.
  */
+/**
+ * The pixels a rendered element's padding resolves to, read out of the
+ * project Tailwind rather than off a class name.
+ *
+ * Small on purpose: this is the only place in this file that needs a
+ * number it cannot get from `getComputedStyle`, because jsdom has no
+ * stylesheet here. The fuller resolvers live in the route suites.
+ */
+async function paddingPxOf(el: Element): Promise<number> {
+  const postcss = (await import("postcss")).default;
+  const tailwindcss = (await import("tailwindcss")).default;
+  const config = (await import("../../../../tailwind.config")).default;
+  const cls = Array.from(el.classList).find((c) => /^p-[\d.]+$/.test(c));
+  if (!cls) throw new Error(`<${el.tagName.toLowerCase()}> class="${el.className}" has no numeric padding utility`);
+  const plugins = [
+    tailwindcss({
+      ...(config as object),
+      content: [{ raw: `<i class="${cls}"></i>`, extension: "html" }],
+      corePlugins: { preflight: false },
+    }),
+  ] as never;
+  const css = (await postcss(plugins).process("@tailwind utilities;", { from: undefined })).css;
+  const at = css.indexOf("@media");
+  const body = at < 0 ? css : css.slice(0, at);
+  // Tailwind escapes a dot in a class name, so the selector is matched
+  // with its escape intact and unescaped before the comparison — the
+  // same move the route suites' resolvers make, and the reason a
+  // `p-2.5` lookup does not quietly find nothing.
+  const rule = body.match(new RegExp(`\\.${cls.replace(/[.\\/]/g, (c) => `\\\\${c}`)}\\s*\\{([^}]*)\\}`));
+  if (!rule) throw new Error(`${cls} emits no rule at all; the class does not exist`);
+  const decl = rule[1].split(";").find((d) => d.trim().startsWith("padding:"));
+  if (!decl) throw new Error(`${cls} emits no padding`);
+  const m = decl.split(":")[1].trim().match(/^([\d.]+)(px|rem)$/);
+  if (!m) throw new Error(`${cls} padding is not an absolute length`);
+  return m[2] === "px" ? Number(m[1]) : Number(m[1]) * 16;
+}
+
 describe("EmptyState callers ask for the level their page chrome implies", () => {
   const ROUTES = [
     "src/routes/CompareRoute.tsx",
@@ -702,6 +739,84 @@ describe("EmptyState callers ask for the level their page chrome implies", () =>
     // The control on the scan itself. Five files and no call site between
     // them is a regex that has stopped matching, not a clean tree.
     expect(callSites, "every route's EmptyState must be found by the scan").toBeGreaterThanOrEqual(5);
+  });
+
+  /**
+   * One icon size at every call site.
+   *
+   * The primitive cannot enforce this: the icon is the caller's element
+   * and giving `EmptyState` an `iconSize` prop would put a page's
+   * vocabulary inside the primitive. So the rule is stated where it can
+   * be checked — at the call sites — and `EmptyState`'s docblock records
+   * the arithmetic, which is 28 + 2×10 = 48px: six of the app's 8px
+   * step, where 32 would have given a 52px chip.
+   *
+   * This is a source scan, and the bias is stated rather than hidden: a
+   * call site that renders its icon through a variable instead of a
+   * literal `size={n}` reads as "no icon" and fails loudly rather than
+   * being missed quietly. A guard that cries wolf gets deleted; one that
+   * stays quiet when the thing comes back is worse.
+   */
+  it("gives every EmptyState the same 28px icon, so the chip is one size", async () => {
+    const CALL_SITES: Record<string, string> = {
+      "src/routes/CompareRoute.tsx": "CompareRoute",
+      "src/routes/DocumentsRoute.tsx": "DocumentsRoute",
+      "src/routes/MemoryRoute.tsx": "MemoryRoute",
+      "src/routes/NotesRoute.tsx": "NotesRoute",
+      "src/routes/TasksRoute.tsx": "TasksRoute",
+      // Chat is not a `RouteShell` route — D7 keeps it off the page
+      // chrome — so it is not in the list above, but it draws the same
+      // primitive and would drift exactly as silently.
+      "src/components/chat/ChatViewNew.tsx": "ChatViewNew",
+    };
+    const sizes = new Map<string, number>();
+    for (const rel of Object.keys(CALL_SITES)) {
+      const src = readFileSync(resolve(ROOT, rel), "utf8");
+      for (const m of src.matchAll(/<EmptyState\b([\s\S]*?)\/?>/g)) {
+        const icon = m[1].match(/icon=\{\{?<?([A-Za-z0-9]+)\s+size=\{(\d+)\}/);
+        expect(icon, `${rel}: an EmptyState whose icon has no literal size`).toBeTruthy();
+        sizes.set(rel, Number(icon![2]));
+      }
+    }
+    // The control on the scan: six call sites, found. A scan that matched
+    // nothing would satisfy "all the same" trivially.
+    expect(sizes.size, "every EmptyState call site must be found by the scan").toBe(6);
+    // …and they are all the same number, and it is the one the chip
+    // arithmetic lands on.
+    expect([...new Set(sizes.values())]).toEqual([28]);
+    // The arithmetic, *measured* rather than restated: the chip's own
+    // padding is read out of a render and resolved through the project
+    // Tailwind, then the chip is checked to land on a whole number of the
+    // 8px step. Hardcoding the 10 would make this a copy of the comment
+    // above it, and a retune of the chip's padding would leave it
+    // cheerfully asserting something untrue.
+    render(<EmptyState title="Nothing here" icon={<ListTodo size={28} />} />);
+    const chip = screen.getByRole("heading", { name: "Nothing here" }).previousElementSibling!;
+    const pad = await paddingPxOf(chip);
+    expect((28 + 2 * pad) % 8, `a 28px icon in a ${pad}px-padded chip is not on the 8px step`).toBe(0);
+    // …and the 32px alternative the call sites used to disagree about
+    // does not land on it, which is the whole reason 28 won.
+    expect((32 + 2 * pad) % 8, "32px is the number this rule rejected").not.toBe(0);
+  });
+
+  it("finds a call site that drifted, so the size scan is not vacuous", () => {
+    // The control on the scan above, run over a planted pair. If the
+    // matcher stopped matching `size={n}`, or the comparison stopped
+    // being a comparison, one of these would pass.
+    const readSizes = (src: string) =>
+      [...src.matchAll(/<EmptyState\b([\s\S]*?)\/?>/g)]
+        .map((m) => m[1].match(/icon=\{\{?<?([A-Za-z0-9]+)\s+size=\{(\d+)\}/)?.[2])
+        .filter(Boolean);
+    const agreed = readSizes('<EmptyState icon={<FileText size={28} />} title="x" />');
+    const drifted = readSizes(
+      '<EmptyState icon={<FileText size={32} />} title="x" /><EmptyState icon={<Brain size={28} />} title="y" />',
+    );
+    expect(agreed).toEqual(["28"]);
+    expect(drifted).toEqual(["32", "28"]);
+    expect(new Set(drifted).size).toBe(2);
+    // And a call site whose icon is not a literal is found as a failure
+    // rather than skipped, so it cannot hide from the scan.
+    expect(readSizes('<EmptyState icon={someVariable} title="x" />')).toEqual([]);
   });
 
   it("finds a call site that forgot, so the scan is not vacuous", () => {

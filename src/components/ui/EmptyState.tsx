@@ -20,6 +20,22 @@ import { ReactNode } from "react";
  *
  * The default is the level this always rendered, so every call site that
  * does not pass the prop behaves exactly as it did.
+ *
+ * ── The icon is 28px at every call site, and that is arithmetic ─────
+ * The chip is `p-2.5` — 10px of padding a side — so the chip resolves to
+ * 28 + 20 = **48px**, which is six of the app's 8px step. The call sites
+ * were split 32/28, which made the chip 52px on Tasks, Documents and
+ * Compare and 48px on Memory, Notes and Chat: one primitive, two sizes,
+ * and 52 is not a number any other spacing step in the app uses. So 28
+ * is the size, on the grounds that the *chip* lands on the rhythm
+ * rather than the glyph.
+ *
+ * The primitive cannot enforce that — the icon is the caller's element
+ * and this component does not add a prop to control it, which is the
+ * right boundary: the icon is page vocabulary, not primitive
+ * vocabulary. So `primitives.test.tsx` scans the call sites instead, and
+ * says so here so the next person who likes 32 knows what they are
+ * changing.
  */
 export function EmptyState({
   title,
