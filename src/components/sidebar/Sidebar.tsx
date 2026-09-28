@@ -79,6 +79,16 @@ const NAV: NavItem[] = NAV_GROUPS.flatMap((g) => g.items);
  * `bg-accent/15` an `IconButton` uses for its active state: that one sits
  * over four unknown surfaces and has to composite against whatever is
  * beneath it. Two mechanisms, and the sidebar's is the opaque one.
+ *
+ * The 64px rail uses this too, and that is the load-bearing part. It
+ * used to paint its active row `bg-accent/15 text-accent` — the old
+ * treatment, on a 32px box with no glow — so collapsing the sidebar,
+ * the one control whose entire purpose is comparing widths, changed the
+ * current row's colour. `text-text` rather than `text-accent` is the
+ * same call the expanded row makes and the reason for it is in the
+ * spec: the icon inherits the row's type colour, which is the higher
+ * contrast of the two on every surface and keeps the label and the glyph
+ * reading as one thing.
  */
 function navRowClass(active: boolean, reducedMotion: boolean) {
   const motion = reducedMotion ? "" : "transition-colors duration-150";
@@ -245,9 +255,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
   };
 
   if (collapsed) {
-    // The 64px rail. Its geometry is out of scope and unchanged; the
-    // only edit here is the reduced-motion gate, so a keyboard- or
-    // pointer-animated row cannot depend on which width the window is.
+    // The 64px rail. Its geometry is out of scope and unchanged.
     return (
       <aside className="w-12 h-full bg-surface-1 border-r border-border flex flex-col items-center py-2 gap-1 shrink-0">
         {NAV.map((n) => {
@@ -257,10 +265,25 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
               <button
                 type="button"
                 aria-label={n.label}
+                // `aria-current` was on the expanded nav only, so a
+                // screen-reader user lost the current-page announcement
+                // by collapsing the sidebar — the one control whose
+                // purpose is to make room, and it silently removed a
+                // piece of state rather than a piece of chrome. Every
+                // other control on this rail has kept its own name and
+                // its own state; this row has a current/not-current state
+                // and now says so.
+                aria-current={active ? "page" : undefined}
                 onClick={() => navigate(n.path)}
+                // The same treatment as the expanded row, deliberately:
+                // `bg-nav-active text-text` and the non-animated
+                // `shadow-nav-glow`, so collapsing changes the width and
+                // nothing else. The motion gate is here rather than
+                // shared, because the rail has no label to give up
+                // space to and the geometry is fixed.
                 className={`w-8 h-8 rounded-md flex items-center justify-center ${
                   reducedMotion ? "" : "transition-colors"
-                } ${active ? "bg-accent/15 text-accent" : "text-text-muted hover:text-text hover:bg-surface-2"}`}
+                } ${active ? "bg-nav-active text-text shadow-nav-glow" : "text-text-muted hover:text-text hover:bg-surface-2"}`}
               >
                 {n.icon}
               </button>

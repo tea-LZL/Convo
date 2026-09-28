@@ -162,6 +162,27 @@ function precedes(a: Element, b: Element) {
 const aside = () => screen.getByRole("complementary") as HTMLElement;
 const navRow = (name: string) =>
   within(screen.getByRole("navigation")).getByRole("button", { name }) as HTMLElement;
+// The 64px rail has no <nav>: it is a bare <aside> of icon buttons, each
+// wrapped in a tooltip. Reached by the accessible name, which is the only
+// thing that identifies a row there, and reached *only* there, so a test
+// cannot accidentally read the expanded nav's rows and call it a
+// comparison between widths.
+const railRow = (name: string) =>
+  within(aside()).getByRole("button", { name }) as HTMLElement;
+
+/**
+ * The six classes that make a nav row look active or resting.
+ *
+ * Read as a set so a test can compare two rows without pinning a class
+ * name per token — and so the comparison survives a retune of the
+ * treatment itself, which is the point: the claim is "the two widths
+ * agree", not "the rail is `bg-nav-active` this month". A test that
+ * pinned both literals would have passed against a page where both were
+ * wrong in the same way.
+ */
+const navTreatment = (el: Element) =>
+  ["bg-nav-active", "text-text", "shadow-nav-glow", "text-text-muted", "hover:bg-surface-2"]
+    .filter((c) => Array.from(el.classList).includes(c));
 const statusCard = () => screen.queryByRole("region", { name: "Memory index" });
 
 describe("Sidebar nav groups", () => {
@@ -229,6 +250,92 @@ describe("Sidebar active row", () => {
     for (const label of NAV_ORDER) {
       expect(navRow(label), `${label} must be a 40px row`).toHaveClass("h-10");
     }
+  });
+
+  /**
+   * Collapsing changes the width and nothing else.
+   *
+   * The rail's active row was `bg-accent/15 text-accent` — the old
+   * treatment, on a 32px box with no glow — while the expanded row used
+   * `bg-nav-active text-text shadow-nav-glow`. So the one control whose
+   * entire purpose is comparing widths changed the current row's colour
+   * when you used it, which is the opposite of what it is for.
+   */
+  it("paints the rail's active row the way the expanded nav does", async () => {
+    // One render at a time, and the readings copied out before the next:
+    // two sidebars in the document at once would make every lookup below
+    // ambiguous, and the second render would find the first.
+    await renderSidebar(false);
+    const wide = { active: navTreatment(navRow("Chat")), resting: navTreatment(navRow("Notes")) };
+    cleanup();
+
+    await renderSidebar(true);
+    const rail = { active: navTreatment(railRow("Chat")), resting: navTreatment(railRow("Notes")) };
+
+    expect(rail.active, "the rail's active row must match the expanded one").toEqual(wide.active);
+    expect(rail.resting, "and so must its resting row").toEqual(wide.resting);
+
+    // …and the pairs are not the same pair, which is what makes the
+    // comparison above a comparison. Without this, a nav where every row
+    // carried the active treatment would satisfy it.
+    expect(wide.resting).not.toEqual(wide.active);
+    expect(rail.resting).not.toEqual(rail.active);
+    expect(wide.active).toContain("bg-nav-active");
+    expect(wide.active).toContain("shadow-nav-glow");
+    // The old treatment is gone from both, named explicitly because it is
+    // the exact thing that was wrong and it is a `bg-accent/15` away from
+    // looking deliberate.
+    expect(railRow("Chat").className).not.toMatch(/bg-accent\/15/);
+    expect(railRow("Chat").className).not.toMatch(/\btext-accent\b/);
+  });
+
+  it("never animates the rail's glow either, because a 32px box moves less of it", async () => {
+    // The same rule as the expanded nav, asserted on the rail rather than
+    // assumed to follow: the glow marks the current row, which changes on
+    // every navigation, so an animated bloom would sweep in on a control
+    // with no label beside it to read as it moves.
+    const animates = /(^|[\s:])animate-|(^|[\s:])transition-(all|shadow|transform|opacity|\[)/;
+    await renderSidebar(true, { reducedMotion: false });
+    const active = railRow("Chat");
+    expect(active).toHaveClass("shadow-nav-glow");
+    expect(active.className, "the rail's glow must not animate").not.toMatch(animates);
+  });
+
+  /**
+   * The current page, announced at both widths.
+   *
+   * `aria-current` was on the expanded nav only. Collapsing the sidebar
+   * therefore removed a piece of *state* rather than a piece of chrome: a
+   * screen-reader user who collapsed it to make room lost the
+   * "current page" announcement, and nothing about the control says that
+   * is what collapsing does.
+   */
+  it("announces the current page on the rail as well as on the expanded nav", async () => {
+    // Every row, not just the active one: a nav where all six claimed to
+    // be the current page would satisfy a one-row assertion, and so would
+    // one where the attribute had been dropped from the rail entirely and
+    // the other five happened to be `undefined` too.
+    const expected: Record<string, string | null> = Object.fromEntries(
+      NAV_ORDER.map((label) => [label, label === "Chat" ? "page" : null]),
+    );
+    await renderSidebar(false);
+    for (const label of NAV_ORDER) {
+      expect(navRow(label).getAttribute("aria-current"), `${label} on the expanded nav`)
+        .toBe(expected[label]);
+    }
+    // The state sits on the same control as the name, and both are
+    // there: a row with `aria-current` and no accessible name announces
+    // "current page" and nothing else.
+    cleanup();
+
+    await renderSidebar(true);
+    for (const label of NAV_ORDER) {
+      expect(railRow(label).getAttribute("aria-current"), `${label} on the rail`)
+        .toBe(expected[label]);
+    }
+    const active = railRow("Chat");
+    expect(active).toHaveAccessibleName("Chat");
+    expect(active.tagName).toBe("BUTTON");
   });
 });
 
