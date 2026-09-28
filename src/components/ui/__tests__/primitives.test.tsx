@@ -80,37 +80,53 @@ function expectNoColourLiteral(root: HTMLElement, where: string) {
 }
 
 /**
- * A focus ring, 2px, derived from a token. Both halves matter: a ring with
- * no colour is invisible, and a colour that is not a token breaks the
- * moment a user switches theme.
+ * A focus ring, 2px, derived from a token, and a gap between the ring and
+ * the control so the ring is not the same colour as the thing it outlines.
  *
- * ── Tracked deferral: this pin is wrong for the two filled variants ────
- * `ring-accent/40` outside a `bg-accent` border box is accent on accent.
- * On `Button variant="primary"` and `IconButton variant="solid"` the ring
- * is a 40%-alpha accent band against a full-accent edge, and a keyboard
- * user tabbing to a filled Save or Send does not get a boundary that
- * clears WCAG 1.4.11's 3:1.
+ * ── This pin was wrong, and said so, and the fix is in the same commit ─
+ * It used to require `focus-visible:ring-accent/NN` and carry a comment
+ * admitting the requirement was wrong on the two filled variants. It was
+ * wrong considerably more widely than the comment claimed. The comment
+ * measured the ring against the *button's own fill*; nobody had measured
+ * it against the *page behind it*, and there `accent` at 40% alpha is
+ * 1.68:1 in the default dark theme — 1.86 in the light one, 2.14 on Solar,
+ * 2.16 on Forest, 2.92 on Mono. It cleared 3:1 only on High Contrast,
+ * the one theme built so that everything clears 3:1. So the ring was not
+ * a filled-button problem, it was an everywhere problem, and it was close
+ * to invisible rather than subtly weak. A class-name pin cannot catch
+ * that, because the class name is the same either way.
  *
- * It is deferred, not fixed, and the reason is a missing token rather than
- * missing effort: a ring colour that reads on both a filled accent
- * background and the four surfaces the primitives sit on does not exist in
- * the 26 theme keys, and this plan adds none. The available workarounds
- * were both rejected — `ring-offset-*` means guessing which of `bg` /
- * `surface-1` / `surface-2` / `surface-3` the control happens to be on,
- * and a second accent token is a new theme key.
- *
- * **So this helper pins the known-imperfect treatment on purpose. When the
- * fix lands, this pin has to be revisited in the same change** — otherwise
- * the test will fail on the fix, or worse, be quietly relaxed to match it.
- * Owner: Task 7's a11y pass.
+ * So the ring is `text` with a `bg` offset — three theme tokens, no new
+ * one — and this helper now requires both halves plus the offset, which
+ * is strictly more than it required before. It still cannot see the
+ * resulting *contrast*; that is `focusRing.test.ts`'s job, and it measures
+ * all three legs against all six built-in themes. Between them the two
+ * files fail if the ring stops being a token, stops being 2px, loses its
+ * gap, or drops below 3:1 — which is the assertion the old pin could not
+ * make and did not need to.
  */
 function expectTokenFocusRing(el: HTMLElement, where: string) {
   const cls = el.getAttribute("class") ?? "";
   expect(cls, `${where} must carry a focus ring`).toMatch(/focus(-visible)?:ring-2\b/);
-  expect(cls, `${where}'s ring must be token-derived`).toMatch(/focus(-visible)?:ring-accent(\/\d+)?\b/);
+  expect(cls, `${where}'s ring must be token-derived`).toMatch(/focus(-visible)?:ring-[a-z-]+\b/);
+  expect(cls, `${where}'s ring must not be a translucent accent`).not.toMatch(
+    /focus(-visible)?:ring-accent\/\d+/,
+  );
   expect(cls, `${where} must suppress the global outline when it rings`).toMatch(
     /focus(-visible)?:outline-none\b/,
   );
+  // The gap. An inset ring cannot have one — there is nothing between the
+  // indicator and the control's own fill to separate — and the three inset
+  // sites are checked individually for that, so the exemption is stated
+  // here rather than left to the reader to infer.
+  if (!/focus(-visible)?:ring-inset\b/.test(cls)) {
+    expect(cls, `${where}'s ring must be offset from the control's own edge`).toMatch(
+      /focus(-visible)?:ring-offset-2\b/,
+    );
+    expect(cls, `${where}'s offset must be a token`).toMatch(
+      /focus(-visible)?:ring-offset-[a-z-]+\b/,
+    );
+  }
 }
 
 /** Every primitive, in every state, in one tree — the literal sweep. */

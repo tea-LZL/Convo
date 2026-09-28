@@ -72,7 +72,7 @@ type NoteRow = { note: Note; links: NoteLink[] | null };
  * drift a pixel apart. 24px, for the target-size reason in the header.
  */
 const ROW_ACTION =
-  "h-6 w-6 shrink-0 inline-flex items-center justify-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40";
+  "h-6 w-6 shrink-0 inline-flex items-center justify-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg";
 
 /**
  * The 10px tag chip, stated once.
@@ -249,7 +249,7 @@ export function NotesRoute() {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search…"
-              className="w-full bg-surface-2 border border-border rounded-md pl-7 pr-2 py-1 text-xs text-text placeholder:text-text-subtle focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/30"
+              className="w-full bg-surface-2 border border-border rounded-md pl-7 pr-2 py-1 text-xs text-text placeholder:text-text-subtle focus:outline-none focus:border-accent focus:ring-2 focus:ring-text focus:ring-offset-2 focus:ring-offset-bg"
             />
           </div>
           <div className="relative">
@@ -259,14 +259,14 @@ export function NotesRoute() {
               value={tagFilter}
               onChange={(e) => setTagFilter(e.target.value)}
               placeholder="Filter tags…"
-              className="w-full bg-surface-2 border border-border rounded-md pl-7 pr-2 py-1 text-xs text-text placeholder:text-text-subtle focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/30"
+              className="w-full bg-surface-2 border border-border rounded-md pl-7 pr-2 py-1 text-xs text-text placeholder:text-text-subtle focus:outline-none focus:border-accent focus:ring-2 focus:ring-text focus:ring-offset-2 focus:ring-offset-bg"
             />
           </div>
         </div>
         {error && (
           <div role="alert" className="mx-2 mt-2 rounded-md border border-error/30 bg-error/10 px-2 py-1.5 text-xs text-error flex items-start gap-1">
             <span className="min-w-0 break-words">{error}</span>
-            <button type="button" className="ml-auto shrink-0 underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 rounded" onClick={() => void refresh()}>Retry</button>
+            <button type="button" className="ml-auto shrink-0 underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg rounded" onClick={() => void refresh()}>Retry</button>
           </div>
         )}
         <div className="flex-1 overflow-y-auto py-1">
@@ -303,7 +303,7 @@ export function NotesRoute() {
                       // slightly different grey" rather than as a selection.
                       // The rule is on every row at rest as a transparent
                       // border, so the open note does not shift sideways.
-                      className={`w-full text-left px-3 py-2 text-xs flex flex-col gap-0.5 border-l-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40 ${
+                      className={`w-full text-left px-3 py-2 text-xs flex flex-col gap-0.5 border-l-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-text ${
                         isActive ? "bg-accent/10 border-l-accent" : "border-l-transparent hover:bg-surface-2"
                       }`}
                     >
@@ -337,7 +337,7 @@ export function NotesRoute() {
                 value={title}
                 onChange={(e) => { setTitle(e.target.value); setDirty(true); }}
                 placeholder="Title"
-                className="bg-transparent text-sm font-medium text-text placeholder:text-text-subtle focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 rounded flex-1 min-w-0"
+                className="bg-transparent text-sm font-medium text-text placeholder:text-text-subtle focus:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg rounded flex-1 min-w-0"
               />
               {dirty && <span className="text-[10px] text-warn" title="Unsaved changes" aria-label="Unsaved changes">●</span>}
               <button
@@ -362,12 +362,12 @@ export function NotesRoute() {
                 value={tags}
                 onChange={(e) => { setTags(e.target.value); setDirty(true); }}
                 placeholder="tags (comma-separated)"
-                className="flex-1 min-w-0 bg-transparent text-xs text-text placeholder:text-text-subtle focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 rounded"
+                className="flex-1 min-w-0 bg-transparent text-xs text-text placeholder:text-text-subtle focus:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg rounded"
               />
               {active.source_session_id && (
                 <Link
                   to={`/chat/${active.source_session_id}`}
-                  className="text-[10px] text-accent hover:underline flex items-center gap-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 shrink-0"
+                  className="text-[10px] text-accent hover:underline flex items-center gap-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg shrink-0"
                   title="Open source chat"
                 >
                   <MessageSquare size={10} aria-hidden="true" /> from chat

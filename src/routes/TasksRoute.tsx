@@ -66,7 +66,7 @@ interface TaskDraft {
  * there is nothing left to disambiguate.
  */
 const ROW_ACTION =
-  "h-6 w-6 shrink-0 inline-flex items-center justify-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40";
+  "h-6 w-6 shrink-0 inline-flex items-center justify-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg";
 const ROW_ACTION_IDLE = "text-text-subtle hover:text-text";
 
 const EMPTY_DRAFT: TaskDraft = { title: "", body: "", dueAt: "", priority: "0" };
@@ -225,7 +225,7 @@ export function TasksRoute() {
             type="button"
             aria-pressed={filter === value}
             onClick={() => setFilter(value)}
-            className={`px-2.5 py-1 text-xs rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
+            className={`px-2.5 py-1 text-xs rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg ${
               filter === value ? "bg-accent/15 text-accent" : "text-text-muted hover:bg-surface-2 hover:text-text"
             }`}
           >
@@ -240,7 +240,7 @@ export function TasksRoute() {
             type="checkbox"
             checked={overdueOnly}
             onChange={(e) => setOverdueOnly(e.target.checked)}
-            className="accent-[var(--color-accent)] rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+            className="accent-[var(--color-accent)] rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
           />
           Overdue
         </label>
@@ -249,7 +249,7 @@ export function TasksRoute() {
             type="checkbox"
             checked={showCompleted}
             onChange={(e) => setShowCompleted(e.target.checked)}
-            className="accent-[var(--color-accent)] rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+            className="accent-[var(--color-accent)] rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
           />
           Show completed
         </label>
@@ -280,14 +280,14 @@ export function TasksRoute() {
           </div>
           <TextArea aria-label="New task details" value={draft.body} onChange={(body) => setDraft((current) => ({ ...current, body }))} placeholder="Details (optional)" rows={2} />
           <div className="flex gap-2 flex-wrap">
-            <input aria-label="New task due date" type="date" value={draft.dueAt} onChange={(e) => setDraft((current) => ({ ...current, dueAt: e.target.value }))} className="bg-surface-2 border border-border rounded-md px-2.5 py-1.5 text-sm text-text focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/30" />
+            <input aria-label="New task due date" type="date" value={draft.dueAt} onChange={(e) => setDraft((current) => ({ ...current, dueAt: e.target.value }))} className="bg-surface-2 border border-border rounded-md px-2.5 py-1.5 text-sm text-text focus:outline-none focus:border-accent focus:ring-2 focus:ring-text focus:ring-offset-2 focus:ring-offset-bg" />
             <Select aria-label="New task priority" value={draft.priority} onChange={(priority) => setDraft((current) => ({ ...current, priority }))} options={PRIORITIES} />
           </div>
         </div>
         {error && (
           <div role="alert" className="mb-3 rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
             <span>{error}</span>
-            <button type="button" className="ml-2 underline rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40" onClick={() => void refresh()}>Retry</button>
+            <button type="button" className="ml-2 underline rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg" onClick={() => void refresh()}>Retry</button>
           </div>
         )}
         {loading ? (
@@ -305,7 +305,7 @@ export function TasksRoute() {
                     <TextInput aria-label={`Title for ${task.title}`} value={editDraft.title} onChange={(title) => setEditDraft((current) => ({ ...current, title }))} autoFocus />
                     <TextArea aria-label={`Details for ${task.title}`} value={editDraft.body} onChange={(body) => setEditDraft((current) => ({ ...current, body }))} rows={2} />
                     <div className="flex gap-2 flex-wrap">
-                      <input aria-label={`Due date for ${task.title}`} type="date" value={editDraft.dueAt} onChange={(e) => setEditDraft((current) => ({ ...current, dueAt: e.target.value }))} className="bg-surface-2 border border-border rounded-md px-2.5 py-1.5 text-sm text-text focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/30" />
+                      <input aria-label={`Due date for ${task.title}`} type="date" value={editDraft.dueAt} onChange={(e) => setEditDraft((current) => ({ ...current, dueAt: e.target.value }))} className="bg-surface-2 border border-border rounded-md px-2.5 py-1.5 text-sm text-text focus:outline-none focus:border-accent focus:ring-2 focus:ring-text focus:ring-offset-2 focus:ring-offset-bg" />
                       <Select aria-label={`Priority for ${task.title}`} value={editDraft.priority} onChange={(priority) => setEditDraft((current) => ({ ...current, priority }))} options={PRIORITIES} />
                       <div className="flex-1" />
                       <Button size="xs" variant="ghost" onClick={() => setEditingId(null)} icon={<X size={12} />}>Cancel</Button>
@@ -316,6 +316,13 @@ export function TasksRoute() {
                   <div className="flex items-start gap-2">
                     <button
                       type="button"
+                      // `aria-pressed` to match the label's polarity, and
+                      // for the same reason as the session toggles in the
+                      // sidebar: "Reopen" is only offered because the task
+                      // *is* done, so the label already implies the state
+                      // and the state has to be announced with it. Found by
+                      // `stateAgreement.test.tsx`; pre-existing.
+                      aria-pressed={!!task.completed_at}
                       aria-label={task.completed_at ? `Reopen ${task.title}` : `Complete ${task.title}`}
                       disabled={savingId === task.id}
                       onClick={() => void toggle(task)}
@@ -324,7 +331,7 @@ export function TasksRoute() {
                       // follows the theme's corner the way every other box
                       // on this page does. No `transition-colors`: this is a
                       // list row, and the list is the subtree that scales.
-                      className={`mt-0.5 h-6 w-6 shrink-0 rounded-sm border flex items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${task.completed_at ? "bg-accent border-accent" : "border-border-strong hover:border-accent"}`}
+                      className={`mt-0.5 h-6 w-6 shrink-0 rounded-sm border flex items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg ${task.completed_at ? "bg-accent border-accent" : "border-border-strong hover:border-accent"}`}
                     >
                       {task.completed_at && <Check size={12} className="text-white" aria-hidden="true" />}
                     </button>

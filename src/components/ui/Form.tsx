@@ -29,7 +29,7 @@ export function Switch({ checked, onChange, label, description, disabled }: Swit
         aria-checked={checked}
         disabled={disabled}
         onClick={() => !disabled && onChange(!checked)}
-        className={`relative shrink-0 w-9 h-5 rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${checked ? "bg-accent" : "bg-surface-3"}`}
+        className={`relative shrink-0 w-9 h-5 rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg ${checked ? "bg-accent" : "bg-surface-3"}`}
       >
         <span
           className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full transition-transform ${checked ? "bg-white translate-x-4" : "bg-text translate-x-0"}`}
@@ -72,7 +72,7 @@ export function TextInput({ value, onChange, placeholder, type = "text", autoFoc
       aria-label={ariaLabel}
       aria-labelledby={ariaLabelledBy}
       aria-describedby={ariaDescribedBy}
-      className={`w-full bg-surface-2 border border-border rounded-md px-3 py-1.5 text-sm text-text placeholder:text-text-subtle focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/30 disabled:opacity-50 disabled:cursor-not-allowed ${className}`}
+      className={`w-full bg-surface-2 border border-border rounded-md px-3 py-1.5 text-sm text-text placeholder:text-text-subtle focus:outline-none focus:border-accent focus:ring-2 focus:ring-text focus:ring-offset-2 focus:ring-offset-bg disabled:opacity-50 disabled:cursor-not-allowed ${className}`}
     />
   );
 }
@@ -106,7 +106,7 @@ export function TextArea({ value, onChange, placeholder, rows = 3, autoFocus, on
       aria-label={ariaLabel}
       aria-labelledby={ariaLabelledBy}
       aria-describedby={ariaDescribedBy}
-      className={`w-full bg-surface-2 border border-border rounded-md px-3 py-2 text-sm text-text placeholder:text-text-subtle focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/30 resize-y disabled:opacity-50 disabled:cursor-not-allowed ${className}`}
+      className={`w-full bg-surface-2 border border-border rounded-md px-3 py-2 text-sm text-text placeholder:text-text-subtle focus:outline-none focus:border-accent focus:ring-2 focus:ring-text focus:ring-offset-2 focus:ring-offset-bg resize-y disabled:opacity-50 disabled:cursor-not-allowed ${className}`}
     />
   );
 }
@@ -134,7 +134,7 @@ export function Select({ value, onChange, options, className = "", disabled, id,
         aria-label={ariaLabel}
         aria-labelledby={ariaLabelledBy}
         aria-describedby={ariaDescribedBy}
-        className={`appearance-none min-w-0 bg-surface-2 border border-border rounded-md px-2.5 py-1.5 pr-8 text-sm font-medium text-text cursor-pointer focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-100 ${className}`}
+        className={`appearance-none min-w-0 bg-surface-2 border border-border rounded-md px-2.5 py-1.5 pr-8 text-sm font-medium text-text cursor-pointer focus:outline-none focus:border-accent focus:ring-2 focus:ring-text focus:ring-offset-2 focus:ring-offset-bg disabled:cursor-not-allowed disabled:opacity-100 ${className}`}
       >
         {options.map((o) => (
           <option key={o.value} value={o.value}>
@@ -169,7 +169,7 @@ export function Slider({ value, onChange, min, max, step = 1, formatValue }: Sli
         max={max}
         step={step}
         onChange={(e) => onChange(Number(e.target.value))}
-        className="flex-1 accent-[var(--color-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        className="flex-1 accent-[var(--color-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
       />
       <span className="text-xs text-text-muted tabular-nums w-12 text-right">
         {formatValue ? formatValue(value) : value}
@@ -212,7 +212,7 @@ export function Tabs({ tabs, active, onChange, className = "" }: TabsProps) {
               onChange(tabs[next].id);
               event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>("[role='tab']")[next]?.focus();
             }}
-            className={`px-3.5 py-2 text-sm font-medium transition-colors relative focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40 ${
+            className={`px-3.5 py-2 text-sm font-medium transition-colors relative focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-text ${
             active === t.id ? "text-text" : "text-text-muted hover:text-text"
           }`}
         >

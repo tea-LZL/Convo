@@ -64,7 +64,7 @@ import { errorClass, recordLog } from "../lib/logger";
  * for a control that acts the moment it is clicked.
  */
 const ROW_ACTION =
-  "h-6 w-6 shrink-0 inline-flex items-center justify-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40";
+  "h-6 w-6 shrink-0 inline-flex items-center justify-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg";
 
 interface ColumnState {
   startedAt: number;
@@ -357,7 +357,7 @@ export function CompareRoute() {
           onChange={(e) => setPrompt(e.target.value)}
           placeholder="Prompt to send to all models…"
           rows={2}
-          className="w-full bg-surface-2 border border-border rounded-md px-3 py-2 text-sm text-text placeholder:text-text-subtle focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/30 resize-none"
+          className="w-full bg-surface-2 border border-border rounded-md px-3 py-2 text-sm text-text placeholder:text-text-subtle focus:outline-none focus:border-accent focus:ring-2 focus:ring-text focus:ring-offset-2 focus:ring-offset-bg resize-none"
         />
         <div className="mt-2 flex flex-wrap items-center gap-2">
           {selected.map((sel, i) => (
@@ -368,7 +368,7 @@ export function CompareRoute() {
                 trigger={
                   <button
                     type="button"
-                    className="text-xs text-text-muted hover:text-text flex items-center gap-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                    className="text-xs text-text-muted hover:text-text flex items-center gap-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
                   >
                     <span className="text-[10px] uppercase text-group-header">Provider</span>
                     <span>{providers.find((p) => p.id === sel.provider_id)?.name ?? "—"}</span>
@@ -396,7 +396,7 @@ export function CompareRoute() {
                 trigger={
                   <button
                     type="button"
-                    className="text-xs text-text-muted hover:text-text flex items-center gap-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                    className="text-xs text-text-muted hover:text-text flex items-center gap-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
                   >
                     <span className="text-[10px] uppercase text-group-header">Model</span>
                     <span className="text-text">{sel.model || "—"}</span>
@@ -586,7 +586,7 @@ function HistoryModal({ open, onClose, history, onSelect }: { open: boolean; onC
               <li key={h.id}>
                 <button
                   onClick={() => onSelect(h.id)}
-                  className="w-full text-left p-3 bg-surface-2 hover:bg-surface-3 border border-border rounded-lg flex items-start gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                  className="w-full text-left p-3 bg-surface-2 hover:bg-surface-3 border border-border rounded-lg flex items-start gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
                 >
                   <Sparkles size={12} className="text-text-subtle shrink-0 mt-1" />
                   <div className="flex-1 min-w-0">

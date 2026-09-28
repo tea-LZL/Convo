@@ -123,7 +123,7 @@ function SettingsLink({ to, icon, label, active }: { to: string; icon: React.Rea
     <Link
       to={to}
       aria-current={active ? "page" : undefined}
-      className={`flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
+      className={`flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg ${
         active ? "bg-accent/15 text-accent" : "text-text-muted hover:text-text hover:bg-surface-2"
       }`}
     >
@@ -612,7 +612,7 @@ function ThemeSection() {
           <button
             key={t.id}
             onClick={() => { setActive(t.id); init(); window.dispatchEvent(new CustomEvent("convo:theme-changed")); }}
-             className={`text-left p-3 rounded-lg border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
+             className={`text-left p-3 rounded-lg border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg ${
               t.id === activeThemeId ? "border-accent bg-accent/10" : "border-border bg-surface-1 hover:border-border-strong"
             }`}
           >

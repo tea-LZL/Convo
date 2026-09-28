@@ -422,7 +422,7 @@ export function DocumentsRoute() {
           {error && (
             <div role="alert" className="mb-4 rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
               {error}
-              <button type="button" className="ml-2 underline rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40" onClick={() => void refresh()}>Retry</button>
+              <button type="button" className="ml-2 underline rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg" onClick={() => void refresh()}>Retry</button>
             </div>
           )}
           <EmptyState
@@ -477,7 +477,7 @@ export function DocumentsRoute() {
                   setActiveId(t.id);
                 }
               }}
-              className={`flex items-center gap-1.5 px-2 py-1 text-xs border-b-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40 ${
+              className={`flex items-center gap-1.5 px-2 py-1 text-xs border-b-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-text ${
                 t.id === activeId
                   ? "bg-surface-2 text-text border-b-accent"
                   : "text-text-muted border-b-transparent hover:bg-surface-2 hover:text-text"
@@ -490,7 +490,7 @@ export function DocumentsRoute() {
             <button
               type="button"
               onClick={() => void remove(t.id)}
-              className="h-6 w-6 inline-flex items-center justify-center text-text-subtle hover:text-error rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 shrink-0"
+              className="h-6 w-6 inline-flex items-center justify-center text-text-subtle hover:text-error rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg shrink-0"
               aria-label={`Close ${t.title || "Untitled"}`}
               title={`Close ${t.title || "Untitled"}`}
             >
@@ -508,7 +508,7 @@ export function DocumentsRoute() {
               value={active.title}
               onChange={(e) => updateActive({ title: e.target.value, savedToDb: false })}
               placeholder="Title"
-              className="bg-transparent text-sm font-medium text-text placeholder:text-text-subtle focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 rounded flex-1 min-w-0"
+              className="bg-transparent text-sm font-medium text-text placeholder:text-text-subtle focus:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg rounded flex-1 min-w-0"
             />
             {active.diskPath && (
               <span className="text-[10px] text-text-subtle font-mono truncate max-w-[280px]">{active.diskPath}</span>
@@ -527,6 +527,13 @@ export function DocumentsRoute() {
               variant={showPreview ? "primary" : "ghost"}
               icon={showPreview ? <Edit3 size={11} /> : <Eye size={11} />}
               onClick={() => setShowPreview((p) => !p)}
+              // The label names the mode the control switches *to*, so
+              // without a state channel a screen reader read "Edit,
+              // button" with no way to learn whether the document was
+              // currently editable — and whether typing does anything is
+              // the whole question. Found by `stateAgreement.test.tsx`;
+              // pre-existing.
+              aria-pressed={showPreview}
             >
               {showPreview ? "Edit" : "Preview"}
             </Button>
@@ -537,7 +544,7 @@ export function DocumentsRoute() {
                 <button
                   type="button"
                   aria-label="More document actions"
-                  className="text-text-subtle hover:text-text p-1.5 rounded-md hover:bg-surface-2 shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                  className="text-text-subtle hover:text-text p-1.5 rounded-md hover:bg-surface-2 shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
                 >
                   <MoreHorizontal size={14} />
                 </button>
@@ -593,15 +600,15 @@ export function DocumentsRoute() {
           {error && (
             <div role="alert" className="px-4 py-1.5 border-b border-error/30 bg-error/10 text-xs text-error flex items-center justify-between gap-2">
               <span className="whitespace-pre-wrap">{error}</span>
-              <button type="button" className="underline shrink-0 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40" onClick={() => void refresh()}>Retry</button>
+              <button type="button" className="underline shrink-0 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg" onClick={() => void refresh()}>Retry</button>
             </div>
           )}
           {externalChange?.id === active.id && (
             <div role="alert" className="px-4 py-1.5 border-b border-warn/30 bg-warn/10 text-xs text-warn flex items-center justify-between gap-2">
               <span>The disk file changed while you had unsaved edits.</span>
               <span className="flex gap-2 shrink-0">
-                <button type="button" className="underline rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40" onClick={() => { updateActive({ content: externalChange.content, savedToDb: true, dirty: false }); setExternalChange(null); }}>Reload disk</button>
-                <button type="button" className="underline rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40" onClick={() => setExternalChange(null)}>Keep edits</button>
+                <button type="button" className="underline rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg" onClick={() => { updateActive({ content: externalChange.content, savedToDb: true, dirty: false }); setExternalChange(null); }}>Reload disk</button>
+                <button type="button" className="underline rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg" onClick={() => setExternalChange(null)}>Keep edits</button>
               </span>
             </div>
           )}
@@ -624,7 +631,7 @@ export function DocumentsRoute() {
           {selection && (
             <div className="px-4 py-1.5 bg-accent/10 border-t border-accent/30 text-[11px] text-accent flex items-center justify-between">
               <span>{selection.length} chars selected</span>
-              <button type="button" onClick={() => { setSelection(""); window.getSelection()?.removeAllRanges(); }} className="hover:text-text rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40">Clear</button>
+              <button type="button" onClick={() => { setSelection(""); window.getSelection()?.removeAllRanges(); }} className="hover:text-text rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg">Clear</button>
             </div>
           )}
         </div>
