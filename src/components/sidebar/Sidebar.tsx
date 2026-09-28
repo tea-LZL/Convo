@@ -1,13 +1,24 @@
 /**
  * The persistent left sidebar.
  *
- * Five regions top to bottom, in this order, and the order is the point:
- * header, search, nav, conversations, status. The status card sits
- * *below* the scroll region rather than inside it, because a user with no
- * embedding model is getting keyword-only recall silently, and a status
- * that scrolls out of sight with the conversation list is not a status.
- * The 64px rail cannot hold a card, so it holds a dot instead — same
- * token, same words, and nothing that widens the rail.
+ * Eight regions top to bottom, in this order, and the order is the point:
+ * header, search, nav, new chat, conversations, status, tools, footer.
+ * The status card sits *below* the scroll region rather than inside it,
+ * because a user with no embedding model is getting keyword-only recall
+ * silently, and a status that scrolls out of sight with the conversation
+ * list is not a status. The 64px rail cannot hold a card, so it holds a
+ * dot instead — same token, same words, and nothing that widens the rail.
+ *
+ * That list used to say **five** regions — "header, search, nav,
+ * conversations, status" — and then stake its authority on the order
+ * with "and the order is the point". A comment that claims the order is
+ * load-bearing and mis-describes the order is worse than no comment: it
+ * is written by someone who counted, so a reader checks the count rather
+ * than the code, and finds five. The count is now asserted in
+ * `Sidebar.test.tsx`, which walks the eight regions by what each one is
+ * rather than by the tag it happens to use — so the next region that
+ * gets added has to be added here *and* to a test that says what it is
+ * for, or the file and the test disagree in public.
  *
  * Width is unchanged. `w-60` is already 240px and the 64px collapsed rail
  * already exists; both are out of scope, and the card's truncation
@@ -18,7 +29,8 @@
  * glow never animates: it marks the current row, which changes on every
  * navigation, so an animated bloom would sweep in from the left each time.
  * `prefers-reduced-motion` gates the row transitions for the same reason
- * the flag exists.
+ * the flag exists. The 64px rail uses the same treatment, so collapsing
+ * changes the width and nothing else.
  */
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -394,6 +406,12 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
         ))}
       </nav>
 
+      {/* 4 — New chat. A full-width primary action rather than an icon in
+          the footer, which is where the old five-region list implied it
+          lived. It is here because it belongs with the nav it navigates
+          away from, and because a rail that cannot hold the label needs
+          a Tooltip instead, which is why this region is the one that
+          changes shape between widths. */}
       <div className="px-2 py-2 shrink-0">
         <button
           type="button"
@@ -408,7 +426,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
         </button>
       </div>
 
-      {/* 4 — Conversations. The only scrolling region in the sidebar. */}
+      {/* 5 — Conversations. The only scrolling region in the sidebar. */}
       {sessions.length > 0 && (
         <div className="flex-1 min-h-0 overflow-y-auto px-2 py-1 border-t border-border">
           <div className="flex items-center gap-1 px-2 py-1.5">
@@ -462,11 +480,15 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
 
       {!location.pathname.startsWith("/chat") && <div className="flex-1 min-h-0" />}
 
-      {/* 5 — Status. Below the scroll region on purpose: a degraded index
+      {/* 6 — Status. Below the scroll region on purpose: a degraded index
           has to be visible without navigating, which is the whole point
           of surfacing it here. */}
       <StatusCard />
 
+      {/* 7 — Tools. Hardware and Diagnostics, the two rows that are not
+          destinations in the six-row nav because they are diagnostics
+          rather than places you work. Same row treatment, so they read as
+          the same object class. */}
       <div className="border-t border-border/60 px-2 py-1.5 shrink-0">
         <div className="text-[10px] uppercase tracking-wider text-group-header font-semibold px-2 py-1">
           Tools
@@ -489,6 +511,9 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
         </button>
       </div>
 
+      {/* 8 — Footer. About and Settings as two icon buttons. The last
+          region, and the only one whose contents are settings rather than
+          a destination. */}
       <div className="border-t border-border p-2 flex items-center gap-1 shrink-0">
         <IconButton
           icon={<BookOpen size={14} />}

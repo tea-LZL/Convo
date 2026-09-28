@@ -532,6 +532,93 @@ describe("Sidebar regions", () => {
     }
   });
 
+  /**
+   * The eight regions, walked by what each one *is*.
+   *
+   * The file header used to say "Five regions ... header, search, nav,
+   * conversations, status" and then say "and the order is the point".
+   * That combination is the failure: a comment written by someone who
+   * counted is checked for its count rather than its code, and the count
+   * was wrong — the new-chat button, the tools block and the footer are
+   * three more, and status is sixth rather than fifth.
+   *
+   * So the count is asserted, and it is asserted *positionally*: each
+   * region is found by its own content rather than by the tag it happens
+   * to use, and the order of those finds is the order of the regions. A
+   * tag-based walk would have passed the old five-region list, because
+   * all five really were in order — it is the three that were missing
+   * that a positional walk over all eight catches.
+   */
+  it("has the eight regions the file header names, in the order it names them", async () => {
+    await renderSidebar(false, { sessions: [session("a")] });
+
+    // Each entry names a region and how to recognise it, so a region
+    // that moved cannot satisfy the walk by being present somewhere.
+    const regions: [string, () => Element][] = [
+      ["header", () => screen.getByText("Convo")],
+      ["search", () => screen.getByRole("button", { name: /search/i })],
+      ["nav", () => screen.getByRole("navigation")],
+      ["new chat", () => screen.getByRole("button", { name: /^new chat$/i })],
+      ["conversations", () => aside().querySelector<HTMLElement>(".overflow-y-auto")!],
+      ["status", () => statusCard()!],
+      ["tools", () => screen.getByText("Tools")],
+      ["footer", () => screen.getByRole("button", { name: "About" })],
+    ];
+    // Eight, because that is what the header says. The count is the
+    // claim; a test that walked "the regions" without a number would go
+    // quietly stale the moment a ninth was added.
+    expect(regions).toHaveLength(8);
+
+    const found = regions.map(([, find]) => find());
+    // Non-vacuity, before anything is compared: every region resolved to
+    // a real element, so the order walk below is not comparing nulls.
+    for (const [name, el] of regions.map(([n], i) => [n, found[i]] as const)) {
+      expect(el, `the ${name} region must exist`).toBeTruthy();
+    }
+    // …and they are eight *different* elements. Two lookups that matched
+    // the same node would satisfy an order walk for free, and "the new
+    // chat button and the footer button are both buttons" is exactly the
+    // kind of mistake a by-content lookup can make.
+    expect(new Set(found).size, "the eight regions must be eight distinct elements").toBe(8);
+    for (let i = 1; i < found.length; i++) {
+      expect(
+        precedes(found[i - 1], found[i]),
+        `region ${i + 1} (${regions[i][0]}) must come after region ${i} (${regions[i - 1][0]})`,
+      ).toBe(true);
+    }
+    // …and the status card is the *sixth*, not the fifth: the old list
+    // stopped counting at five and was wrong about which one status was.
+    expect(regions.findIndex(([name]) => name === "status")).toBe(5);
+  });
+
+  it("finds a region that moved, so the order walk is not vacuous", () => {
+    // The control. An assertion that eight regions are in order is
+    // equally consistent with a walk that compared nothing, so the same
+    // `precedes` is run over a fixture with two of them swapped — and
+    // the fixture is *attached*, because `compareDocumentPosition` on
+    // two detached nodes reports DISCONNECTED and every comparison would
+    // be false: a control that passes for the wrong reason is worse than
+    // no control.
+    const root = document.createElement("div");
+    const a = document.createElement("div");
+    a.textContent = "header";
+    const b = document.createElement("div");
+    b.textContent = "status";
+    root.append(a, b);
+    document.body.append(root);
+    try {
+      expect(precedes(a, b)).toBe(true);
+      expect(precedes(b, a)).toBe(false);
+      // …and moving the second one above the first flips both, which is
+      // the whole content of the order claim.
+      root.insertBefore(b, a);
+      expect(precedes(b, a)).toBe(true);
+      expect(precedes(a, b)).toBe(false);
+    } finally {
+      root.remove();
+    }
+  });
+
   it("keeps the sidebar at w-60 and the rail at 64px", async () => {
     await renderSidebar();
     expect(aside()).toHaveClass("w-60");
