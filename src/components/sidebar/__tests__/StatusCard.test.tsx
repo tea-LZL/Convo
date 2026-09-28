@@ -386,9 +386,56 @@ describe("a 240px column truncates rather than overflowing", () => {
 
   it("clips the note too, since it is the longest string on the card", async () => {
     const longNote = `${longModel} ${longModel}`;
-    await renderCard({ ...stale, semanticNote: longNote });
+    // The model name is the long one too, so the two elements being
+    // compared below really are the pair this claim is about: a name the
+    // user typed and a sentence Rust wrote, clipped differently on
+    // purpose.
+    await renderCard({ ...stale, embeddingModel: longModel, semanticNote: longNote });
     const cardEl = await screen.findByRole("region", { name: CARD_NAME });
-    expect(within(cardEl).getByText(longNote)).toHaveClass("truncate");
+    const note = within(cardEl).getByText(longNote);
+
+    // Re-targeted from the class name to the thing the class name was
+    // standing in for. It said `truncate`, which is one line: in a 216px
+    // box at 10px that is roughly the first eight words, so the DOM held
+    // Rust's sentence verbatim while the screen showed a fragment of it.
+    // Spec §4.3 says render it verbatim, and "verbatim in the DOM, first
+    // eight words on screen" is the failure that sentence is about.
+    //
+    // The claim is now the clip itself, and it is *stronger* than the
+    // class assertion it replaces: `truncate` and `line-clamp-2` are
+    // both ways of clipping, so pinning either one would keep passing
+    // while the card got shorter. Resolved out of the project Tailwind,
+    // because jsdom has no stylesheet here.
+    expect(await clipOf(note), "the note must clip rather than overflow").toBe(true);
+    // …and it must clip at *two* lines, which is what fits the height the
+    // card already has, with the full sentence still reachable on hover.
+    expect(await declaredOn(note, "-webkit-line-clamp")).toBe("2");
+    expect(note).toHaveAttribute("title", longNote);
+
+    // …and the `min-w-0` chain up to the card, which is the part that
+    // makes the clip happen at all. `line-clamp` clips inside a
+    // shrinkable ancestor exactly as `truncate` does, so this is not
+    // carried over from the old assertion — it is the same requirement
+    // under a different clip.
+    //
+    // This was a real hole, found by mutation rather than by reading: the
+    // model name's chain was walked and the note's was not, because the
+    // note is a *sibling* of the model rather than a descendant, so
+    // deleting `min-w-0` from it left the suite green with a note that
+    // would have pushed the sidebar wider instead of clipping.
+    let node: HTMLElement | null = note;
+    while (node && node !== cardEl) {
+      expect(node.className, `every ancestor up to the card must allow shrinking: ${node.className}`)
+        .toMatch(/min-w-0\b/);
+      node = node.parentElement;
+    }
+    expect(node, "the note must be inside the card").toBe(cardEl);
+    // The control on the comparison: the model name above still collapses
+    // to one line, because a user-entered model name is a single token
+    // and two lines of it is noise. So the two are deliberately different
+    // shapes, and the note's is the one that was wrong.
+    expect(await declaredOn(within(cardEl).getByText(longModel), "text-overflow"), "the model name still truncates")
+      .toBe("ellipsis");
   });
 });
 
@@ -602,5 +649,117 @@ describe("StatusDot, the rail's memory status", () => {
         /#[0-9a-f]{3,8}\b|\brgba?\(|\bhsla?\(|\boklch\(/i,
       );
     }
+  });
+});
+
+/**
+ * The clip, resolved out of the build rather than read off a class.
+ *
+ * `clipOf` and `classDeclaring` exist because the note's truncation was
+ * re-targeted in this file and the re-target needed to be *stronger*
+ * than the class assertion it replaced, not merely different.
+ *
+ * `vitest.config.ts` sets `css: false`, so jsdom has no stylesheet and
+ * `getComputedStyle` returns whatever was declared without resolving
+ * anything. Both helpers compile one class through the project Tailwind
+ * and read the declaration out of the result, so "this clips" is a
+ * statement about the CSS the build ships rather than about a string in
+ * a class attribute.
+ */
+async function declaredFor(cls: string, prop: string): Promise<string> {
+  const postcss = (await import("postcss")).default;
+  const tailwindcss = (await import("tailwindcss")).default;
+  const config = (await import("../../../../tailwind.config")).default;
+  const plugins = [
+    tailwindcss({
+      ...(config as object),
+      content: [{ raw: `<i class="${cls}"></i>`, extension: "html" }],
+      corePlugins: { preflight: false },
+    }),
+  ] as never;
+  const css = (await postcss(plugins).process("@tailwind utilities;", { from: undefined })).css;
+  const at = css.indexOf("@media");
+  const body = at < 0 ? css : css.slice(0, at);
+  const rule = body.match(new RegExp(`\\.${cls.replace(/[./]/g, (c) => `\\\\${c}`)}\\s*\\{([^}]*)\\}`));
+  if (!rule) throw new Error(`${cls} emits no rule at all; the class does not exist`);
+  const decl = rule[1].split(";").find((d) => d.trim().startsWith(`${prop}:`));
+  if (!decl) throw new Error(`${cls} emits no ${prop}`);
+  return decl.slice(decl.indexOf(":") + 1).trim();
+}
+
+/** The value `el`'s own classes give `prop`, read out of the build. */
+async function declaredOn(el: Element, prop: string): Promise<string> {
+  for (const c of Array.from(el.classList)) {
+    try {
+      return await declaredFor(c, prop);
+    } catch {
+      // Not this one. A class that emits no such property is the normal
+      // case for all but one of them.
+    }
+  }
+  throw new Error(`no class on <${el.tagName.toLowerCase()}> declares ${prop}`);
+}
+
+/** The first class on `el` that declares `prop`, read out of the build. */
+async function classDeclaring(el: Element, prop: string): Promise<string> {
+  for (const c of Array.from(el.classList)) {
+    try {
+      await declaredFor(c, prop);
+      return c;
+    } catch {
+      // Not this one. A class that emits no such property is the normal
+      // case for all but one of them.
+    }
+  }
+  throw new Error(`no class on <${el.tagName.toLowerCase()}> declares ${prop}`);
+}
+
+/** Whether `el` clips its overflow, and to how many lines. */
+async function clipOf(el: Element): Promise<boolean> {
+  for (const c of Array.from(el.classList)) {
+    try {
+      if ((await declaredFor(c, "overflow")) === "hidden") return true;
+    } catch {
+      // Not this one.
+    }
+  }
+  return false;
+}
+
+describe("the resolver these re-targets depend on", () => {
+  it("tells a clip from a non-clip, and two line counts from each other", () => {
+    // The control. `clipOf` returns a boolean, which is exactly the kind
+    // of thing that is trivially false or trivially true against a
+    // helper that stopped working — so the shapes it is asked about are
+    // built here and checked, and the two must not agree.
+    return (async () => {
+      const one = document.createElement("p");
+      one.className = "truncate";
+      const two = document.createElement("p");
+      two.className = "line-clamp-2";
+      const neither = document.createElement("p");
+      neither.className = "text-[10px]";
+
+      expect(await clipOf(one)).toBe(true);
+      expect(await clipOf(two)).toBe(true);
+      expect(await clipOf(neither), "an element that cannot overflow is not clipping").toBe(false);
+      // …and the two clips are not interchangeable, which is the whole
+      // reason the note's assertion moved off `truncate`.
+      // `truncate` is the *one-line* clip, and it is what the note used
+      // to carry: it declares no line count at all, which is the
+      // assertion that a two-line clamp is a different thing rather than
+      // a synonym.
+      await expect(declaredFor("truncate", "-webkit-line-clamp")).rejects.toThrow();
+      expect(await declaredFor("truncate", "text-overflow")).toBe("ellipsis");
+      expect(await declaredFor("line-clamp-2", "-webkit-line-clamp")).toBe("2");
+      // …and the two clips differ in the direction that matters: one
+      // ends the text with an ellipsis on a single line, the other ends
+      // it after a *second* line. `truncate` is the eight-words-on-one-
+      // line shape this card's note had.
+      expect(await declaredFor("truncate", "white-space")).toBe("nowrap");
+      expect(await declaredFor("line-clamp-2", "display")).toBe("-webkit-box");
+      // A class that does not exist is a failure, not an absence.
+      await expect(declaredFor("line-clamp-2x", "overflow")).rejects.toThrow();
+    })();
   });
 });

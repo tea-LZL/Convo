@@ -270,9 +270,20 @@ export function StatusCard() {
         {model}
       </div>
 
-      {/* Rust's sentence, unmodified. See the file header. */}
+      {/* Rust's sentence, unmodified. See the file header.
+          `line-clamp-2` rather than `truncate`, and that is a rendering
+          decision rather than a copy one: `truncate` is one line, and in
+          a 216px box at 10px that is roughly the first eight words — so
+          the DOM held Rust's sentence verbatim while the screen showed a
+          fragment of it, which is the one way "render it verbatim" can be
+          true in the markup and false in the app. Two lines is what fits
+          in the height the card already has, and the `title` keeps the
+          full sentence reachable on hover.
+          `line-clamp` clips, so the `min-w-0` chain that stops the card
+          widening the sidebar is still load-bearing and is still
+          asserted; only the *shape* of the clip changed. */}
       {note && (
-        <p className="mt-1 min-w-0 truncate text-[10px] leading-relaxed text-text-subtle" title={note}>
+        <p className="mt-1 min-w-0 line-clamp-2 text-[10px] leading-relaxed text-text-subtle" title={note}>
           {note}
         </p>
       )}
