@@ -613,6 +613,15 @@ export function DocumentsRoute() {
             </div>
           )}
           {showPreview ? (
+            // `p-6`, and deliberately not the 16px page inset every
+            // `RouteShell` page now uses. This is not a page inset: the
+            // page's content region is a pane flush to the scroll region
+            // (which is why this page's title bar has nothing under it to
+            // line up with), and what carries the 24px is the *reading*
+            // column inside it — 48rem of prose wants more air than a
+            // 12px card does, and a line of Markdown that starts 16px
+            // from the pane edge reads as a list rather than a page.
+            // Recorded here so the next sweep does not "fix" it.
             <div className="flex-1 overflow-y-auto p-6 prose prose-invert prose-sm max-w-3xl mx-auto w-full">
               <MarkdownPreview content={active.content} />
             </div>
