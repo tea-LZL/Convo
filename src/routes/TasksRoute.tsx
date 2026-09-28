@@ -260,7 +260,7 @@ export function TasksRoute() {
           uses it: roughly 75 characters of the title and body a task row
           carries, and the only thing standing between a row and a 2000px
           line on a wide monitor. */}
-      <div className="p-2 sm:p-3 max-w-2xl mx-auto w-full">
+      <div className="p-4 max-w-2xl mx-auto w-full">
         {/* The page's other compact list: three field groups, 4px between
             them and 8px inside the card. The `mb-3` to the task list below
             is a section boundary rather than a row gap, so it stays at 12px

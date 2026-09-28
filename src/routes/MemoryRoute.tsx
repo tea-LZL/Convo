@@ -431,7 +431,7 @@ export function MemoryRoute() {
           })}
         </div>
       )}
-      <div className="p-2 sm:p-3 max-w-2xl mx-auto w-full">
+      <div className="p-4 max-w-2xl mx-auto w-full">
         {visible.length === 0 ? (
           <EmptyState
             // `RouteShell` owns this page's h1, so the title underneath

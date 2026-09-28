@@ -103,7 +103,7 @@ export function SettingsRoute() {
         </nav>
       </aside>
       <div className="flex-1 min-h-0 overflow-y-auto">
-        <div className="max-w-2xl mx-auto p-4 sm:p-8">
+        <div className="max-w-2xl mx-auto p-4">
           {section === "general" && <GeneralSection />}
           {section === "providers" && <ProvidersSection />}
           {section === "models" && <ModelsSection />}

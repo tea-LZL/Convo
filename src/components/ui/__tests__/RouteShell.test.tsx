@@ -131,3 +131,100 @@ describe("RouteShell page chrome", () => {
     expect((await axe(shell)).violations).toHaveLength(0);
   });
 });
+
+/**
+ * The page inset, measured rather than spelled.
+ *
+ * The header was `px-6` — 24px — while the content roots were 8, 12 or
+ * 16px, so on the two compact pages a 28px bold title sat 12–16px
+ * further right than the first row of content under it. The claim here
+ * is narrower than "16px is right": it is that the number is *one
+ * number*, and that a retune of the spacing scale moves the header and
+ * the content together rather than leaving one of them behind.
+ *
+ * jsdom has no stylesheet here (`vitest.config.ts` sets `css: false`),
+ * so `getComputedStyle` cannot answer it, and reading `px-4` off the
+ * class string would be the wrong test twice over: it pins an
+ * implementation detail, and it passes for any page that merely says
+ * `px-4`. So the value comes from the project's own Tailwind compiling
+ * the class the shell actually rendered, and the class it does *not*
+ * render is compiled in the same pass as a control — if the resolver
+ * could not tell a padding from a gap, the negative control says so.
+ */
+describe("RouteShell page inset", () => {
+  /** The pixels a compiled utility declares for one property, or throw. */
+  async function pxOf(className: string, prop: string): Promise<number> {
+    const postcss = (await import("postcss")).default;
+    const tailwindcss = (await import("tailwindcss")).default;
+    const config = (await import("../../../../tailwind.config")).default;
+    const plugins = [
+      tailwindcss({
+        ...(config as object),
+        content: [{ raw: `<i class="${className}"></i>`, extension: "html" }],
+        corePlugins: { preflight: false },
+      }),
+    ] as never;
+    const css = (await postcss(plugins).process("@tailwind utilities;", { from: undefined })).css;
+    // Tailwind emits the screen variants after the plain utilities, so
+    // everything from the first `@media` on applies only at a
+    // breakpoint and must not be read as the unconditional value.
+    const at = css.indexOf("@media");
+    const body = at < 0 ? css : css.slice(0, at);
+    const rule = body.match(new RegExp(`\\.${className.replace(/[[\]]/g, "\\$&")}\\s*\\{([^}]*)\\}`));
+    if (!rule) throw new Error(`${className} emits no rule at all; the class does not exist`);
+    const decl = rule[1].split(";").find((d) => d.trim().startsWith(`${prop}:`));
+    if (!decl) throw new Error(`${className} emits no ${prop}`);
+    const m = decl.split(":")[1].trim().match(/^(-?[\d.]+)(px|rem)$/);
+    if (!m) throw new Error(`${className} { ${prop} } is not an absolute length: "${decl}"`);
+    return m[2] === "px" ? Number(m[1]) : Number(m[1]) * 16;
+  }
+
+  it("indents the header by the page inset, and takes it from the spacing scale", async () => {
+    render(<RouteShell title="Memory"><p>Body</p></RouteShell>);
+    const header = screen.getByRole("heading", { name: "Memory" }).closest("header")!;
+    const inline = classMatching(header, /^px-/);
+    const block = classMatching(header, /^py-/);
+    // 16px on both sides, resolved out of the build rather than read off
+    // the class. Two declarations, because `px-4` writes the sides and
+    // `py-4` the block: a header that indented only its left edge would
+    // pass a one-sided assertion.
+    expect(await pxOf(inline, "padding-left")).toBe(16);
+    expect(await pxOf(inline, "padding-right")).toBe(16);
+    expect(await pxOf(block, "padding-top")).toBe(16);
+    // …and the control on the resolver: it is reading a padding and not
+    // something else, it is not returning a constant, and it fails loudly
+    // on a class that does not exist — so a header that lost its inset
+    // cannot pass as "some px".
+    expect(await pxOf("px-8", "padding-left")).toBe(32);
+    expect(await pxOf("px-2", "padding-left")).toBe(8);
+    await expect(pxOf(inline, "margin-top")).rejects.toThrow();
+    await expect(pxOf("px-7x", "padding-left")).rejects.toThrow();
+  });
+
+  it("states one inset rather than two, so a wide window cannot re-open the step", () => {
+    render(<RouteShell title="Memory"><p>Body</p></RouteShell>);
+    const header = screen.getByRole("heading", { name: "Memory" }).closest("header")!;
+    // A `sm:px-*` is a second inset. The title would sit on one line
+    // above the content and on another from the breakpoint on, which is
+    // the exact defect this number exists to end.
+    expect(
+      Array.from(header.classList).filter((c) => c.includes(":")),
+      "the header must not change its inset at a breakpoint",
+    ).toEqual([]);
+  });
+
+  it("reads the class it asserted, so a renamed utility fails rather than passes", () => {
+    // The control on `classMatching`, which is what stops the assertion
+    // above from silently measuring some other element's padding.
+    const header = document.createElement("header");
+    header.className = "shrink-0 border-b px-4 py-4";
+    expect(classMatching(header, /^px-/)).toBe("px-4");
+    expect(() => classMatching(header, /^max-w-/)).toThrow();
+  });
+});
+
+/** The first class on `el` matching `re`, in the order it was written. */
+function classMatching(el: Element, re: RegExp): string {
+  for (const c of Array.from(el.classList)) if (re.test(c)) return c;
+  throw new Error(`no class matching ${re} on <${el.tagName.toLowerCase()}> class="${el.className}"`);
+}
