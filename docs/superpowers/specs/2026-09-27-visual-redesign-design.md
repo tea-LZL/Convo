@@ -79,7 +79,8 @@ Width is unchanged: `w-60` is already 240px, and the 64px collapsed rail already
 
 ### 4.2 Page chrome
 
-Every route: a 28px/700 title and a right-aligned action cluster. The reference's
+Every `RouteShell` route: a 28px/700 title and a right-aligned action cluster. **Chat is the
+exception** — it is not a `RouteShell` page and does not take the page chrome (decision D7). The reference's
 "View: Timeline" pill appears **only where a real view toggle exists** — Chat carries the
 model selector, Memory the kind filter. Pages without one get no pill, because a decorative
 dropdown that switches nothing is worse than none.
