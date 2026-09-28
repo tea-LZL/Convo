@@ -16,10 +16,10 @@ tick below is the correction rather than a rubber stamp.
 
 | # | Criterion | Status | Established by |
 |---|---|---|---|
-| 1 | Every route renders in the new visual vocabulary, in both modes, on all six built-in themes, with no hybrid appearance | **Human-verified, not tested** — see below | a person reading the render against the reference image |
+| 1 | Every route renders in the new visual vocabulary, in both modes, on all six built-in themes, with no hybrid appearance | **Human-verified, not tested** — see below | a person reading the render against the reference image. All ten restyled: the first pass covered seven, and About, Diagnostics and Hardware were finished in the final fix wave with a rhythm guard each |
 | 2 | Zero literal hex values in the diff | **Met** | `grep -rnE "#[0-9a-fA-F]{3,8}\|rgb(\|hsl(" src/components src/routes --include=*.tsx \| grep -v test` → empty |
 | 3 | The streaming message path gains no per-row paint cost | **Met** | `streamPerformance.test.tsx`, 12 tests, both guards demonstrated red on their own mutations |
-| 4 | The TypeScript test floor holds at 403 and rises; Rust holds at 275 | **Met** | **705** TypeScript (52 files), **275** Rust, unchanged |
+| 4 | The TypeScript test floor holds at 403 and rises; Rust holds at 275 | **Met** | **781** TypeScript (54 files), **275** Rust, unchanged. 705 → 781 in the final fix wave |
 | 5 | A user with no embedding model, or a stale index, sees that state without navigating away | **Met** | `StatusCard.test.tsx`, 33 tests: all four states, Rust's `semanticNote` verbatim, and the collapsed-rail dot |
 
 Criterion 3 is structural rather than numeric: jsdom cannot measure a frame rate. What the
@@ -38,7 +38,14 @@ that one does. It is verified by a person reading the render.
 What that person still has to look at, so the list is a checklist and not a gesture:
 
 - **Ten routes**, each on **six themes**: `Default (Dark)`, `Default (Light)`, `Solar`,
-  `Forest`, `Mono`, `High Contrast`. That is sixty renders.
+  `Forest`, `Mono`, `High Contrast`. That is sixty renders. The ten are counted from
+  `src/routes/*Route.tsx` by `AboutRoute.test.tsx` rather than written down here, because
+  this checklist asserted "ten" for six tasks while seven routes were actually restyled: a
+  number in a document is a promise, and a number derived from the filesystem is a fact.
+  Every route now also has a guard file beside it, and that test names the one exception
+  (Chat, whose guard lives with the chat surface) and asserts the exception's file still
+  exists — so the next route to ship without one is a red test rather than a sixth
+  discrepancy.
 - **Chat separately**, because D7 records that it is not a `RouteShell` page and does not take
   the page chrome. It is the deviation most likely to read as an oversight, so it is the one
   most worth a second look.
@@ -80,9 +87,9 @@ migration.
 | Nav row height | — | 40px, 12px vertical rhythm |
 | Nav row hover | `surface.2` | direct |
 | Active nav row | `surface.2` + `accent` | `color-mix(in oklab, var(--color-accent) 14%, var(--color-surface-2))` |
-| Active row icon | `accent` | direct |
+| Active row icon | *inherits the row* | `text`, **not** `accent` — see below |
 | Active row glow | `accent` | `color-mix(in oklab, var(--color-accent) 45%, transparent)`, right-edge `box-shadow`, **never animated** |
-| Group header | `text.subtle` | 11px, uppercase, `letter-spacing: 0.08em` |
+| Group header | `text.subtle` | 10px, uppercase, `tracking-wider` (`letter-spacing: 0.05em`), `font-semibold` |
 | Page title | `text` | 28px / 700, tight tracking |
 | Card | `surface.1` + `border` | `--radius-lg`, 1px border, no shadow |
 | Search field | `surface.2` | `--radius-md`, hint from `comboDisplay` |
@@ -91,6 +98,35 @@ migration.
 Light mode needs no separate work: the same composition derives from the light theme's own
 accent and surfaces, so `DEFAULT_LIGHT`, Solar, Forest, Mono, and High Contrast all follow
 without a single new declaration.
+
+### 3.1 Two rows this table got wrong, and why the code is the better call
+
+Both of these were written before the rows were built and are corrected here to match what
+ships. The code is the better answer on both, which is the reason the spec moved rather than
+the code moving back.
+
+**The active row's icon inherits body text rather than taking the accent.** `navRowClass`
+gives the whole row `text-text` when it is active, icon included, so a 15px glyph is read at
+`--color-text` rather than at `--color-accent`. Two reasons, and the second is the one that
+decided it:
+
+- Contrast. The accent is a brand hue tuned for a filled button and for large type; a 15px
+  glyph on `nav-active` is a different job, and §10.1 records that the four non-default themes
+  have never been measured for anything. Spending the highest-contrast token in the palette on
+  the smallest object on the page is the wrong end of the budget.
+- Consistency. The row is one object. When the label is `text` and the icon is `accent`, the
+  active row reads as *two* selections — a highlighted glyph and a highlighted word — where
+  there is one. The accent is already doing that job through `nav-active` and `nav-glow`; a
+  third use of it on the same row is the least load-bearing of the three.
+
+`nav-active` is the accent's channel on this row. Spending it once, as a surface, is what
+makes the row legible as selected; spending it again on the glyph is decoration.
+
+**The group header is 10px at `0.05em`, not 11px at `0.08em`.** `tracking-wider` on the
+default Tailwind scale is `0.05em`; the spec's `0.08em` was a value nobody had measured
+against a rendered string, and `0.05em` is the step the sidebar, the settings nav, the
+Notes editor and Compare's two inline labels all use. Nine sites, one spelling, and the
+sweep in `SettingsRoute.test.tsx` is what keeps it that way.
 
 ## 4. Components
 
@@ -169,7 +205,7 @@ TypeScript is how the two drift apart.
   verified by mutating the comparator and confirming the test goes red.
 - New tests: three status-card states, reduced-motion, sidebar region order, nav group
   structure, tinted-active-row contrast in both modes.
-- **Added at close-out (Task 7), 677 → 705:**
+- **Added at close-out (Task 7), 677 → 705, and 705 → 781 in the final fix wave:**
   - `stateAgreement.test.tsx` — the name/state agreement rule, over every toggle in the app,
     with one negative control per rule and both rules demonstrated red on the real files.
   - `focusRing.test.ts` — the three legs of the focus indicator, measured against all six
@@ -179,6 +215,21 @@ TypeScript is how the two drift apart.
     page.
   - A four-channel rendered agreement for the Memory page's enable control: name,
     `aria-pressed`, the `title`, and the row's own dimming.
+- **Added in the final fix wave, 705 → 781, 52 → 54 files:**
+  - Rhythm guards for the three routes the restyle never reached. Each resolves its spacing
+    out of a real Tailwind compile rather than reading a class name, so a page that merely
+    *says* `p-3` is not a page that has it. `HardwareRoute`'s walks both of its card
+    components, because the page's real defect was two components drawing one object two ways.
+  - A directory sweep asserting every `*Route.tsx` has a guard beside it, with Chat's named
+    as the one exception. This is the guard that would have caught the omission at Task 5.
+  - The floating-radius guard: all three overlays agree, and what they agree on is a
+    `var(--radius-*)` rather than a hardcoded 1rem.
+  - A group-header sweep over all nine sites, checking the alias against
+    `tailwind.config.ts` rather than trusting that two names resolve alike.
+  - The rail's active row compared against the expanded nav's, and `aria-current` asserted
+    on both widths.
+  - A guard that a page does not re-spell `ROW_ACTION` — the failure mode there is a copy,
+    and four docblocks claiming "one definition" is what made the copies look safe.
 
 ## 8. Sequencing
 
@@ -265,3 +316,29 @@ Carried from Task 3. The card reports `N embedded · M awaiting` because a cover
 a denominator Rust does not compute, and `rows_needing_embedding` and `embedded_count` overlap
 rather than partition. A denominator field on `KnowledgeIndexStatus` would fix it; that is a
 Rust change, and this plan touches no Rust.
+
+### 10.4 The chat page has no `h1`, and nothing has claimed it since
+
+**Recorded because it was nearly lost, not because it is new.** `ChatViewNew.tsx` carried a
+comment saying the page's missing `h1` was "pre-existing and is Task 7's to settle". Task 7
+did not settle it, and it was not in these follow-ups, so the decision had been deferred to a
+task that had already shipped. That is the failure mode this whole section exists to prevent:
+a comment that hands a decision to a numbered task reads as a promise, and nobody audits the
+promises.
+
+**What the gap is.** Every other route draws its `h1` through `RouteShell`. Chat does not
+(D7), so a screen-reader user arriving on the app's most-used screen finds an outline that
+starts at whatever heading the transcript happens to contain — usually `h2`, from an
+`EmptyState`, and nothing at all once there are messages. The fix is a visually-hidden `h1`
+naming the conversation, which costs no layout and does not reopen D7: a transcript does not
+want a 28px visible title, and it does want to be named.
+
+**Why it is not done here.** It is a heading-level change to a page whose heading structure
+this plan deliberately left alone, and the brief for this wave rules that a comment deferring
+it to a task is the problem rather than the solution. The honest move was to make the comment
+stop promising and put the gap where gaps are collected. `ChatViewNew` now says where it went.
+
+**What would settle it.** One `<h1 className="sr-only">` in the chat view, naming the
+conversation, plus a heading-outline guard over the chat surface in the shape the six
+`RouteShell` routes already have. Small, and the reason it is not simply done here is that it
+belongs with whatever D7 is next revisited, not with a visual pass.

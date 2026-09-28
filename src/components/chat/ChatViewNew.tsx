@@ -297,8 +297,15 @@ export function ChatViewNew({ sessionId, providers, session }: { sessionId: stri
           // a `RouteShell` page, for the reason in the header. An `h3`
           // here would be a heading whose whole outline starts three
           // levels down, which is worse than an `h2` that starts at two.
-          // The page's missing `h1` is pre-existing and is Task 7's to
-          // settle; this is the level that does not make it worse.
+          //
+          // The page's missing `h1` is not fixed by this. It used to say
+          // it was "Task 7's to settle"; Task 7 did not settle it, and
+          // nothing in the spec's follow-ups carried it, so a comment
+          // deferring a decision to a task that has already shipped is a
+          // way of losing it. It is spec §10.4 now, where it is a
+          // recorded gap rather than a promise nobody made. The level
+          // chosen here is the one that does not make it worse; it is not
+          // the fix, and this comment no longer implies it is.
           <EmptyState
             className="h-full"
             headingLevel={2}
