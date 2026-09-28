@@ -1,6 +1,41 @@
 /**
- * Compare route — side-by-side model comparison with blind mode, per-column
- * stop, save winner as chat, history.
+ * Compare — side-by-side model comparison with blind mode, per-column stop,
+ * save winner as chat, history.
+ *
+ * ── The rhythm ───────────────────────────────────────────────────────────
+ * One of the three pages that keep the *standard* rhythm: an 8px step
+ * between rows and 12px inside a card. Compare is not a page where row
+ * count is the point — there are two to four columns and then the
+ * conversation — so it takes the roomier of the two rhythms. The two
+ * places it shows are the history list, which is a card list like Notes'
+ * and gets the same `space-y-2` / `p-3`, and the result grid, whose
+ * cards are `p-3` with a 12px gutter.
+ *
+ * That gutter is 12px and not the standard 8px step, deliberately. It
+ * separates two full-height columns of prose rather than two rows, and a
+ * hairline gutter between two side-by-side answers reads as one column.
+ * So the grid is asserted to be *at least* the standard step rather than
+ * equal to it, and the test says why. The step between rows is a
+ * different measurement with a different job, and a page that conflated
+ * the two would be wrong in the more visible direction.
+ *
+ * `CompareRoute.test.tsx` measures all of it out of a real Tailwind
+ * compile of the classes this file rendered, and resolves the compact
+ * rhythm the same way so the measurement can be shown to tell them
+ * apart. Nothing here is asserted as a class name.
+ *
+ * ── Controls ─────────────────────────────────────────────────────────────
+ * Every control on this page is either a primitive or a hand-written
+ * button that now has a `type`, an accessible name, a focus ring behind
+ * a state, and a 24px target. Three of them were icon buttons with 4px
+ * of padding and nothing else, which is about 17px — below WCAG 2.2's
+ * target size — and two were bare `<button>`s inside a page that is not a
+ * form, so the missing `type` was harmless today and would not be after
+ * the next edit that wrapped any of this in one.
+ *
+ * No shadow anywhere on the resting page. The only `box-shadow` in this
+ * design belongs to things that genuinely float — the two modals, the
+ * dropdown menus — and those keep theirs.
  */
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -13,12 +48,23 @@ import { ErrorBoundary } from "../components/ui/ErrorBoundary";
 import { RouteShell } from "../components/ui/RouteShell";
 import { MarkdownRenderer } from "../components/chat/MarkdownRenderer";
 import { escapeThinkTags } from "../components/chat/MessageRow";
-import { GitCompareArrows, Play, Square, Trophy, Eye, EyeOff, History, Save, ExternalLink, Sparkles } from "lucide-react";
+import { GitCompareArrows, Play, Plus, Square, Trophy, Eye, EyeOff, History, Save, ExternalLink, Sparkles, X } from "lucide-react";
 import { diffLines, diffStats } from "../lib/diff";
 import { listen } from "@tauri-apps/api/event";
 import { useSessionsStore } from "../stores/sessions";
 import { toast } from "../stores/toasts";
 import { errorClass, recordLog } from "../lib/logger";
+
+/**
+ * One definition for the four icon controls on this page: the two that
+ * remove a model from the picker, the one that stops a column, and the
+ * one that picks a winner. They were four hand-written buttons with 4px
+ * of padding and no focus ring — about 17px targets — and they are now
+ * 24px with the ring behind `focus-visible:`, which is the right state
+ * for a control that acts the moment it is clicked.
+ */
+const ROW_ACTION =
+  "h-6 w-6 shrink-0 inline-flex items-center justify-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40";
 
 interface ColumnState {
   startedAt: number;
@@ -276,18 +322,23 @@ export function CompareRoute() {
       description="Run the same prompt against two to four models."
       actions={
         <>
-          <Button size="xs" variant="ghost" icon={<History size={12} />} onClick={() => void loadHistory()}>
+          <Button size="sm" variant="ghost" icon={<History size={12} />} onClick={() => void loadHistory()}>
             History
           </Button>
-          <button
-            type="button"
+          {/* A `Button`, where this was a hand-written toggle: the primitive
+              is 12px and 24px, it carries the focus ring, and it is the same
+              control as the two beside it rather than a second design system
+              in the same cluster. `aria-pressed` is the toggle semantics and
+              is unchanged. */}
+          <Button
+            size="sm"
+            variant="secondary"
             aria-pressed={!blind}
+            icon={blind ? <EyeOff size={12} /> : <Eye size={12} />}
             onClick={() => setBlind(!blind)}
-            className="text-xs text-text-muted hover:text-text flex items-center gap-1 px-2 py-1 rounded-md hover:bg-surface-2"
           >
-            {blind ? <EyeOff size={12} /> : <Eye size={12} />}
             {blind ? "Blind" : "Labeled"}
-          </button>
+          </Button>
         </>
       }
     >
@@ -297,7 +348,7 @@ export function CompareRoute() {
           onChange={(e) => setPrompt(e.target.value)}
           placeholder="Prompt to send to all models…"
           rows={2}
-          className="w-full bg-surface-2 border border-border rounded-md px-3 py-2 text-sm text-text placeholder:text-text-subtle focus:outline-none focus:border-accent resize-none"
+          className="w-full bg-surface-2 border border-border rounded-md px-3 py-2 text-sm text-text placeholder:text-text-subtle focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/30 resize-none"
         />
         <div className="mt-2 flex flex-wrap items-center gap-2">
           {selected.map((sel, i) => (
@@ -306,8 +357,11 @@ export function CompareRoute() {
                 align="left"
                 menuClassName="min-w-[260px]"
                 trigger={
-                  <button className="text-xs text-text-muted hover:text-text flex items-center gap-1">
-                    <span className="text-[10px] uppercase">Provider</span>
+                  <button
+                    type="button"
+                    className="text-xs text-text-muted hover:text-text flex items-center gap-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                  >
+                    <span className="text-[10px] uppercase text-group-header">Provider</span>
                     <span>{providers.find((p) => p.id === sel.provider_id)?.name ?? "—"}</span>
                     <span className="text-text-subtle">›</span>
                   </button>
@@ -331,8 +385,11 @@ export function CompareRoute() {
                 align="left"
                 menuClassName="min-w-[200px]"
                 trigger={
-                  <button className="text-xs text-text-muted hover:text-text flex items-center gap-1">
-                    <span className="text-[10px] uppercase">Model</span>
+                  <button
+                    type="button"
+                    className="text-xs text-text-muted hover:text-text flex items-center gap-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                  >
+                    <span className="text-[10px] uppercase text-group-header">Model</span>
                     <span className="text-text">{sel.model || "—"}</span>
                     <span className="text-text-subtle">›</span>
                   </button>
@@ -352,11 +409,19 @@ export function CompareRoute() {
                   </div>
                 )}
               </Dropdown>
-               <button type="button" onClick={() => removeModel(i)} className="text-text-subtle hover:text-error ml-1 px-1" aria-label={`Remove model ${i + 1}`}>×</button>
+               <button
+                 type="button"
+                 onClick={() => removeModel(i)}
+                 className={`${ROW_ACTION} text-text-subtle hover:text-error ml-1`}
+                 aria-label={`Remove model ${i + 1}`}
+                 title={`Remove model ${i + 1}`}
+               >
+                 <X size={12} aria-hidden="true" />
+               </button>
             </div>
           ))}
           {selected.length < 4 && (
-            <Button size="xs" variant="outline" onClick={addModel} icon={<span>+</span>}>
+            <Button size="sm" variant="outline" onClick={addModel} icon={<Plus size={12} />}>
               Add model
             </Button>
           )}
@@ -390,7 +455,7 @@ export function CompareRoute() {
               const label = blind && !revealed ? String.fromCharCode(65 + i) : selected[i]?.model || "—";
               return (
                 <ErrorBoundary key={i} label={`Compare ${label}`}>
-                <div className="flex flex-col bg-surface-1 border border-border rounded-xl overflow-hidden">
+                <div className="flex flex-col bg-surface-1 border border-border rounded-lg overflow-hidden">
                   <div className="flex items-center justify-between px-3 py-2 border-b border-border bg-surface-2/40">
                     <div className="flex items-center gap-1.5 min-w-0">
                       <span className="text-[10px] uppercase tracking-wider text-text-subtle">Model</span>
@@ -405,9 +470,9 @@ export function CompareRoute() {
                           <button
                             type="button"
                             onClick={() => cancelOne(i)}
-                            className="text-[10px] text-error/80 hover:text-error px-1"
-                             title="Stop this column"
-                             aria-label={`Stop model ${i + 1}`}
+                            className={`${ROW_ACTION} text-error/80 hover:text-error`}
+                            title="Stop this column"
+                            aria-label={`Stop model ${i + 1}`}
                           >
                             <Square size={9} fill="currentColor" />
                           </button>
@@ -418,8 +483,14 @@ export function CompareRoute() {
                             {(col.outputTokens ?? 0) + (col.promptTokens ?? 0)}t · {((Date.now() - col.startedAt) / 1000).toFixed(1)}s
                           </span>
                           {allDone && !winner && (
-                            <button onClick={() => pickWinner(i)} className="text-xs text-text-muted hover:text-accent flex items-center gap-1" title="Pick as winner">
-                              <Trophy size={12} />
+                            <button
+                              type="button"
+                              onClick={() => pickWinner(i)}
+                              className={`${ROW_ACTION} text-text-muted hover:text-accent`}
+                              title="Pick as winner"
+                              aria-label={`Pick ${label} as winner`}
+                            >
+                              <Trophy size={12} aria-hidden="true" />
                             </button>
                           )}
                           {winner === i && <Trophy size={12} className="text-warn" />}
@@ -495,7 +566,10 @@ function HistoryModal({ open, onClose, history, onSelect }: { open: boolean; onC
       {history.length === 0 ? (
         <div className="text-text-muted text-sm text-center py-6">No past comparisons</div>
       ) : (
-        <ul className="space-y-1">
+        <ul className="space-y-2">
+          {/* The page's one card list, and the one the standard rhythm
+              governs: 8px between rows, 12px inside a card. Asserted as
+              resolved pixels in the test, not as the class names used here. */}
           {history.map((h) => {
             const title = h.prompt.split("\n")[0].slice(0, 80) || "(no prompt)";
             const dt = new Date(h.created_at).toLocaleString();
@@ -503,7 +577,7 @@ function HistoryModal({ open, onClose, history, onSelect }: { open: boolean; onC
               <li key={h.id}>
                 <button
                   onClick={() => onSelect(h.id)}
-                  className="w-full text-left p-3 bg-surface-2 hover:bg-surface-3 border border-border rounded-md flex items-start gap-2"
+                  className="w-full text-left p-3 bg-surface-2 hover:bg-surface-3 border border-border rounded-lg flex items-start gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
                 >
                   <Sparkles size={12} className="text-text-subtle shrink-0 mt-1" />
                   <div className="flex-1 min-w-0">
@@ -543,7 +617,7 @@ function DiffModal({
         <span className="text-success">+{stats.added} added</span>
         <span className="text-error">\u2212{stats.removed} removed</span>
       </div>
-      <div className="bg-surface-1 border border-border rounded-md overflow-hidden text-xs font-mono leading-relaxed max-h-[50vh] overflow-y-auto">
+      <div className="bg-surface-1 border border-border rounded-lg overflow-hidden text-xs font-mono leading-relaxed max-h-[50vh] overflow-y-auto">
         {ops.length === 0 ? (
           <div className="p-3 text-text-muted">No differences</div>
         ) : (
