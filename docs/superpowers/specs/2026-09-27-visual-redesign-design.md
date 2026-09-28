@@ -1,6 +1,6 @@
 # Visual Redesign — Design Spec
 
-Date: 2026-09-27 · Branch: `realignment` · Status: awaiting review
+Date: 2026-09-27 · Branch: `realignment` · Status: implemented — criteria 2–5 met by test, criterion 1 human-verified and not ticked (see §1)
 
 ## 1. Intent
 
@@ -10,22 +10,50 @@ memory page buried under Tasks, and it never says whether semantic recall is wor
 redesign makes the shell, every page, and both palettes match what the application became,
 and surfaces the memory system's state where a user will actually see it.
 
-**Success criteria** — all verifiable:
+**Success criteria** — ticked at close-out, Task 7, commit recorded in the ledger. The
+heading above them originally read "all verifiable". It was wrong about one of them, and the
+tick below is the correction rather than a rubber stamp.
 
-1. Every route renders in the new visual vocabulary, in both modes, on all six built-in
-   themes, with no hybrid appearance.
-2. Zero literal hex values in the diff. Grep-enforceable.
-3. The streaming message path gains no per-row paint cost: no `box-shadow`, `filter`, or
-   `transition` inside the streaming subtree, and no new `MessageRow` prop that
-   `messageRowAreEqual` does not account for.
-4. The TypeScript test floor holds at **403** and rises. Rust holds at **275**.
-5. A user with no embedding model, or a stale index, sees that state without navigating away
-   from a conversation.
+| # | Criterion | Status | Established by |
+|---|---|---|---|
+| 1 | Every route renders in the new visual vocabulary, in both modes, on all six built-in themes, with no hybrid appearance | **Human-verified, not tested** — see below | a person reading the render against the reference image |
+| 2 | Zero literal hex values in the diff | **Met** | `grep -rnE "#[0-9a-fA-F]{3,8}\|rgb(\|hsl(" src/components src/routes --include=*.tsx \| grep -v test` → empty |
+| 3 | The streaming message path gains no per-row paint cost | **Met** | `streamPerformance.test.tsx`, 12 tests, both guards demonstrated red on their own mutations |
+| 4 | The TypeScript test floor holds at 403 and rises; Rust holds at 275 | **Met** | **705** TypeScript (52 files), **275** Rust, unchanged |
+| 5 | A user with no embedding model, or a stale index, sees that state without navigating away | **Met** | `StatusCard.test.tsx`, 33 tests: all four states, Rust's `semanticNote` verbatim, and the collapsed-rail dot |
 
-**Known limit, stated rather than papered over:** there is no visual-regression tooling, and
-adding Playwright would be a new dependency, which is out of scope. Criterion 1 is verified by
-reading the render against the reference image and by human review, not by an automated
-screenshot diff. Criterion 3 is structural, not numeric — jsdom cannot measure frame rate.
+Criterion 3 is structural rather than numeric: jsdom cannot measure a frame rate. What the
+guard establishes is that no `box-shadow`, `filter` or `transition` is *declared* inside the
+streaming subtree — classes, inline styles and `globals.css` — and that `MessageRow`'s prop
+interface and `messageRowAreEqual` are byte-identical to the plan base, so no prop can have
+gone unaccounted for.
+
+### Criterion 1 is not a test, and is not ticked as one
+
+There is no visual-regression tooling in this repository, and adding Playwright would be a new
+dependency, which §9 puts out of scope. Nothing in the suite renders a theme and compares a
+pixel, so **no test in this repository establishes criterion 1**, and this spec does not claim
+that one does. It is verified by a person reading the render.
+
+What that person still has to look at, so the list is a checklist and not a gesture:
+
+- **Ten routes**, each on **six themes**: `Default (Dark)`, `Default (Light)`, `Solar`,
+  `Forest`, `Mono`, `High Contrast`. That is sixty renders.
+- **Chat separately**, because D7 records that it is not a `RouteShell` page and does not take
+  the page chrome. It is the deviation most likely to read as an oversight, so it is the one
+  most worth a second look.
+- **The empty states**, on Memory, Notes, Documents and Tasks — `EmptyState` is where a
+  heading level and a chip surface can disagree with the page around it.
+- **Every state the components have rather than only their resting state**: the `Modal` and the
+  `Dropdown` (the two overlays that keep a shadow), the `Switch` in both positions, the
+  `Select`'s disabled state, the status card in all four states, and the collapsed 64px rail,
+  whose every label is replaced by an icon.
+- **Any surface that reads as two vocabularies meeting.** That is the specific failure the
+  criterion names, and the three Task 1 aliases are where it would appear first: an active nav
+  row whose `nav-active` mix looks like a hardcoded tint, a group header that does not match its
+  neighbours' `text-subtle`, or a `nav-glow` that reads as a shadow rather than a bloom.
+
+**Known limit, unchanged:** criterion 3 is structural, not numeric, for the reason above.
 
 ## 2. Decisions taken
 
@@ -37,6 +65,8 @@ screenshot diff. Criterion 3 is structural, not numeric — jsdom cannot measure
 | D4 | **Sidebar regions: nav → conversations → status card.** | Preserves the app's primary object and keeps the status card outside the scroll region. | The status card is below the fold on short windows. |
 | D5 | **The `density` setting stays unused.** | `stores/settings.ts` has `density` and `theme.ts` has `setDensity`, with no consumer. D3 is expressed as tighter spacing on three pages, not as a half-wired global toggle. | Dead code remains dead. Recorded rather than half-fixed. |
 | D6 | **Absorb Phase 8 Tasks 3–4; defer Task 5; retarget Task 6's a11y gate.** | The status banner becomes the status card and the recall panel becomes a Memory-tab component in the new vocabulary. Add-to-chat and `/remember` are feature work, not visual work. | Phase 8 does not close in this plan. |
+| D7 | **Chat does not take the page chrome.** | Chat is not a `RouteShell` page, and the conversation *is* the screen. A 28px "Chat" heading above a transcript is worse than none, and the reference's page title is not a thing a transcript has. Recorded as an explicit deviation from §4.2 rather than left to read as an oversight — this is the single most likely thing a reviewer reads as a bug. | The app's most-used screen is the one route that does not match the page-chrome pattern, so a reviewer has to know it is deliberate. |
+| D8 | **The focus indicator is two tokens, not one: a `text` ring with a `bg` offset.** The treatment this plan inherited (`ring-accent/40`) was carried as a tracked deferral on the grounds that it was *accent on accent* on the two filled variants. Measured, it was worse and wider than that: 1.68:1 against the page on the default dark theme, 1.86 light, 2.14 Solar, 2.16 Forest, 2.92 Mono — clearing 3:1 only on High Contrast, the one theme built so everything does. The deferral's own note said a ring that reads on both a filled accent background and the four surfaces does not exist in the 26 keys. That is true of any *single* token, and the construction above needs no new one: it is `text` and `bg`, both already seeded in all six themes, and the offset is what gives the ring something to read against. Two of its three legs are page-independent, so it does not have to guess which surface a primitive is on — which is the objection that killed `ring-offset-<surface>` twice. | Three extra classes per focus style, and a 2px outset ring can clip against a viewport edge or a 32px icon button, which the old 0-offset ring could not. The alternative was leaving a 1.68:1 indicator in place because the fix looked like it needed a new token. |
 
 ## 3. The visual foundation
 
@@ -106,10 +136,27 @@ TypeScript is how the two drift apart.
 - Nav-row hover and active transitions respect `prefers-reduced-motion`. The glow never
   animates regardless.
 - Every interactive element keeps a reachable accessible name and keyboard operability.
-- Focus styles use a token, never a literal.
+  Verified as a **rendered sweep**, not as four lookups, on the two surfaces where controls
+  carry no text of their own: the sidebar and the Memory page. A `title` is not accepted on
+  its own for a control with no text — it is last in the accessible-name computation and is
+  not a name on a touch device.
+- **A control whose accessible name changes with its state must say what the state is.** This
+  is a separate requirement from having a name, and it is the one that was missing. Every aria
+  assertion in Tasks 1–6 checked a *value*; none checked an **agreement** between a name and a
+  state, and that is how Compare's blind toggle survived sixteen commits announcing "Blind, not
+  pressed" while blind mode was on. A control that offers "Disable" because it is enabled has
+  promised to say that it is enabled. `stateAgreement.test.tsx` states the rule — same
+  expression, and a state channel at all — and applies it to every toggle in the app. It found
+  five controls that had made the promise and not kept it; all five were pre-existing.
+- Focus styles use a token, never a literal. The indicator is **two** tokens: a `text` ring
+  with a `bg` offset, which is what makes it read on a filled accent button as well as on the
+  four surfaces the controls sit on. `focusRing.test.ts` measures all three legs of that against
+  all six built-in themes on every run, because a class-name pin is satisfied by a value at
+  1.68:1 — which is exactly what the treatment it replaced was.
 - Contrast: the palette is unchanged, so existing contrast ratios hold. The one new tinted
   surface (active nav row) is verified against `text` in both modes before it ships — a
-  14% accent mix over `surface.2` is a new pairing that did not previously exist.
+  14% accent mix over `surface.2` is a new pairing that did not previously exist. **Scope:
+  the two default themes only** — see §10.1.
 
 ## 7. Testing
 
@@ -122,6 +169,16 @@ TypeScript is how the two drift apart.
   verified by mutating the comparator and confirming the test goes red.
 - New tests: three status-card states, reduced-motion, sidebar region order, nav group
   structure, tinted-active-row contrast in both modes.
+- **Added at close-out (Task 7), 677 → 705:**
+  - `stateAgreement.test.tsx` — the name/state agreement rule, over every toggle in the app,
+    with one negative control per rule and both rules demonstrated red on the real files.
+  - `focusRing.test.ts` — the three legs of the focus indicator, measured against all six
+    built-in themes read out of `themes.rs`, plus the record of what the old declaration
+    measured.
+  - Rendered accessible-name sweeps on the sidebar (expanded and collapsed) and the Memory
+    page.
+  - A four-channel rendered agreement for the Memory page's enable control: name,
+    `aria-pressed`, the `title`, and the row's own dimming.
 
 ## 8. Sequencing
 
@@ -149,3 +206,62 @@ TypeScript is how the two drift apart.
   like to someone who does not know memory exists. Unrelated to this work, and still the
   highest-value open item in the project.
 - **Any change to the 26 theme keys, `themes.rs`, or the six built-in themes.**
+
+## 10. Follow-ups
+
+Written at close-out rather than discovered later. The first is the one with a number attached.
+
+### 10.1 Contrast on Solar, Forest, Mono and High Contrast is still unmeasured
+
+**Every contrast figure in this plan came from Default Dark and Default Light**, because those
+are the two palettes that can be reasoned about without a render. Four of the six built-in
+themes have never been checked. This is a real gap and it is structural rather than an
+oversight: contrast is a property of a **pairing**, not of a token, so `--color-text` on
+`--color-surface-3` can clear 3:1 on the two defaults and fail on Solar, and no assertion over
+class names would notice. High Contrast is the likeliest to diverge, since maximum separation
+is its entire purpose.
+
+What is already known, and what is not:
+
+| Pairing | Default Dark | Default Light | Solar / Forest / Mono / High Contrast |
+|---|---|---|---|
+| Switch thumb, checked track | 3.96 | 7.1 | **unmeasured** |
+| Switch thumb, unchecked track | 12.3 | 14.4 | **unmeasured** |
+| `EmptyState` icon on its `surface-2` chip | 5.49 | 5.57 | **unmeasured** |
+| `IconButton` active tint, three backdrops | clears 3:1 | clears 3:1 | **unmeasured** |
+| Every pairing introduced in Tasks 3–6 | — | — | **unmeasured** |
+| **Focus ring, all three legs** | **12.37 / 4.80 / 15.52** | **14.30 / 5.96 / 16.47** | **12.72 / 7.48 / 16.02, 13.33 / 7.49 / 16.33, 14.40 / 13.36 / 16.91, 17.40 / 19.56 / 21.00** |
+
+The focus ring is the one row that is not blank, and it is there for a specific reason rather
+than as a favour: Task 7 *changed* that indicator, so shipping a new one onto four unmeasured
+palettes would have been gambling rather than diligence.
+`src/components/ui/__tests__/focusRing.test.ts` measures all three legs against all six themes
+on every run, so that one cannot rot. Auditing the rest is the follow-up.
+
+`text-text-subtle` on a raised surface is the pattern to start from, because it is known to be
+common (`MemoryRoute`, `SessionSearch`, the input placeholders) and was corrected in exactly one
+place by ruling, on the grounds that a rule the codebase does not follow is a guard that cries
+wolf. The prevalence was checked; the ratios were not.
+
+### 10.2 The sidebar's session context menu cannot be reached by keyboard
+
+**The highest-value accessibility item left, and it is a design gap rather than a bug.** The
+menu opens on `onContextMenu` and on nothing else, so a keyboard user cannot open it at all;
+there is no trigger, no keyboard shortcut, and no arrow-key navigation within it. The five
+items are all `role="menuitem"`, two of which flip their label with state ("Pin"/"Unpin",
+"Archive"/"Unarchive") and — correctly — cannot carry `aria-checked`, because a `menuitem` is a
+command and only a `menuitemcheckbox` may report state.
+
+`stateAgreement.test.tsx` exempts that case **in the rule**, with the reason written next to the
+exemption, rather than special-casing two line numbers where a later edit would silently
+un-exempt them. Closing the gap properly means designing a keyboard-reachable trigger and
+deciding whether those two items are checkable menu items, which is a decision about the widget
+rather than about an attribute. Out of scope for a close-out pass, and recorded here so it is
+not lost.
+
+### 10.3 The status card still cannot say what fraction is covered
+
+Carried from Task 3. The card reports `N embedded · M awaiting` because a coverage ratio needs
+a denominator Rust does not compute, and `rows_needing_embedding` and `embedded_count` overlap
+rather than partition. A denominator field on `KnowledgeIndexStatus` would fix it; that is a
+Rust change, and this plan touches no Rust.
