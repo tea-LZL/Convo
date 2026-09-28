@@ -232,7 +232,18 @@ export function NotesRoute() {
     <div className="flex h-full min-h-0 flex-col sm:flex-row">
       <aside className="w-full sm:w-60 max-h-[42%] sm:max-h-none bg-surface-1 border-b sm:border-b-0 sm:border-r border-border flex flex-col shrink-0">
         <div className="px-3 py-2.5 border-b border-border flex items-center justify-between">
-          <h2 className="text-xs font-semibold text-group-header uppercase tracking-wider">Notes</h2>
+          {/* A group header, not a heading. It was an `h2` reading
+              "Notes", the page's own title word for word, so a
+              screen-reader user heard "Notes" twice and the nav list was
+              a sibling of the editor it navigates rather than a label
+              above it. This is the identical defect and the identical
+              treatment `SettingsRoute`'s "Sections" label got, and it is
+              the two spellings — same `text-group-header uppercase
+              tracking-wider` on both — that prove the two routes were
+              written to one rule and only one of them followed it.
+              `NotesRoute.test.tsx` walks the outline in all three
+              states the page can be in. */}
+          <div className="text-[10px] uppercase tracking-wider text-group-header font-semibold">Notes</div>
         </div>
         <div className="p-2 border-b border-border space-y-1.5">
           <div className="relative">

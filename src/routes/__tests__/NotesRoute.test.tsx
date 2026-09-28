@@ -923,14 +923,14 @@ describe("NotesRoute heading outline", () => {
     // equally consistent with a walk that found no headings, or one that
     // only ever saw the page's own h1.
     const skip = document.createElement("div");
-    skip.innerHTML = "<h1>Notes</h1><h2>Notes</h2><h4>No note open</h4>";
+    skip.innerHTML = "<h1>Notes</h1><h2>No note open</h2><h4>Nested</h4>";
     expect(() => expectNoHeadingSkip(skip, "planted skip")).toThrow(/h2 .* followed by h4/);
     expect(headingLevels(skip)).toHaveLength(3);
 
     // A clean outline passes, including a legal step down and a sibling at
     // the same level, so the assertion is not "only one heading".
     const clean = document.createElement("div");
-    clean.innerHTML = "<h1>Notes</h1><h2>Notes</h2><h2>No note open</h2><h3>Nested</h3>";
+    clean.innerHTML = "<h1>Notes</h1><h2>No note open</h2><h2>Produced 2 memories</h2><h3>Nested</h3>";
     expect(() => expectNoHeadingSkip(clean, "planted clean outline")).not.toThrow();
     expect(headingLevels(clean)).toHaveLength(4);
 
@@ -939,6 +939,103 @@ describe("NotesRoute heading outline", () => {
     const noTitle = document.createElement("div");
     noTitle.innerHTML = "<h2>Orphan</h2>";
     expect(() => expectNoHeadingSkip(noTitle, "planted orphan")).toThrow(/must open with the page's own h1/);
+  });
+
+  /**
+   * The label that is not a heading.
+   *
+   * The aside's nav label read "Notes" — the page's own title, word for
+   * word — as an `h2`. `SettingsRoute` had the identical defect in its
+   * nav label and the identical treatment waiting for it, and the two
+   * routes carried the *same* `text-group-header uppercase tracking-wider`
+   * classes while only one of them had been converted. So the two
+   * spellings are the evidence, and the rule is stated once here: a
+   * label above a list is a group header, and a heading is for a
+   * section of the page.
+   *
+   * The outline walk above cannot catch this on its own — `h1` followed
+   * by `h2` skips nothing — which is exactly why the guard had to be
+   * written rather than assumed. `expectNoHeadingSkip` is the wrong tool
+   * for "a heading that should not be a heading", and using it as if it
+   * were is the mistake this test exists to prevent.
+   */
+  it("keeps the aside label a group header rather than a second copy of the title", async () => {
+    const { container } = renderNotes();
+    await cardList(container);
+
+    // The page's own title, and the thing no other heading may repeat.
+    const h1 = screen.getByRole("heading", { level: 1, name: "Notes" });
+    expect(h1).toBeInTheDocument();
+
+    // The nav label exists and says what it always said — reached inside
+    // the aside by its text, so this fails if the label is deleted rather
+    // than silently passing on a page with no label at all. Scoped to the
+    // aside because the page's own `h1` says "Notes" too, and matching
+    // the first "Notes" on the page would find the title.
+    const aside = within(container).getByRole("complementary");
+    const label = within(aside).getByText("Notes");
+    expect(label.tagName, "the nav label must not be a heading").toBe("DIV");
+    // …and it is the group-header treatment, the same one the sidebar's
+    // and the editor's own group headers take.
+    expect(label.className).toMatch(/\btext-group-header\b/);
+    expect(label.className).toMatch(/\buppercase\b/);
+    expect(label.className).toMatch(/\btracking-wider\b/);
+    expect(label.className).toMatch(/\btext-\[10px\]/);
+
+    // The claim, stated over the whole page rather than over one node: no
+    // heading below the `h1` repeats the page's own title.
+    for (const heading of headingLevels(container).filter((h) => h.level > 1)) {
+      expect(
+        heading.text,
+        `h${heading.level} "${heading.text}" repeats the page's own title word for word`,
+      ).not.toBe(h1.textContent);
+    }
+    // …and the loop above is walking a list rather than a one-element
+    // array that happens to pass. The editor's own group header is the
+    // second heading-shaped thing on the page: it is spelled the same way,
+    // it is correctly not a heading either, and it is found by its own
+    // text rather than by a class — so this cannot pass on a page where
+    // it was missing.
+    // Matched on the element's *own* text nodes, not on its whole
+    // `textContent` — otherwise every ancestor of the header matches too
+    // and the lookup is ambiguous. The count is taken from the fixture's
+    // own link list rather than typed, so a fixture that grew or lost a
+    // link cannot silently turn this into a walk over nothing.
+    const ownText = (d: Element) =>
+      Array.from(d.childNodes)
+        .filter((n) => n.nodeType === Node.TEXT_NODE)
+        .map((n) => n.textContent ?? "")
+        .join("")
+        .trim();
+    const expected = `Produced ${defaultLinks.length} memories`;
+    const produced = Array.from(container.querySelectorAll("div")).filter((d) => ownText(d) === expected);
+    expect(produced, `the page must really carry its second group header ("${expected}")`).toHaveLength(1);
+    expect(produced[0].tagName, "and it must not be a heading either").toBe("DIV");
+    expect(produced[0].className).toMatch(/\btext-group-header\b/);
+    expect(screen.queryByRole("heading", { name: /produced/i })).not.toBeInTheDocument();
+  });
+
+  it("spells the group header the way SettingsRoute spells it, because the two were one rule", () => {
+    // The evidence that this is one rule and not two: both routes carry
+    // the same classes for their nav label, and only Settings had been
+    // converted to the `div`. Read from the sources, because a guard that
+    // compared the two *rendered* pages could not tell a shared constant
+    // from two copies that happen to agree today.
+    const read = (rel: string) => readFileSync(resolve(ROOT, rel), "utf8");
+    // The match stops at the label's own text rather than past it: a `/`
+    // inside a regex literal closes the literal, and reading one source
+    // and not the other would be a test that quietly compares nothing.
+    const notesLabel = read("src/routes/NotesRoute.tsx")
+      .match(/<div className="(text-\[10px\] uppercase tracking-wider text-group-header font-semibold)">Notes/);
+    const sectionsLabel = read("src/routes/SettingsRoute.tsx")
+      .match(/<div className="(text-\[10px\] uppercase tracking-wider text-group-header font-semibold px-2 py-2)">Sections/);
+    expect(notesLabel, "NotesRoute must carry the group-header treatment").toBeTruthy();
+    expect(sectionsLabel, "SettingsRoute must carry the group-header treatment").toBeTruthy();
+    // One spelling: the Settings one adds only its own padding, which is
+    // the label's box and not its type treatment.
+    const type = "text-[10px] uppercase tracking-wider text-group-header font-semibold";
+    expect(notesLabel![1]).toBe(type);
+    expect(sectionsLabel![1]).toBe(`${type} px-2 py-2`);
   });
 
   it("gives the empty state a heading that is a heading, at the level it asked for", async () => {
@@ -950,8 +1047,14 @@ describe("NotesRoute heading outline", () => {
     // level" from "a paragraph that looks like one".
     const heading = await screen.findByRole("heading", { name: "No note open" });
     expect(heading.tagName).toBe("H2");
-    // The list's own heading and this one are siblings, not a chain.
-    expect(headingLevels(document.body).map((h) => h.level)).toEqual([1, 2, 2]);
+    // Exactly the shell's h1 and this one. It used to read `[1, 2, 2]`,
+    // because the aside's nav label was an `h2` repeating the page's own
+    // title word for word — the same defect `SettingsRoute`'s "Sections"
+    // label had already been fixed for. That label is a group header now,
+    // so there is one h1 and one h2, and the empty state's title is a
+    // *sibling* of nothing rather than a second level-two heading
+    // masquerading as a peer of the nav.
+    expect(headingLevels(document.body).map((h) => h.level)).toEqual([1, 2]);
     // …and it is the primitive's own heading, carrying the primitive's
     // treatment, rather than a second implementation drawn over the top of
     // it.
