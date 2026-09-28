@@ -15,7 +15,63 @@ import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { Switch, Tabs, TextInput, TextArea, Select, Badge } from "../components/ui/Form";
 import { Dropdown } from "../components/ui/Dropdown";
 import { toast } from "../stores/toasts";
-import { Cpu, Palette, KeyRound, Search, Keyboard, Info, Plus, Trash2, CheckCircle2, AlertCircle, X, Save, Brain } from "lucide-react";
+import { Cpu, Palette, KeyRound, Search, Keyboard, Info, Plus, Trash2, CheckCircle2, AlertCircle, Brain } from "lucide-react";
+
+/**
+ * Settings — a two-pane page, and one of the three that keep the
+ * *standard* rhythm.
+ *
+ * ── The rhythm, and what governs it here ───────────────────────────────
+ * The standard rhythm is an 8px step between rows and 12px inside a card.
+ * Settings has no gap between its rows at all: it separates them with a
+ * 1px rule, which is the older and denser way to do the same job and is
+ * the right one for a list that runs to a dozen rows under a heading. So
+ * what the rhythm governs here is the 12px *inside* a row, and the rule
+ * is the step.
+ *
+ * That makes the claim worth asserting a stronger one than on the other
+ * standard pages: not that one row is 12px, but that the page has *one*
+ * row rhythm. The general rows, the Knowledge section's rows, the
+ * discovered-servers rows and the shortcut rows were four separate
+ * `py-3` / `py-2` literals, and the test now walks all four and asserts
+ * they resolve to the same number. A page whose rows drift apart is a
+ * page that reads as four pages.
+ *
+ * Every number is resolved out of a real Tailwind compile of the classes
+ * the page rendered. `SettingsRoute.test.tsx` also resolves the compact
+ * rhythm the same way, so it can show the measurement tells the two apart
+ * and a row at 8px is not a row at 12px.
+ *
+ * ── The heading outline ────────────────────────────────────────────────
+ * `RouteShell` owns this page's `h1`, and every section used to reach for
+ * something else: the nav label was an `h2` repeating the page's own title
+ * word for word, the section titles were `h2` and their card labels `h2`
+ * as well, and `ModelsSection` — the one section that did not use
+ * `SectionTitle` — put an `h1` on the page, so the page had two. A
+ * screen-reader user moving by level got a flat list where a tree was
+ * meant. The nav label is now a group header, the card labels are `h3`
+ * under their section's `h2`, and `ModelsSection`'s heading is the `h2`
+ * its siblings have.
+ *
+ * ── Cards ──────────────────────────────────────────────────────────────
+ * `rounded-lg`, which is the radius the spec's card row names. Every card
+ * on this page was `rounded-xl`, which is also a theme radius and so was
+ * not wrong — it was a second, larger shape for the same object.
+ *
+ * ── The one place a literal colour is correct ───────────────────────────
+ * A theme swatch's job is to *show* the theme's colours, so it paints
+ * them from `tokens_json` at runtime and there is no var to read. That is
+ * the single exemption from this page's no-literal rule, it is marked in
+ * the markup as `data-swatch`, and the test exempts exactly that marker —
+ * with a second assertion that the swatch really is carrying the theme's
+ * own token, so the exemption cannot be used to smuggle a hardcoded
+ * colour onto a swatch and call it a preview.
+ *
+ * `Card` is defined here and again in `KnowledgeSection.tsx`, with
+ * identical bodies. It is duplication this task did not fix: a shared
+ * module would be a new file, and the two sections are reviewable apart.
+ * Recorded rather than done.
+ */
 
 export function SettingsRoute() {
   const location = useLocation();
@@ -30,7 +86,12 @@ export function SettingsRoute() {
     <RouteShell title="Settings" description="Configure providers, models, search, themes, and shortcuts." contentClassName="overflow-hidden">
     <div className="flex h-full min-h-0 flex-col sm:flex-row">
       <aside className="w-full sm:w-56 bg-surface-1 border-b sm:border-b-0 sm:border-r border-border p-2 shrink-0">
-        <h2 className="text-sm font-semibold text-text px-2 py-2">Settings</h2>
+        {/* A group header, not a heading. It was an `h2` repeating the
+            page's own `h1` word for word, so a screen-reader user heard
+            "Settings" twice and the nav was a sibling of the sections it
+            navigates rather than a label above them. The same treatment the
+            sidebar's group headers get. */}
+        <div className="text-[10px] uppercase tracking-wider text-group-header font-semibold px-2 py-2">Sections</div>
         <nav className="flex flex-row sm:flex-col gap-0.5 overflow-x-auto">
           <SettingsLink to="/settings/general" icon={<Info size={14} />} label="General" active={section === "general"} />
           <SettingsLink to="/settings/providers" icon={<KeyRound size={14} />} label="Providers" active={section === "providers"} />
@@ -62,7 +123,7 @@ function SettingsLink({ to, icon, label, active }: { to: string; icon: React.Rea
     <Link
       to={to}
       aria-current={active ? "page" : undefined}
-      className={`flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm transition-colors ${
+      className={`flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
         active ? "bg-accent/15 text-accent" : "text-text-muted hover:text-text hover:bg-surface-2"
       }`}
     >
@@ -90,48 +151,84 @@ function GeneralSection() {
   return (
     <div>
       <SectionTitle title="General" description="App-wide preferences." />
+      {/* The six switch rows do *not* go through `SettingRow`, and the reason
+          is an accessibility defect rather than a layout one.
+
+          `Switch` takes its accessible name from its own `label` prop — it
+          wires `aria-labelledby` to the `<label>` it renders. A `Switch`
+          handed only `checked` and `onChange` is therefore announced as
+          "Toggle", and this section had six of them, in a row, identical.
+          `SettingRow` put the name in its own left column, which is a
+          `<div>` and associates with nothing, so the name was for sighted
+          users only.
+
+          The fix is to let `Switch` own the name it already knows how to
+          wire, and the visual result is the same: `Switch` renders its
+          label at `text-sm text-text` and its description at
+          `text-xs text-text-muted mt-0.5`, which are exactly the classes
+          `SettingRow` used, and its own row is a `justify-between` with the
+          track on the right. `SwitchRow` is that row's 12px padding and its
+          1px rule, and nothing else.
+
+          `SettingRow` is still the row for a `Button` and a `Select`,
+          where the control is not a switch and cannot carry a name. The
+          Knowledge section's own switch already passed `label` and was
+          never affected. */}
       <Card>
-        <SettingRow
-          label="Sound effects"
-          description="Subtle sounds for send and response complete"
-          control={<Switch checked={!settings.muteSounds} onChange={(v) => settings.update("muteSounds", !v)} />}
-        />
-        <SettingRow
-          label="Desktop notifications"
-          description="Notify when a response completes while the window is unfocused"
-          control={<Switch checked={!settings.muteNotifications} onChange={(v) => settings.update("muteNotifications", !v)} />}
-        />
-        <SettingRow
-          label="Enter to send"
-          description="Send messages with Enter; Shift+Enter for new line"
-          control={<Switch checked={settings.enterToSend} onChange={(v) => settings.update("enterToSend", v)} />}
-        />
-        <SettingRow
-          label="Show token count"
-          description="Display token usage in the input bar"
-          control={<Switch checked={settings.showTokenCount} onChange={(v) => settings.update("showTokenCount", v)} />}
-        />
-        <SettingRow
-          label="Show thinking by default"
-          description="Expand model thinking cards automatically"
-          control={<Switch checked={settings.showThinking} onChange={(v) => settings.update("showThinking", v)} />}
-        />
-        <SettingRow
-          label="Auto-extract memory from chat"
-          description="After each chat with ≥ 2 exchanges, ask the model to propose durable facts (preferences, project facts, skills) for review on the Memory page."
-          control={
-            <Switch
-              checked={settings.memoryAutoEvaluate}
-              onChange={(v) => settings.update("memoryAutoEvaluate", v)}
-            />
-          }
-        />
+        <SwitchRow>
+          <Switch
+            label="Sound effects"
+            description="Subtle sounds for send and response complete"
+            checked={!settings.muteSounds}
+            onChange={(v) => settings.update("muteSounds", !v)}
+          />
+        </SwitchRow>
+        <SwitchRow>
+          <Switch
+            label="Desktop notifications"
+            description="Notify when a response completes while the window is unfocused"
+            checked={!settings.muteNotifications}
+            onChange={(v) => settings.update("muteNotifications", !v)}
+          />
+        </SwitchRow>
+        <SwitchRow>
+          <Switch
+            label="Enter to send"
+            description="Send messages with Enter; Shift+Enter for new line"
+            checked={settings.enterToSend}
+            onChange={(v) => settings.update("enterToSend", v)}
+          />
+        </SwitchRow>
+        <SwitchRow>
+          <Switch
+            label="Show token count"
+            description="Display token usage in the input bar"
+            checked={settings.showTokenCount}
+            onChange={(v) => settings.update("showTokenCount", v)}
+          />
+        </SwitchRow>
+        <SwitchRow>
+          <Switch
+            label="Show thinking by default"
+            description="Expand model thinking cards automatically"
+            checked={settings.showThinking}
+            onChange={(v) => settings.update("showThinking", v)}
+          />
+        </SwitchRow>
+        <SwitchRow>
+          <Switch
+            label="Auto-extract memory from chat"
+            description="After each chat with ≥ 2 exchanges, ask the model to propose durable facts (preferences, project facts, skills) for review on the Memory page."
+            checked={settings.memoryAutoEvaluate}
+            onChange={(v) => settings.update("memoryAutoEvaluate", v)}
+          />
+        </SwitchRow>
       </Card>
       <Card className="mt-4">
         <SettingRow
           label="Onboarding tour"
           description="Replay the introduction and feature overview."
-          control={<Button size="xs" variant="secondary" onClick={restartTour}>Replay tour</Button>}
+          control={<Button size="sm" variant="secondary" onClick={restartTour}>Replay tour</Button>}
         />
       </Card>
     </div>
@@ -282,7 +379,7 @@ export function ProvidersSection() {
           <div className="text-center text-text-muted text-sm py-6">No providers yet. Add one to start chatting.</div>
         ) : (
           providers.map((p) => (
-            <div key={p.id} className="flex items-center justify-between py-3 border-b border-border last:border-b-0">
+            <div key={p.id} className="flex items-center justify-between gap-3 py-3 border-b border-border last:border-b-0">
               <div>
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-medium text-text">{p.name}</span>
@@ -293,7 +390,7 @@ export function ProvidersSection() {
               </div>
               <div className="flex items-center gap-1">
                 <Button
-                  size="xs"
+                  size="sm"
                   variant="ghost"
                   onClick={() => {
                     setEditingProvider(p);
@@ -306,9 +403,21 @@ export function ProvidersSection() {
                   }}
                 >Edit</Button>
                 {!p.is_default && (
-                  <Button size="xs" variant="ghost" onClick={() => setDefault(p.id)}>Set default</Button>
+                  <Button size="sm" variant="ghost" onClick={() => setDefault(p.id)}>Set default</Button>
                 )}
-                <Button size="xs" variant="ghost" onClick={() => setConfirmDeleteProvider(p.id)} icon={<Trash2 size={12} />} />
+                {/* Icon-only, and it had no accessible name at all: a
+                    screen reader announced "button" and nothing else, on the
+                    one control that deletes a provider. Named, and
+                    `size="sm"` rather than `size="xs"` for WCAG 2.2's target
+                    size — a settings row is not a place to economise. */}
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setConfirmDeleteProvider(p.id)}
+                  aria-label={`Delete ${p.name}`}
+                  title={`Delete ${p.name}`}
+                  icon={<Trash2 size={12} />}
+                />
               </div>
             </div>
           ))
@@ -453,7 +562,7 @@ export function SearchSection() {
         </div>
       </Card>
       <Card className="mt-4">
-        <h2 className="text-sm font-medium text-text mb-2">Test search</h2>
+        <h3 className="text-sm font-medium text-text mb-2">Test search</h3>
         <div className="flex gap-2">
           <TextInput aria-label="Search query" value={testQuery} onChange={setTestQuery} placeholder="Search query" />
           <Button variant="secondary" onClick={() => void testSearch()} loading={testing}>Test</Button>
@@ -503,7 +612,7 @@ function ThemeSection() {
           <button
             key={t.id}
             onClick={() => { setActive(t.id); init(); window.dispatchEvent(new CustomEvent("convo:theme-changed")); }}
-             className={`text-left p-3 rounded-xl border transition-colors ${
+             className={`text-left p-3 rounded-lg border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
               t.id === activeThemeId ? "border-accent bg-accent/10" : "border-border bg-surface-1 hover:border-border-strong"
             }`}
           >
@@ -526,7 +635,21 @@ function ThemeSwatch({ tokensJson }: { tokensJson: string }) {
   return (
     <div className="flex gap-0.5">
       {["color-bg", "color-surface-2", "color-accent", "color-text"].map((k) => (
-               <span key={k} className="w-3 h-3 rounded-sm border border-border" style={{ background: tokens[k] || "var(--color-bg)" }} />
+               <span
+                 key={k}
+                 // `data-swatch` is the one place on this page where a
+                 // literal colour is correct: a swatch's job is to *show*
+                 // the theme's colours, so it paints them from
+                 // `tokens_json` and there is no var to read. The marker is
+                 // in the markup rather than in the test so the exemption
+                 // travels with the element, and the test asserts
+                 // separately that the swatch really is carrying the
+                 // theme's token — an exemption that could carry a
+                 // hardcoded colour would be a hole, not an exemption.
+                 data-swatch=""
+                 className="w-3 h-3 rounded-sm border border-border"
+                 style={{ background: tokens[k] || "var(--color-bg)" }}
+               />
       ))}
     </div>
   );
@@ -561,7 +684,10 @@ function ShortcutsSection() {
       <SectionTitle title="Shortcuts" description="Click a binding to record a new combo. Esc to cancel." />
       <Card>
         {bindings.map((b) => (
-          <div key={b.id} className="flex items-center justify-between py-2 border-b border-border last:border-b-0">
+          // `py-3`, like every other row on this page. It was `py-2` — the
+          // only row out of step — and the test walks all four row kinds
+          // and asserts they resolve alike.
+          <div key={b.id} className="flex items-center justify-between gap-3 py-3 border-b border-border last:border-b-0">
             <div>
               <div className="text-sm text-text">{b.description ?? b.id}</div>
               <div className="text-xs text-text-subtle font-mono">{b.combo || "—"}</div>
@@ -580,10 +706,22 @@ function ShortcutsSection() {
   );
 }
 
+/** `--radius-lg`, the radius the spec's card row names. */
 function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
-  return <div className={`bg-surface-1 border border-border rounded-xl p-4 ${className}`}>{children}</div>;
+  return <div className={`bg-surface-1 border border-border rounded-lg p-4 ${className}`}>{children}</div>;
 }
 
+/**
+ * The page's row around a control that cannot carry its own name — a
+ * `Button`, a `Select`. 12px inside, a 1px rule between: the standard
+ * rhythm expressed as a rule rather than as air, which is the right call
+ * for a dozen rows under a heading and is what the test measures.
+ */
+function SwitchRow({ children }: { children: React.ReactNode }) {
+  return <div className="py-3 border-b border-border last:border-b-0">{children}</div>;
+}
+
+/** The same row, for a `Button` or a `Select`. See the note on `GeneralSection`. */
 function SettingRow({ label, description, control }: { label: string; description?: string; control: React.ReactNode }) {
   return (
     <div className="flex items-center justify-between gap-4 py-3 border-b border-border last:border-b-0">

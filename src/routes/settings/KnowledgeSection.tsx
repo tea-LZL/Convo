@@ -307,7 +307,12 @@ export function KnowledgeSection() {
       ) : (
         <>
           <Card>
-            <h2 className="text-sm font-medium text-text">Recall</h2>
+            {/* `h3` under this section's `h2`, not a second `h2` beside
+                it: a screen-reader user moving by level was told "Recall"
+                and "Model routing" were siblings of "Knowledge" rather than
+                its children. A `div` would also have been defensible, but
+                these are headings and a heading level is cheap to keep. */}
+            <h3 className="text-sm font-medium text-text">Recall</h3>
             <Row
               id="memory-top-k"
               label="Recall items"
@@ -351,7 +356,7 @@ export function KnowledgeSection() {
           </Card>
 
           <Card className="mt-4">
-            <h2 className="text-sm font-medium text-text">Model routing</h2>
+            <h3 className="text-sm font-medium text-text">Model routing</h3>
             <p className="text-xs text-text-muted mt-0.5 mb-1">
               Which model serves which job. Session model means whichever model the chat is using.
             </p>
@@ -362,7 +367,7 @@ export function KnowledgeSection() {
                   <label htmlFor={`routing-${capability}-provider`} className="block text-sm text-text mb-1.5">
                     {CAPABILITY_LABELS[capability]}
                   </label>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <Select
                   id={`routing-${capability}-provider`}
                   aria-label={`${CAPABILITY_LABELS[capability]} model provider`}
@@ -397,8 +402,14 @@ export function KnowledgeSection() {
   );
 }
 
+/**
+ * `--radius-lg`, the radius the spec's card row names — and the same
+ * definition `SettingsRoute.tsx` has for its own `Card`, duplicated
+ * because the two sections are reviewable apart and a shared module would
+ * be a new file. Recorded rather than done.
+ */
 function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
-  return <div className={`bg-surface-1 border border-border rounded-xl p-4 ${className}`}>{children}</div>;
+  return <div className={`bg-surface-1 border border-border rounded-lg p-4 ${className}`}>{children}</div>;
 }
 
 function SectionTitle({ title, description }: { title: string; description?: string }) {
