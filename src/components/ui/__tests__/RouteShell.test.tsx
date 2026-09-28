@@ -66,7 +66,22 @@ describe("RouteShell page chrome", () => {
     // The cluster is a sibling of the title block, not nested inside it,
     // and it is the one that must not be squeezed by a long title.
     expect(cluster.className).toMatch(/justify-end/);
-    expect(cluster.className).toMatch(/shrink-0/);
+    // The cluster must be *allowed to give*, and it wraps. This assertion
+    // replaces one that read `expect(cluster.className).toMatch(/shrink-0/)`
+    // and it is not a deletion: it inverts the claim the design has moved
+    // past. A page's action cluster is the widest thing in its header —
+    // Memory's kind filter is four tabs — so a cluster that could not
+    // shrink pushed the content pane instead of reflowing, and the only
+    // way to put a filter in the header was to leave it in the body.
+    // `MemoryRoute.test.tsx` asserts the same property from the page that
+    // depends on it, so a re-added `shrink-0` is caught from both sides.
+    expect(cluster.className).not.toMatch(/(?:^|\s)shrink-0(?:\s|$)/);
+    expect(cluster.className).toMatch(/(?:^|\s)flex-wrap(?:\s|$)/);
+    // The control on the negative: the header carries a `shrink-0` of its
+    // own, which is a different thing — that one stops the header
+    // collapsing as the content region scrolls. Without this the assertion
+    // above would also pass against a page with no `shrink-0` anywhere.
+    expect(header.className).toMatch(/(?:^|\s)shrink-0(?:\s|$)/);
     expect(heading.parentElement).not.toBe(cluster);
     expect(heading.parentElement!.contains(cluster)).toBe(false);
   });

@@ -209,7 +209,9 @@ export function TasksRoute() {
         {loading ? (
           <div className="p-6 text-center text-sm text-text-muted">Loading tasks…</div>
         ) : visible.length === 0 ? (
-          <EmptyState icon={<ListTodo size={32} />} title="No tasks" description="Add a task to keep yourself on track. Tasks can be created from chat with /task." />
+          // `RouteShell` owns this page's h1, so the title underneath it
+          // is an h2 — an h3 here would be a skipped level.
+          <EmptyState headingLevel={2} icon={<ListTodo size={32} />} title="No tasks" description="Add a task to keep yourself on track. Tasks can be created from chat with /task." />
         ) : (
           <ul className="space-y-2">
             {visible.map((task) => (

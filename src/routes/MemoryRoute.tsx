@@ -51,38 +51,36 @@
  *
  * ── The kind filter, and the header it squeezes ─────────────────────────
  * Spec §4.2 puts the filter in the right-aligned `actions` cluster, and
- * that is where it is. The obstacle was that `RouteShell` puts
- * `shrink-0` on that cluster, so a four-item filter group could not give
- * and a narrow window had to choose between the spec's placement and
- * working at all.
+ * that is where it is.
  *
- * The header is the defect, not the filter's placement, so the
- * constraint goes: `[&_[data-actions]]:shrink` lets the cluster shrink
- * and its own `flex-wrap` reflows the control set. No collapse-to-
+ * Getting it there needed the cluster to be allowed to give, and it did
+ * not: `RouteShell` put `shrink-0` on the action cluster, so a four-item
+ * filter group could not shrink and a narrow window had to choose between
+ * the spec's placement and working at all. The header was the defect, not
+ * the filter's placement, so `RouteShell` no longer declares it and the
+ * cluster's own `flex-wrap` reflows the control set. No collapse-to-
  * dropdown, which would be a new mechanism; reflow is the smaller honest
- * answer to a narrow window.
+ * answer to a narrow window. Both sides are pinned —
+ * `RouteShell.test.tsx` from the shell, and this page's test from the
+ * page that depends on it.
  *
- * That override lives here rather than in `RouteShell.tsx` because
- * `RouteShell.test.tsx` pins `shrink-0` on the cluster and the primitive
- * API guard exists to stop a page from reaching into a primitive's
- * internals by adding to its signature. Both are Task 2's and Task 3's
- * calls and neither is this task's to reverse, so the page carries the
- * override and the test pins what it resolves to and why it wins. The
- * proper fix is one line in `RouteShell.tsx` and belongs to whoever owns
- * that file.
- *
- * The same coupling applies to the tab strip's three size overrides
- * below. `Tabs` is a 14px, 33px-tall underline tab bar; the header's
- * buttons are 12px and 24px; side by side they read as two different
- * design systems, and the filter is the only thing in the cluster that is
- * not a button. `Badge` could not take the pinned and provenance chips
- * for the same underlying reason — see `CHIP`.
+ * Three size overrides put the filter's controls at the same resolved
+ * metrics as the buttons beside them. `Tabs` is a 14px, 33px-tall
+ * underline tab bar; the header's buttons are 12px and 24px; side by side
+ * they read as two different design systems, and the filter is the only
+ * control in the cluster that is not a button. The overrides resolve to
+ * exactly `Button size="sm"`, and the test compares the two sets of
+ * resolved values rather than the two sets of class names.
+ * `border-b-0` is the emission-order claim it has always been, with its
+ * own test. `Badge` could not take the pinned and provenance chips for the
+ * same underlying reason — see `CHIP`.
  */
 import { useEffect, useState } from "react";
 import { Plus, Trash2, Brain, Power, PowerOff, Pin, PinOff, Search, Tag, X, Save, Sparkles, Filter, Edit3, Check, Bell, StickyNote } from "lucide-react";
 import { api, ExtractableSession, ExtractedFact, MemoryItem, MemorySearchHit } from "../lib/api";
 import { Button } from "../components/ui/Button";
 import { Dropdown } from "../components/ui/Dropdown";
+import { EmptyState } from "../components/ui/EmptyState";
 import { Modal } from "../components/ui/Modal";
 import { Tabs, TextArea, TextInput, Badge } from "../components/ui/Form";
 import { Spinner } from "../components/ui/Form";
@@ -142,73 +140,6 @@ const ROW_ACTION_IDLE = "text-text-subtle hover:text-text";
  * written out here and the page keeps one spelling of it.
  */
 const CHIP = "inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-sm border";
-
-/**
- * The page's empty state, and it draws its own heading at `h2`.
- *
- * `EmptyState` renders its title as an `h3`, and under `RouteShell`'s
- * `h1` that is a skipped heading level — a real accessibility defect,
- * not a nit, because screen-reader users navigate by level rather than by
- * position. There are two ways to fix it: give the primitive a level, or
- * let the page supply its own heading. Neither is available here. A
- * `headingLevel` prop is a signature change, and `primitiveApi.test.ts`
- * pins all fourteen; and `src/components/ui/` is not this plan's to
- * edit. So the page draws its own, which is unglamorous and correct, and
- * the real fix belongs to whoever owns `EmptyState`.
- *
- * The geometry is `EmptyState`'s — an icon chip, a medium title, a muted
- * description, the action a step below — and both branches share this one
- * component, so the consolidation the primitive bought is not lost; only
- * the primitive is bypassed, and for a stated reason.
- */
-function MemoryEmpty({
-  query,
-  onAdd,
-}: {
-  query: string;
-  onAdd: (kind: "user_pref" | "project_fact" | "skill") => void;
-}) {
-  return (
-    <div className="flex flex-col items-center justify-center py-10 px-4 text-center">
-      <div className="inline-flex items-center justify-center rounded-lg bg-surface-2 p-2.5 text-text-muted mb-3">
-        <Brain size={28} />
-      </div>
-      <h2 className="text-sm font-medium text-text">
-        {query ? "No matches" : "No memories yet"}
-      </h2>
-      <p className="text-xs text-text-muted mt-1 max-w-xs">
-        {query
-          ? "Try a different query or filter."
-          : "Add user preferences, project facts, and skills. Convo picks the ones relevant to what you are asking. Pin a memory to always include it."}
-      </p>
-      {!query && (
-        <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-1.5">
-          <button
-            onClick={() => onAdd("user_pref")}
-            className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/30 rounded-lg p-2.5 text-left transition-colors"
-          >
-            <div className="text-xs font-medium text-text mb-0.5">Set a preference</div>
-            <div className="text-[10px] text-text-muted">"I prefer concise replies"</div>
-          </button>
-          <button
-            onClick={() => onAdd("project_fact")}
-            className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/30 rounded-lg p-2.5 text-left transition-colors"
-          >
-            <div className="text-xs font-medium text-text mb-0.5">Log a project fact</div>
-            <div className="text-[10px] text-text-muted">"This repo uses Tauri v2"</div>
-          </button>
-          <button
-            onClick={() => onAdd("skill")}
-            className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/30 rounded-lg p-2.5 text-left transition-colors"
-          >
-            <div className="text-xs font-medium text-text mb-0.5">Create a skill</div>
-            <div className="text-[10px] text-text-muted">"Run tests with `npm t` before push"</div>
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
 
 export function MemoryRoute() {
   const [items, setItems] = useState<MemoryItem[]>([]);
@@ -406,7 +337,6 @@ export function MemoryRoute() {
     <RouteShell
       title="Memory"
       description={`${items.length} item(s) · durable context used when relevant.`}
-      className="[&_[data-actions]]:shrink"
       actions={
         <>
           {/* The kind filter, in the cluster where spec §4.2 puts it. The
@@ -503,7 +433,42 @@ export function MemoryRoute() {
       )}
       <div className="p-2 sm:p-3 max-w-2xl mx-auto w-full">
         {visible.length === 0 ? (
-          <MemoryEmpty query={query} onAdd={add} />
+          <EmptyState
+            // `RouteShell` owns this page's h1, so the title underneath
+            // it is an h2 — an h3 here would be a skipped level, and a
+            // screen-reader user moves between headings by level.
+            headingLevel={2}
+            icon={<Brain size={28} />}
+            title={query ? "No matches" : "No memories yet"}
+            description={query
+              ? "Try a different query or filter."
+              : "Add user preferences, project facts, and skills. Convo picks the ones relevant to what you are asking. Pin a memory to always include it."}
+            action={query ? undefined : (
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-1.5">
+                <button
+                  onClick={() => add("user_pref")}
+                  className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/30 rounded-lg p-2.5 text-left transition-colors"
+                >
+                  <div className="text-xs font-medium text-text mb-0.5">Set a preference</div>
+                  <div className="text-[10px] text-text-muted">"I prefer concise replies"</div>
+                </button>
+                <button
+                  onClick={() => add("project_fact")}
+                  className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/30 rounded-lg p-2.5 text-left transition-colors"
+                >
+                  <div className="text-xs font-medium text-text mb-0.5">Log a project fact</div>
+                  <div className="text-[10px] text-text-muted">"This repo uses Tauri v2"</div>
+                </button>
+                <button
+                  onClick={() => add("skill")}
+                  className="bg-surface-1 hover:bg-surface-2 border border-border hover:border-accent/30 rounded-lg p-2.5 text-left transition-colors"
+                >
+                  <div className="text-xs font-medium text-text mb-0.5">Create a skill</div>
+                  <div className="text-[10px] text-text-muted">"Run tests with `npm t` before push"</div>
+                </button>
+              </div>
+            )}
+          />
         ) : (
           <ul className="space-y-1">
             {visible.map((entry) => {

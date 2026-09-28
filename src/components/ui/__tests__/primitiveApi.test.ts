@@ -174,7 +174,21 @@ const PRIMITIVES: Array<{
     // Declared as an inline type literal rather than an interface, so this
     // entry exercises the fallback parse path. The one primitive this
     // commit restyled had no guard at all until now.
-    props: ["title", "description?", "icon?", "action?", "className?"],
+    //
+    // **`headingLevel?` was added to this list deliberately**, by the
+    // Task 4 fix round, and the list is the record of that decision
+    // rather than a snapshot that happened. Every other prop here is
+    // unchanged; the addition exists because the primitive's title is a
+    // heading, a heading's level is semantic rather than visual, and
+    // `RouteShell` already owns each page's `h1` — so the `h3` this
+    // component always rendered was a skipped level on all five routes
+    // that use it. The alternative was four pages each hand-rolling a
+    // heading over the top of this one, and Task 5 and Task 6 would have
+    // repeated it. The guard exists to catch *unintentional* drift, and
+    // this was intentional, reviewed and ruled on. It is optional and
+    // defaults to the level that was already rendered, so no call site
+    // changes behaviour by not passing it.
+    props: ["title", "description?", "icon?", "action?", "headingLevel?", "className?"],
     sentinel: "title",
   },
   {

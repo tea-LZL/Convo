@@ -210,23 +210,6 @@ async function variantRule(cls: string) {
   throw new Error(`no rule anywhere in the stylesheet matches ${cls}`);
 }
 
-/**
- * The class-and-attribute component of a selector's specificity, counted
- * on the *raw* selector.
- *
- * The rules this compares differ only in that component: neither uses an
- * id and neither uses a type selector, both of which the callers assert,
- * so this number is what decides. Counted on the raw form because the
- * readable form cannot tell `[data-actions]` the attribute selector from
- * `[data-actions]` inside a class name.
- *
- * First thing to revisit: two adjacent attribute selectors would be
- * missed, since the match consumes the first one's closing bracket.
- */
-function classishCount(selector: string): number {
-  return (selector.match(/(^|[^\\])\./g) ?? []).length + (selector.match(/(^|[^\\])\[/g) ?? []).length;
-}
-
 /** The pixels the first class on `el` that declares `prop` resolves to. */
 async function pxDeclaring(el: Element, prop: string): Promise<number> {
   for (const c of Array.from(el.classList)) {
@@ -1061,7 +1044,7 @@ describe("MemoryRoute in the shared vocabulary", () => {
       .toMatch(/^bg-(accent|success|warn)\/\d+$/);
   });
 
-  it("puts the kind filter in the action cluster, and lets the cluster reflow rather than squeeze", async () => {
+  it("puts the kind filter in the action cluster, and the cluster can reflow rather than squeeze", async () => {
     const { container } = renderMemory();
     const cluster = container.querySelector("[data-actions]")!;
     const tablist = screen.getByRole("tablist");
@@ -1081,47 +1064,31 @@ describe("MemoryRoute in the shared vocabulary", () => {
       "the filter must precede the actions",
     ).toBeTruthy();
 
-    // The reflow half, and the reason the placement was hard. `RouteShell`
-    // puts `shrink-0` on the cluster, so a cluster this wide could not
-    // give, and a narrow window had to choose between the spec's
-    // placement and working at all. The header was the defect.
-    const frozen = await variantRule("shrink-0");
-    expect(frozen.decls.get("flex-shrink")).toBe("0");
-    const thawed = await variantRule("[&_[data-actions]]:shrink");
-    expect(thawed.decls.get("flex-shrink")).toBe("1");
-
-    // The override lives on the section and reaches the cluster by
-    // descendant, so its selector has to end on the marker it targets —
-    // otherwise it would thaw something else on the page entirely.
+    // The reflow half, and the reason the placement was hard. This cluster
+    // is the widest thing in the header — four tabs plus two buttons — so
+    // a cluster that could not shrink pushed the content pane instead of
+    // reflowing, and the filter had nowhere to go but the body.
     //
-    // The application is asserted before the declaration, and that order
-    // is the point: a rule that resolves to `flex-shrink: 1` proves
-    // Tailwind *can* be asked for it, which is a fact about the config
-    // and not about this page. Three of this round's guards started as
-    // the second kind and passed against a page that had stopped using
-    // them at all.
-    const section = container.querySelector("section")!;
-    // Containment rather than a regex: a regex literal here reads to
-    // Tailwind's content scanner as a class token, and `tailwind.config.ts`
-    // globs `src/**`, so the test tree is inside the production build. The
-    // escaped-bracket form emitted a dead rule with a literal `undefined`
-    // in its selector; the plain string does not.
-    expect(Array.from(section.classList), "the section must carry the shrink override")
-      .toContain("[&_[data-actions]]:shrink");
-    expect(thawed.selector).toMatch(/\[data-actions\]\s*$/);
-    // Specificity is the whole mechanism, because both rules declare the
-    // same property. Reduced to the component that differs — neither
-    // selector uses an id, which is asserted rather than assumed, and
-    // neither uses a type selector.
-    expect(thawed.selector).not.toContain("#");
-    expect(frozen.selector).not.toContain("#");
-    expect(thawed.selector).not.toMatch(/[> ]\w/);
-    expect(frozen.selector).not.toMatch(/[> ]\w/);
-    expect(classishCount(thawed.raw)).toBeGreaterThan(classishCount(frozen.raw));
-
-    // And the cluster already wraps, so a cluster that *can* shrink
-    // reflows its control set instead of overflowing. Without this the
-    // override would only trade one failure for another.
+    // Asserted here as well as in `RouteShell.test.tsx`, from the page
+    // that depends on it, so a re-added `shrink-0` is caught from both
+    // sides. And the application is asserted before the declaration,
+    // which is the ordering this round's V44 is about: reading a class
+    // out of the build says Tailwind could be asked for it, and says
+    // nothing about whether this cluster is the thing that asks.
+    const classes = Array.from(cluster.classList);
+    expect(classes, "the cluster must not refuse to shrink").not.toContain("shrink-0");
+    expect(classes, "a shrinkable cluster must wrap its control set").toContain("flex-wrap");
+    // The control on the negative: the shell's *header* carries a
+    // `shrink-0` of its own, which is a different thing and is why a
+    // whole-page "no shrink-0 anywhere" rule would be a rule the design
+    // does not follow.
+    const header = cluster.closest("header")!;
+    expect(Array.from(header.classList)).toContain("shrink-0");
+    // The rest of the cluster's geometry, so the test is not satisfied by
+    // a cluster that had everything stripped off it.
+    for (const kept of ["flex", "items-center", "gap-2", "justify-end"]) {
+      expect(classes, `the cluster must keep ${kept}`).toContain(kept);
+    }
     const wrap = classMatching(cluster, /\bflex-wrap\b/);
     expect(declValue((await emitted([wrap])).get(wrap)!, "flex-wrap", wrap)).toBe("wrap");
   });
@@ -1270,8 +1237,10 @@ describe("MemoryRoute in the shared vocabulary", () => {
  * so `h1` followed by `h3` is a defect rather than a nit: the heading is
  * not reachable by a level-keyed jump, and every level-keyed list built
  * from the page inherits the gap. The empty state was doing exactly that
- * — it used `EmptyState`, whose title is an `h3`, and `RouteShell` owns
- * the page's `h1` with no `h2` between them.
+ * — `EmptyState`'s title is an `h3` by default, and `RouteShell` owns the
+ * page's `h1` with no `h2` between them — so this page asks the
+ * primitive for level 2 and the five-state walk below is what holds it
+ * there.
  *
  * Every state the page can be in is checked, because the two empty states
  * and the five modals are separate subtrees and a fix applied to one of
@@ -1380,16 +1349,22 @@ describe("MemoryRoute heading outline", () => {
     expect(() => expectNoHeadingSkip(noTitle, "planted orphan")).toThrow(/must open with the page's own h1/);
   });
 
-  it("gives the empty store a heading that is a heading, not a styled paragraph", async () => {
+  it("gives the empty store a heading that is a heading, at the level it asked for", async () => {
     serveMemories([]);
     const { container } = renderMemory();
     // A `div` with a heading's typography is the failure mode this is
-    // guarding, and it passes every visual check on the page.
+    // guarding, and it passes every visual check on the page. Asserting
+    // the tag as well as the level is what distinguishes "a heading at
+    // the right level" from "a paragraph that looks like one".
     const heading = await screen.findByRole("heading", { name: "No memories yet" });
     expect(heading.tagName).toBe("H2");
     // The empty store is the only state with a heading besides the page's
-    // own, and it is the one the old primitive got wrong.
+    // own, and it is the one the primitive got wrong by default.
     expect(headingLevels(container).map((h) => h.level)).toEqual([1, 2]);
+    // …and it is the primitive's own heading, carrying the primitive's
+    // treatment, rather than a second implementation drawn over the top
+    // of it. The tag and its classes are `EmptyState`'s to this page.
+    expect(heading.className).toBe("text-sm font-medium text-text");
   });
 });
 

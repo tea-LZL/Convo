@@ -38,6 +38,10 @@
  * do not cite one as a palette-wide result. Measuring the other four is a
  * separate piece of work and deliberately not attempted here.
  */
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { fireEvent, render, screen } from "@testing-library/react";
 import { ListTodo, Pencil } from "lucide-react";
 import { describe, expect, it, vi } from "vitest";
@@ -48,6 +52,8 @@ import { IconButton } from "../IconButton";
 import { Badge, Select, Slider, Switch, Tabs, TextArea, TextInput, Tooltip } from "../Form";
 import { Modal } from "../Modal";
 import { Panel } from "../Panel";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 import { ChatSkeleton, Skeleton } from "../Skeleton";
 
 /* ── helpers ─────────────────────────────────────────────────────────── */
@@ -596,6 +602,97 @@ describe("EmptyState", () => {
     expect(icon).toHaveClass("text-text-muted");
     expect(icon).not.toHaveClass("text-text-subtle");
     expect(screen.getByRole("button", { name: "Add" })).toBeInTheDocument();
+  });
+
+  /**
+   * The title is a heading, and a heading's level is semantic rather than
+   * visual. `RouteShell` gives every page an `h1`, so the `h3` this
+   * component has always rendered is a skipped level underneath it, and
+   * a screen-reader user moving by heading level cannot reach the title.
+   *
+   * So the level is a prop — and the treatment must be *identical*
+   * whichever level is asked for, because that is the whole claim: the
+   * primitive's job is the semantics, not a second visual.
+   */
+  describe("headingLevel", () => {
+    it("renders an h3 by default, so no call site that ignores it changes", () => {
+      render(<EmptyState title="Nothing here" />);
+      expect(screen.getByRole("heading", { name: "Nothing here" }).tagName).toBe("H3");
+    });
+
+    it("renders an h2 when asked, and changes nothing else", () => {
+      const props = { title: "Nothing here", description: "Add one.", icon: <ListTodo />, action: <Button>Add</Button> };
+      const { container, rerender } = render(<EmptyState {...props} />);
+      const three = screen.getByRole("heading", { name: "Nothing here" });
+      const threeClasses = three.className;
+      const threeWrapper = (container.firstElementChild as HTMLElement).className;
+
+      rerender(<EmptyState {...props} headingLevel={2} />);
+      const two = screen.getByRole("heading", { name: "Nothing here" });
+      expect(two.tagName).toBe("H2");
+      // Not merely "an h2 appeared": the treatment is byte-identical, and
+      // the only difference between the two renders is the tag. A
+      // component that restyled on the way to being accessible would
+      // pass a tag-only assertion and change a page's appearance.
+      expect(two.className).toBe(threeClasses);
+      expect((container.firstElementChild as HTMLElement).className).toBe(threeWrapper);
+      // The control on the comparison: the default really is the other
+      // tag, so equality of the class lists is not trivially true.
+      expect(three.tagName).toBe("H3");
+    });
+
+  });
+});
+
+/**
+ * Every route that draws its own `h1` through `RouteShell` and an
+ * `EmptyState` underneath it has to ask for level 2, or the skip comes
+ * back. Tasks 5 and 6 restyle three of these five, and the failure mode
+ * is silent: an `h3` where an `h2` was looks identical.
+ *
+ * **A limit, stated.** This is a source scan and its parse is
+ * best-effort: it reads a `<EmptyState …>` element as the text up to the
+ * closing `>`, so a call site with a `>` inside an attribute value would
+ * be read short. That is a false *negative* — a missed call site, not a
+ * false finding — and the failure mode of a guard that cries wolf is a
+ * guard that gets deleted, so the bias is the right way round. First
+ * thing to revisit if a call site ever grows a `>` in an attribute.
+ */
+describe("EmptyState callers ask for the level their page chrome implies", () => {
+  const ROUTES = [
+    "src/routes/CompareRoute.tsx",
+    "src/routes/DocumentsRoute.tsx",
+    "src/routes/MemoryRoute.tsx",
+    "src/routes/NotesRoute.tsx",
+    "src/routes/TasksRoute.tsx",
+  ];
+
+  it("gives every call site headingLevel={2}, and every one is under an h1", () => {
+    let callSites = 0;
+    for (const rel of ROUTES) {
+      const src = readFileSync(resolve(ROOT, rel), "utf8");
+      // Only a route that wraps in `RouteShell` owns an `h1`, and only
+      // then does the level matter. Asserted rather than assumed, so a
+      // route that swaps shells stops being counted as a caller.
+      expect(src, `${rel} must draw its heading through RouteShell`).toMatch(/<RouteShell/);
+      for (const m of src.matchAll(/<EmptyState\b([^>]*)>/g)) {
+        callSites++;
+        expect(
+          m[1],
+          `${rel}: an EmptyState under RouteShell's h1 must ask for headingLevel={2}`,
+        ).toMatch(/headingLevel=\{2\}/);
+      }
+    }
+    // The control on the scan itself. Five files and no call site between
+    // them is a regex that has stopped matching, not a clean tree.
+    expect(callSites, "every route's EmptyState must be found by the scan").toBeGreaterThanOrEqual(5);
+  });
+
+  it("finds a call site that forgot, so the scan is not vacuous", () => {
+    const src = '<EmptyState icon={<X />} title="No tasks" description="Add one." />';
+    expect(src.match(/<EmptyState\b([^>]*)>/)![1]).not.toMatch(/headingLevel=\{2\}/);
+    expect('<EmptyState headingLevel={2} title="No tasks" />'.match(/<EmptyState\b([^>]*)>/)![1])
+      .toMatch(/headingLevel=\{2\}/);
   });
 });
 

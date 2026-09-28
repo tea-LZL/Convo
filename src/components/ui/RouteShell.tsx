@@ -20,6 +20,17 @@ interface RouteShellProps {
  * switches nothing is worse than none: it advertises a capability the app
  * does not have. So the shell ships the frame and the pages supply the
  * controls.
+ *
+ * The cluster is allowed to shrink, and it wraps. This is load-bearing
+ * rather than incidental: a page's action cluster is the widest thing it
+ * puts in its header — Memory's kind filter is four tabs — so a cluster
+ * that cannot give is a header that pushes the content pane instead of
+ * reflowing. `MemoryRoute` was the case that proved it, and
+ * `RouteShell.test.tsx` pins the property from the shell's side.
+ *
+ * The `shrink-0` on the `<header>` below is a *different* thing and is
+ * not in tension with this: that one stops the header collapsing as the
+ * content region scrolls, so the title stays put.
  */
 export function RouteShell({
   title,
@@ -43,7 +54,7 @@ export function RouteShell({
         {actions && (
           <div
             data-actions=""
-            className="flex items-center gap-2 shrink-0 flex-wrap justify-end"
+            className="flex items-center gap-2 flex-wrap justify-end"
           >
             {actions}
           </div>

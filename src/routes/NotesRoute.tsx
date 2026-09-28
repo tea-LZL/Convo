@@ -338,6 +338,9 @@ export function NotesRoute() {
           </>
         ) : (
           <EmptyState
+            // `RouteShell` owns this page's h1, so the title underneath
+            // it is an h2 — an h3 here would be a skipped level.
+            headingLevel={2}
             icon={<StickyNote size={32} />}
             title="No note open"
             description="Create a new note to capture ideas. Use ⌘K → 'Search sessions' or 'Extract facts' to bring in content from your chats."

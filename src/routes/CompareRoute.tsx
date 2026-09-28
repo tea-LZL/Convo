@@ -375,6 +375,9 @@ export function CompareRoute() {
       <div className="p-4">
         {columns.length === 0 ? (
           <EmptyState
+            // `RouteShell` owns this page's h1, so the title underneath
+            // it is an h2 — an h3 here would be a skipped level.
+            headingLevel={2}
             icon={<GitCompareArrows size={32} />}
             title="No comparison yet"
             description="Add 2–4 models, write a prompt, and run a comparison. Blind mode hides labels until you reveal."
