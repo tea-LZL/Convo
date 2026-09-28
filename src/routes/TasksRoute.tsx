@@ -1,3 +1,44 @@
+/**
+ * Tasks — the second of the two compact-rhythm pages, with Documents.
+ *
+ * ── Why this page is dense ─────────────────────────────────────────────
+ * A task list is the one place in the app where the number of rows is the
+ * whole point: what is due today, what is late, what is left. Same tokens,
+ * same 1px border, same theme radius, same colours as every other page —
+ * 4px between rows and 8px inside one, where the standard rhythm gives 8
+ * and 12. The split is deliberate, it is not a toggle, and it is
+ * *measured* rather than declared: `TasksRoute.test.tsx` compiles this
+ * file's classes through the project Tailwind and reads the resolved gap
+ * and padding, and resolves the standard rhythm the same way so it can
+ * show the measurement tells the two apart. A test that read `space-y-1`
+ * off the DOM would break on a retune and pass on any page that merely
+ * said it.
+ *
+ * Two lists take the compact rhythm, and the test measures both: the task
+ * rows themselves, and the three field groups inside the composer. The
+ * 16px `mb-3` between the composer and the list does *not* — a boundary
+ * between two sections is not a row, and a section break that reads as a
+ * row gap is how a dense page becomes an unreadable one.
+ *
+ * ── What is deliberately not here ───────────────────────────────────────
+ * No shadow, and no transition inside the list. A task list is the subtree
+ * that scales to hundreds of rows, which is the same reason the streaming
+ * subtree is fenced and the same reason `MemoryRoute` drops its row
+ * transitions. The only `box-shadow` in the app belongs to things that
+ * genuinely float — the delete confirmation — and focus rings are the
+ * exception to flatness, each behind a state, because Tailwind builds
+ * `ring-*` out of `box-shadow` and an unscoped ring would paint a shadow on
+ * every row at rest while the flatness check called the page clean.
+ *
+ * ── The two row controls are hand-composed, and the reason is the
+ * transition rule ──────────────────────────────────────────────────────
+ * `IconButton` would have been the obvious choice and it is not used: it
+ * carries an unconditional `transition-colors`, and putting one on every
+ * row of a list that scales to hundreds is the thing this page is deciding
+ * not to do. `ROW_ACTION` below is the same definition the Memory and
+ * Compare pages use — 24px, `focus-visible:`, no transition — so three
+ * pages of row controls cannot drift apart.
+ */
 import { useEffect, useState } from "react";
 import { Calendar, Check, Edit3, ListTodo, Plus, Save, Trash2, X } from "lucide-react";
 import { api, Task } from "../lib/api";
@@ -14,6 +55,19 @@ interface TaskDraft {
   dueAt: string;
   priority: string;
 }
+
+/**
+ * The two row controls, as one definition.
+ *
+ * 24px rather than the 18px a `Button size="xs"` icon button gives, for
+ * WCAG 2.2's target size — the same ruling the Memory page took when it
+ * grew its four row controls from 20px. A task row is a list row, so
+ * `focus-visible:` rather than `focus:`: clicking one acts immediately and
+ * there is nothing left to disambiguate.
+ */
+const ROW_ACTION =
+  "h-6 w-6 shrink-0 inline-flex items-center justify-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40";
+const ROW_ACTION_IDLE = "text-text-subtle hover:text-text";
 
 const EMPTY_DRAFT: TaskDraft = { title: "", body: "", dueAt: "", priority: "0" };
 const PRIORITIES = [
@@ -159,30 +213,60 @@ export function TasksRoute() {
       description={`${open.length} open · ${done.length} done`}
       actions={
         <>
+        {/* Three sizes so this filter reads as the same control as the two
+            `Button`s in the cluster's own header rather than as a second
+            design system: 10px/2px of padding against the buttons' 12px and
+            10px, and no focus ring at all. The test compares the two sets
+            of *resolved* values rather than the two sets of class names, so
+            a retune of the scale keeps the comparison honest. */}
         {(["all", "open", "done"] as const).map((value) => (
           <button
             key={value}
             type="button"
             aria-pressed={filter === value}
             onClick={() => setFilter(value)}
-            className={`px-2 py-1 rounded text-xs ${filter === value ? "bg-accent/15 text-accent" : "text-text-muted hover:bg-surface-2"}`}
+            className={`px-2.5 py-1 text-xs rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
+              filter === value ? "bg-accent/15 text-accent" : "text-text-muted hover:bg-surface-2 hover:text-text"
+            }`}
           >
             {value === "all" ? "All" : value === "open" ? "Open" : "Completed"}
           </button>
         ))}
+        {/* `accent-[var(--color-accent)]` is how a native checkbox takes the
+            theme's accent — a var, not a literal, and the same expression
+            the Memory page's checkboxes use. */}
         <label className="text-xs text-text-muted flex items-center gap-1.5">
-          <input type="checkbox" checked={overdueOnly} onChange={(e) => setOverdueOnly(e.target.checked)} />
+          <input
+            type="checkbox"
+            checked={overdueOnly}
+            onChange={(e) => setOverdueOnly(e.target.checked)}
+            className="accent-[var(--color-accent)] rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          />
           Overdue
         </label>
         <label className="text-xs text-text-muted flex items-center gap-1.5">
-          <input type="checkbox" checked={showCompleted} onChange={(e) => setShowCompleted(e.target.checked)} />
+          <input
+            type="checkbox"
+            checked={showCompleted}
+            onChange={(e) => setShowCompleted(e.target.checked)}
+            className="accent-[var(--color-accent)] rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          />
           Show completed
         </label>
         </>
       }
     >
-      <div className="p-3 sm:p-4 max-w-3xl mx-auto w-full">
-        <div className="mb-4 rounded-lg border border-border bg-surface-1 p-3 space-y-2">
+      {/* 48rem, the measure the Memory page's column uses and the reason it
+          uses it: roughly 75 characters of the title and body a task row
+          carries, and the only thing standing between a row and a 2000px
+          line on a wide monitor. */}
+      <div className="p-2 sm:p-3 max-w-2xl mx-auto w-full">
+        {/* The page's other compact list: three field groups, 4px between
+            them and 8px inside the card. The `mb-3` to the task list below
+            is a section boundary rather than a row gap, so it stays at 12px
+            — a boundary that reads as a row is how a dense page becomes an
+            unreadable one. */}
+        <div className="mb-3 rounded-lg border border-border bg-surface-1 p-2 space-y-1">
           <div className="flex gap-2">
             <TextInput
               aria-label="New task title"
@@ -196,14 +280,14 @@ export function TasksRoute() {
           </div>
           <TextArea aria-label="New task details" value={draft.body} onChange={(body) => setDraft((current) => ({ ...current, body }))} placeholder="Details (optional)" rows={2} />
           <div className="flex gap-2 flex-wrap">
-            <input aria-label="New task due date" type="date" value={draft.dueAt} onChange={(e) => setDraft((current) => ({ ...current, dueAt: e.target.value }))} className="bg-surface-2 border border-border rounded-md px-2.5 py-1.5 text-sm text-text" />
+            <input aria-label="New task due date" type="date" value={draft.dueAt} onChange={(e) => setDraft((current) => ({ ...current, dueAt: e.target.value }))} className="bg-surface-2 border border-border rounded-md px-2.5 py-1.5 text-sm text-text focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/30" />
             <Select aria-label="New task priority" value={draft.priority} onChange={(priority) => setDraft((current) => ({ ...current, priority }))} options={PRIORITIES} />
           </div>
         </div>
         {error && (
           <div role="alert" className="mb-3 rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
             <span>{error}</span>
-            <button type="button" className="ml-2 underline" onClick={() => void refresh()}>Retry</button>
+            <button type="button" className="ml-2 underline rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40" onClick={() => void refresh()}>Retry</button>
           </div>
         )}
         {loading ? (
@@ -213,15 +297,15 @@ export function TasksRoute() {
           // is an h2 — an h3 here would be a skipped level.
           <EmptyState headingLevel={2} icon={<ListTodo size={32} />} title="No tasks" description="Add a task to keep yourself on track. Tasks can be created from chat with /task." />
         ) : (
-          <ul className="space-y-2">
+          <ul className="space-y-1">
             {visible.map((task) => (
-              <li key={task.id} className={`px-3 py-2 bg-surface-1 border border-border rounded-md ${task.completed_at ? "opacity-60" : ""}`}>
+              <li key={task.id} className={`p-2 bg-surface-1 border border-border rounded-md ${task.completed_at ? "opacity-60" : ""}`}>
                 {editingId === task.id ? (
                   <div className="space-y-2">
                     <TextInput aria-label={`Title for ${task.title}`} value={editDraft.title} onChange={(title) => setEditDraft((current) => ({ ...current, title }))} autoFocus />
                     <TextArea aria-label={`Details for ${task.title}`} value={editDraft.body} onChange={(body) => setEditDraft((current) => ({ ...current, body }))} rows={2} />
                     <div className="flex gap-2 flex-wrap">
-                      <input aria-label={`Due date for ${task.title}`} type="date" value={editDraft.dueAt} onChange={(e) => setEditDraft((current) => ({ ...current, dueAt: e.target.value }))} className="bg-surface-2 border border-border rounded-md px-2.5 py-1.5 text-sm text-text" />
+                      <input aria-label={`Due date for ${task.title}`} type="date" value={editDraft.dueAt} onChange={(e) => setEditDraft((current) => ({ ...current, dueAt: e.target.value }))} className="bg-surface-2 border border-border rounded-md px-2.5 py-1.5 text-sm text-text focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/30" />
                       <Select aria-label={`Priority for ${task.title}`} value={editDraft.priority} onChange={(priority) => setEditDraft((current) => ({ ...current, priority }))} options={PRIORITIES} />
                       <div className="flex-1" />
                       <Button size="xs" variant="ghost" onClick={() => setEditingId(null)} icon={<X size={12} />}>Cancel</Button>
@@ -235,9 +319,14 @@ export function TasksRoute() {
                       aria-label={task.completed_at ? `Reopen ${task.title}` : `Complete ${task.title}`}
                       disabled={savingId === task.id}
                       onClick={() => void toggle(task)}
-                      className={`mt-0.5 w-4 h-4 rounded border flex items-center justify-center transition-colors ${task.completed_at ? "bg-accent border-accent" : "border-border-strong hover:border-accent"}`}
+                      // 24px rather than 16px, for the target size — and
+                      // `rounded-sm` rather than a bare `rounded`, so the box
+                      // follows the theme's corner the way every other box
+                      // on this page does. No `transition-colors`: this is a
+                      // list row, and the list is the subtree that scales.
+                      className={`mt-0.5 h-6 w-6 shrink-0 rounded-sm border flex items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${task.completed_at ? "bg-accent border-accent" : "border-border-strong hover:border-accent"}`}
                     >
-                      {task.completed_at && <Check size={10} className="text-white" />}
+                      {task.completed_at && <Check size={12} className="text-white" aria-hidden="true" />}
                     </button>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
@@ -248,8 +337,24 @@ export function TasksRoute() {
                       {task.body && <p className="mt-1 text-xs text-text-muted whitespace-pre-wrap">{task.body}</p>}
                       {task.due_at && <span className="mt-1 text-[10px] text-text-subtle flex items-center gap-1"><Calendar size={9} />{new Date(task.due_at).toLocaleDateString()}</span>}
                     </div>
-                    <Button size="xs" variant="ghost" aria-label={`Edit ${task.title}`} onClick={() => { setEditingId(task.id); setEditDraft(taskDraft(task)); }} icon={<Edit3 size={12} />} />
-                    <Button size="xs" variant="ghost" aria-label={`Delete ${task.title}`} onClick={() => setDeleteTarget(task)} icon={<Trash2 size={12} />} />
+                    <button
+                      type="button"
+                      aria-label={`Edit ${task.title}`}
+                      title="Edit"
+                      onClick={() => { setEditingId(task.id); setEditDraft(taskDraft(task)); }}
+                      className={`${ROW_ACTION} ${ROW_ACTION_IDLE}`}
+                    >
+                      <Edit3 size={13} aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Delete ${task.title}`}
+                      title="Delete"
+                      onClick={() => setDeleteTarget(task)}
+                      className={`${ROW_ACTION} text-text-subtle hover:text-error`}
+                    >
+                      <Trash2 size={13} aria-hidden="true" />
+                    </button>
                   </div>
                 )}
               </li>
