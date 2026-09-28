@@ -1,10 +1,47 @@
 /**
  * Diagnostics page — health, DB stats, provider status, recent log lines.
+ *
+ * ── Why this page is in the final fix wave ───────────────────────────
+ * One of three the restyle never reached. The plan's criterion 1 says
+ * "every route" and its checklist counted ten; seven shipped. This one
+ * kept `rounded-xl` cards, a hand-written `bg-accent/15 text-accent
+ * border-accent/30` chip where the `Badge` primitive already spells that
+ * geometry, and `text-accent` on four decorative section icons — all of
+ * it under a new 28px `RouteShell` title, which is what made it the
+ * most visible hybrid in the app.
+ *
+ * Nothing noticed, for the same reason About and Hardware went
+ * unnoticed: this page had no rhythm guard, so a page with no rhythm
+ * could not fail one. `DiagnosticsRoute.test.tsx` is that guard.
+ *
+ * ── The rhythm ───────────────────────────────────────────────────────
+ * The *standard* one — 8px between cards, 12px inside one — and this
+ * page is not a data page, so it is not one of the two that earn the
+ * compact rhythm (decision D3: Memory, Documents and Tasks, where row
+ * count is the point). Nothing here is a pile to scan; the numbers are
+ * read one at a time. So the air is not competing with anything.
+ *
+ * ── Icons ────────────────────────────────────────────────────────────
+ * Two channels, and they do not cross. `Status` carries `success`/`warn`
+ * because its icon *is* the state, and those are the semantic tones
+ * already in the palette. `Database`, `Wifi`, `Folder` and `Clock` are
+ * decoration on a section title, and decoration in the accent colour
+ * reads as a link or a selection - so they take `text-text-subtle`,
+ * the same quiet channel the restyled pages give a label. The section
+ * title beside them is `text-text`, so the heading is still the loudest
+ * thing in the card.
+ *
+ * ── The chip ─────────────────────────────────────────────────────────
+ * `Badge`, not a hand-written span. The span was spelling out the
+ * primitive's accent variant by hand, which is how the two drift: a
+ * `Badge` whose geometry is retuned moves here too, and a `Badge` that
+ * grows a fifth tone is one edit rather than five.
  */
 import { useEffect, useState } from "react";
 import { Database, Folder, RefreshCw, CheckCircle2, AlertCircle, Wifi, WifiOff, Clock, Download, Upload } from "lucide-react";
 import { api, DiagnosticsReport } from "../lib/api";
 import { Button } from "../components/ui/Button";
+import { Badge } from "../components/ui/Form";
 import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { RouteShell } from "../components/ui/RouteShell";
 import { toast } from "../stores/toasts";
@@ -127,8 +164,8 @@ export function DiagnosticsRoute() {
         </>
       }
     >
-      <div className="max-w-4xl mx-auto p-4 sm:p-8">
-        <div className="space-y-4">
+      <div className="max-w-4xl mx-auto p-4">
+        <div className="space-y-2">
           <Section title="Status" icon={allOk ? <CheckCircle2 size={14} className="text-success" /> : <AlertCircle size={14} className="text-warn" />}>
             <div className="grid grid-cols-2 gap-3">
               <Stat label="App version" value={report.app.version} />
@@ -138,7 +175,7 @@ export function DiagnosticsRoute() {
             </div>
           </Section>
 
-          <Section title="Database" icon={<Database size={14} className="text-accent" />}>
+          <Section title="Database" icon={<Database size={14} className="text-text-subtle" />}>
             <div className="grid grid-cols-2 gap-3 mb-3">
               <Stat label="DB size" value={formatBytes(report.db.size_bytes + report.db.wal_size_bytes)} />
               <Stat label="Schema version" value={`v${report.db.schema_version}`} />
@@ -160,7 +197,7 @@ export function DiagnosticsRoute() {
             </div>
           </Section>
 
-          <Section title="Providers" icon={<Wifi size={14} className="text-accent" />}>
+          <Section title="Providers" icon={<Wifi size={14} className="text-text-subtle" />}>
             {report.providers.length === 0 ? (
               <div className="text-sm text-text-muted">No providers configured. Add one in Settings → Providers.</div>
             ) : (
@@ -170,7 +207,11 @@ export function DiagnosticsRoute() {
                     <div>
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-medium text-text">{p.name}</span>
-                        {p.is_default && <span className="text-[10px] uppercase tracking-wider font-medium px-1.5 py-0.5 rounded border bg-accent/15 text-accent border-accent/30">default</span>}
+                        {/* The primitive, for the reason in the file header:
+                            the span this replaces was spelling out
+                            `Badge`'s accent variant by hand, one class at a
+                            time, in a place a retune would not reach. */}
+                        {p.is_default && <Badge variant="accent">default</Badge>}
                         <span className="text-[10px] uppercase tracking-wider text-text-subtle">{p.kind}</span>
                       </div>
                       <div className="text-xs text-text-muted mt-0.5">
@@ -192,7 +233,7 @@ export function DiagnosticsRoute() {
             )}
           </Section>
 
-          <Section title="Storage" icon={<Folder size={14} className="text-accent" />}>
+          <Section title="Storage" icon={<Folder size={14} className="text-text-subtle" />}>
             <div className="grid grid-cols-3 gap-3">
               <Stat label="Attachments (blobs/)" value={formatBytes(report.storage.blobs_bytes)} />
               <Stat label="Logs (logs/)" value={formatBytes(report.storage.logs_bytes)} />
@@ -200,11 +241,11 @@ export function DiagnosticsRoute() {
             </div>
           </Section>
 
-          <Section title="Recent log" icon={<Clock size={14} className="text-accent" />}>
+          <Section title="Recent log" icon={<Clock size={14} className="text-text-subtle" />}>
             {report.recent_logs.length === 0 ? (
               <div className="text-xs text-text-subtle">No log lines yet.</div>
             ) : (
-              <pre className="bg-surface-2 border border-border rounded-md p-2 text-[10px] font-mono text-text-muted max-h-72 overflow-y-auto leading-relaxed">
+              <pre className="bg-surface-2 border border-border rounded-md p-3 text-[10px] font-mono text-text-muted max-h-72 overflow-y-auto leading-relaxed">
                 {report.recent_logs.join("\n")}
               </pre>
             )}
@@ -227,9 +268,24 @@ export function DiagnosticsRoute() {
   );
 }
 
+/**
+ * One section card, and the shape every section on this page is.
+ *
+ * `rounded-lg` is the spec's card radius, and 12px inside is the
+ * standard rhythm's card padding - both measured in
+ * `DiagnosticsRoute.test.tsx` rather than asserted here. It was
+ * `rounded-xl` in 16px, which is also a theme radius and so was not
+ * *wrong*; it was a second, larger shape for the same object, sitting
+ * under a title that had already been restyled.
+ *
+ * The heading is an `h2` under `RouteShell`'s `h1`, which is where the
+ * outline wants it: a screen-reader user moving by level gets a flat
+ * list of sections rather than a tree, and this page has five siblings
+ * that are genuinely peers.
+ */
 function Section({ title, icon, children }: { title: string; icon: React.ReactNode; children: React.ReactNode }) {
   return (
-    <div className="bg-surface-1 border border-border rounded-xl p-4">
+    <div className="bg-surface-1 border border-border rounded-lg p-3">
       <div className="flex items-center gap-2 mb-3">
         {icon}
         <h2 className="text-sm font-semibold text-text">{title}</h2>
