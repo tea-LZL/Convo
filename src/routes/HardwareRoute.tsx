@@ -4,10 +4,10 @@
  * ── Why this page is in the final fix wave ───────────────────────────
  * The third of three the restyle never reached. The plan's criterion 1
  * says "every route" and its checklist counted ten; seven shipped. This
- * one kept `rounded-xl` cards in two separate components, a 20px stack
- * gap, `text-accent` on two decorative section icons, a `w-8` radius on
- * its status chips and a `sm:p-8` content inset — all under a new 28px
- * `RouteShell` title.
+ * one kept `rounded-xl` cards in two separate components, a `space-y-4`
+ * (16px) stack gap, `text-accent` on two decorative section icons, a
+ * bare `rounded` radius on its status chips and a `sm:p-8` content
+ * inset — all under a new 28px `RouteShell` title.
  *
  * Nothing noticed, because nothing asked: this page had no rhythm
  * guard, so a page with no rhythm could not fail one.
@@ -173,7 +173,7 @@ const FIT_CARD = "bg-surface-1 border border-border rounded-lg p-3";
 
 /**
  * The 10px verdict chip. A theme radius (`rounded-sm`) rather than the
- * hardcoded `w-8` this carried, so a retune of the theme's corner
+ * bare `rounded` this carried, so a retune of the theme's corner
  * scale moves the chip with the cards around it.
  */
 const VERDICT = "text-[10px] px-1.5 py-0.5 rounded-sm border";

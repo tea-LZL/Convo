@@ -267,6 +267,12 @@ export function ChatViewNew({ sessionId, providers, session }: { sessionId: stri
 
   return (
     <div className="flex-1 flex flex-col min-w-0 h-full relative">
+      {/* The outline's h1, visually hidden. This page is not a
+          `RouteShell` page and owns no title bar, but its empty state
+          renders an h2 — a skipped level without one. `sr-only` is the
+          stock Tailwind utility, so this adds no layout, no paint and no
+          local rule the surface sweeps could trip over. */}
+      <h1 className="sr-only">Chat</h1>
       <ChatHeader
         providers={providers}
         models={models}
@@ -293,19 +299,12 @@ export function ChatViewNew({ sessionId, providers, session }: { sessionId: stri
           // empty state is the same component as every other route's and
           // cannot drift from it.
           //
-          // `headingLevel={2}` because this page owns no `h1` — it is not
-          // a `RouteShell` page, for the reason in the header. An `h3`
-          // here would be a heading whose whole outline starts three
-          // levels down, which is worse than an `h2` that starts at two.
-          //
-          // The page's missing `h1` is not fixed by this. It used to say
-          // it was "Task 7's to settle"; Task 7 did not settle it, and
-          // nothing in the spec's follow-ups carried it, so a comment
-          // deferring a decision to a task that has already shipped is a
-          // way of losing it. It is spec §10.4 now, where it is a
-          // recorded gap rather than a promise nobody made. The level
-          // chosen here is the one that does not make it worse; it is not
-          // the fix, and this comment no longer implies it is.
+          // `headingLevel={2}` because the page's `h1` is the visually
+          // hidden one at the top of this view — this surface is not a
+          // `RouteShell` page, for the reason in the header, so the only
+          // `h1` here is the one that keeps the outline at 1 → 2 without
+          // taking any layout. An `h3` here would be a heading whose whole
+          // outline starts three levels down.
           <EmptyState
             className="h-full"
             headingLevel={2}

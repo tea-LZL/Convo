@@ -1,15 +1,15 @@
 /**
  * The row control, and the reason a guard rather than a convention.
  *
- * Four pages put a small icon button at the end of a line: Memory,
- * Notes, Compare and Tasks. For most of this plan each spelled the box
+ * Five pages put a small icon button at the end of a line: Memory,
+ * Notes, Compare, Tasks and Documents. For most of this plan each spelled the box
  * out by hand, and each carried a docblock claiming it was "one
- * definition" — while the definitions were four, and one of them was
+ * definition" — while the definitions were five, and one of them was
  * missing `shrink-0`.
  *
  * The failure mode here is a *copy*, not a typo, and a docblock is not
- * what stops a copy: the four docblocks are what made it look safe. So
- * the rule is checked mechanically. A fifth page that hand-writes a row
+ * what stops a copy: the five docblocks are what made it look safe. So
+ * the rule is checked mechanically. A sixth page that hand-writes a row
  * control fails this file rather than inheriting a plausible one.
  *
  * The resolver is the same shape as the route suites' — a real Tailwind
@@ -29,12 +29,13 @@ import { ROW_ACTION, ROW_ACTION_IDLE } from "../rowAction";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 
-/** The four pages that draw a row control, and why each one has one. */
+/** The five pages that draw a row control, and why each one has one. */
 const PAGES: Record<string, string> = {
   "src/routes/MemoryRoute.tsx": "four controls in a fixed 102px column, three rows deep",
   "src/routes/NotesRoute.tsx": "the editor's pin, and the unlink in the produced-memories list",
   "src/routes/CompareRoute.tsx": "remove a model, stop a column, pick a winner",
   "src/routes/TasksRoute.tsx": "edit and delete, in a list that scales to hundreds",
+  "src/routes/DocumentsRoute.tsx": "the tab-close control in the document tab strip",
 };
 
 const read = (rel: string) => readFileSync(resolve(ROOT, rel), "utf8");
@@ -85,11 +86,11 @@ function toPx(decls: Map<string, Map<string, string>>, cls: string, prop: string
 }
 
 describe("the row control is one definition, and a copy fails", () => {
-  it("is imported by all four pages and declared by none of them", () => {
-    // The claim the four docblocks were making. A page that hand-writes
+  it("is imported by all five pages and declared by none of them", () => {
+    // The claim the five docblocks were making. A page that hand-writes
     // its own is the failure mode, so this is asserted in both
     // directions: importing it is required, declaring it is forbidden.
-    expect(Object.keys(PAGES), "all four pages are covered by this guard").toHaveLength(4);
+    expect(Object.keys(PAGES), "all five pages are covered by this guard").toHaveLength(5);
     for (const [rel, why] of Object.entries(PAGES)) {
       expect(code(rel), `${rel} (${why}) must import ROW_ACTION`).toMatch(
         /import\s*\{\s*ROW_ACTION[^}]*\}\s*from\s*"\.\.\/components\/ui\/rowAction"/,

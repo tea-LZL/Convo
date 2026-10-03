@@ -59,6 +59,7 @@ import { Modal } from "../components/ui/Modal";
 import { TextArea, TextInput } from "../components/ui/Form";
 import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { RouteShell } from "../components/ui/RouteShell";
+import { ROW_ACTION } from "../components/ui/rowAction";
 import { diffLines, diffStats } from "../lib/diff";
 import { escapeThinkTags } from "../components/chat/MessageRow";
 import { toast } from "../stores/toasts";
@@ -490,7 +491,7 @@ export function DocumentsRoute() {
             <button
               type="button"
               onClick={() => void remove(t.id)}
-              className="h-6 w-6 inline-flex items-center justify-center text-text-subtle hover:text-error rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg shrink-0"
+              className={`${ROW_ACTION} text-text-subtle hover:text-error`}
               aria-label={`Close ${t.title || "Untitled"}`}
               title={`Close ${t.title || "Untitled"}`}
             >

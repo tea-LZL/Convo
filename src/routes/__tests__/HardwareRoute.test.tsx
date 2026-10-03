@@ -565,7 +565,7 @@ describe("HardwareRoute in the shared vocabulary", () => {
     }
   });
 
-  it("gives the verdict chips a theme radius, because a theme cannot move `w-8`", async () => {
+  it("gives the verdict chips a theme radius, because a theme cannot move bare `rounded`", async () => {
     const { container } = renderHardware();
     await sectionCards(container);
     // One per model, and the fixture is built so all three verdicts
@@ -583,10 +583,21 @@ describe("HardwareRoute in the shared vocabulary", () => {
         expect(value, `${radius} on a verdict chip`).toMatch(/^var\(--radius-(sm|md|lg|xl)\)$/);
       }
       // The claim is the *absence* of a hardcoded radius, not the
-      // presence of one: `w-8` is 2rem written into a class, which no
-      // theme can move, and it is what this chip used to carry.
-      expect(chip.className, "a chip must not hardcode a radius").not.toMatch(/\bw-8\b/);
+      // presence of one: bare `rounded` is 0.25rem written into the
+      // utility, which no theme can move, and it is what this chip used
+      // to carry. (`w-8` is a width and never appeared here, so asserting
+      // its absence proved nothing.)
+      // `classList` rather than a word regex: `\brounded\b` also matches
+      // inside `rounded-sm`, so a regex would flag the theme radius this
+      // test just approved.
+      expect(Array.from(chip.classList), "a chip must not hardcode a radius").not.toContain("rounded");
     }
+    // The control on the absence check: bare `rounded` really is a
+    // hardcoded radius, so the check above is load-bearing rather than a
+    // second spelling of the theme-radius approval.
+    const control = await emitted(["rounded"]);
+    expect(control.get("rounded")!.get("border-radius"), "bare `rounded` must stay hardcoded for the absence check to mean anything")
+      .not.toMatch(/^var\(--radius-(sm|md|lg|xl)\)$/);
   });
 
   it("puts no shadow and no filter on any resting surface", async () => {

@@ -1,13 +1,14 @@
 /**
  * The row control, as one definition.
  *
- * Four pages — Memory, Notes, Compare and Tasks — put a small icon
- * button at the end of a line of content, and for most of this plan
- * each of them spelled the box out by hand. Three of the four strings
+ * Five pages put a small row control at the end of a line of content —
+ * Memory, Notes, Compare and Tasks — and Documents puts one at the end
+ * of each document tab. For most of this plan each of them spelled the
+ * box out by hand. Three of the original four strings
  * came out byte-identical and Memory's did not: it left off `shrink-0`,
  * because its cluster wrapper is already `shrink-0` and supplies it. So
- * the four docblocks each claimed "one definition" while the
- * definitions were four, and a reviewer reading any one of them had no
+ * the five docblocks each claimed "one definition" while the
+ * definitions were five, and a reviewer reading any one of them had no
  * way to know that.
  *
  * They are one definition now, and this is it. The differences were
@@ -41,8 +42,8 @@
  * also why this is a hand-written class list rather than `IconButton`,
  * which carries an unconditional transition.
  *
- * A guard, not a convention, keeps the four on it:
- * `rowAction.test.ts` asserts that all four pages import this module and
+ * A guard, not a convention, keeps the five on it:
+ * `rowAction.test.ts` asserts that all five pages import this module and
  * that none of them declares a `ROW_ACTION` of its own — a copy is the
  * failure mode, and a docblock is not what stops one.
  */

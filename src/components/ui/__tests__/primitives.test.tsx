@@ -769,21 +769,27 @@ describe("EmptyState callers ask for the level their page chrome implies", () =>
       // primitive and would drift exactly as silently.
       "src/components/chat/ChatViewNew.tsx": "ChatViewNew",
     };
-    const sizes = new Map<string, number>();
+    // One entry per call site, not per file: a Map keyed by file keeps
+    // only the last write per file, so a second call site in an
+    // already-listed file overwrote the first and a 32 beside a 28 read
+    // as one 28.
+    const sizes: { rel: string; size: number }[] = [];
     for (const rel of Object.keys(CALL_SITES)) {
       const src = readFileSync(resolve(ROOT, rel), "utf8");
       for (const m of src.matchAll(/<EmptyState\b([\s\S]*?)\/?>/g)) {
         const icon = m[1].match(/icon=\{\{?<?([A-Za-z0-9]+)\s+size=\{(\d+)\}/);
         expect(icon, `${rel}: an EmptyState whose icon has no literal size`).toBeTruthy();
-        sizes.set(rel, Number(icon![2]));
+        sizes.push({ rel, size: Number(icon![2]) });
       }
     }
     // The control on the scan: six call sites, found. A scan that matched
     // nothing would satisfy "all the same" trivially.
-    expect(sizes.size, "every EmptyState call site must be found by the scan").toBe(6);
-    // …and they are all the same number, and it is the one the chip
+    expect(sizes.length, "every EmptyState call site must be found by the scan").toBe(6);
+    // …and every one is the same number, and it is the one the chip
     // arithmetic lands on.
-    expect([...new Set(sizes.values())]).toEqual([28]);
+    for (const { rel, size } of sizes) {
+      expect(size, `${rel}: an EmptyState icon must be 28px`).toBe(28);
+    }
     // The arithmetic, *measured* rather than restated: the chip's own
     // padding is read out of a render and resolved through the project
     // Tailwind, then the chip is checked to land on a whole number of the
@@ -817,6 +823,33 @@ describe("EmptyState callers ask for the level their page chrome implies", () =>
     // And a call site whose icon is not a literal is found as a failure
     // rather than skipped, so it cannot hide from the scan.
     expect(readSizes('<EmptyState icon={someVariable} title="x" />')).toEqual([]);
+  });
+
+  it("finds two drifted call sites in one file, so a per-file rollup cannot hide one", () => {
+    // The hole this closed: a scan that keyed its result by file kept
+    // only the last write per file, so a 32 beside a 28 in an
+    // already-listed file read as one 28 and passed. Mirrored here with
+    // the same matcher the scan uses, collecting every call site rather
+    // than one entry per file, so the mirror and the scan cannot drift
+    // apart unnoticed.
+    const collectAll = (files: Record<string, string>) => {
+      const sizes: { rel: string; size: number }[] = [];
+      for (const [rel, src] of Object.entries(files)) {
+        for (const m of src.matchAll(/<EmptyState\b([\s\S]*?)\/?>/g)) {
+          const icon = m[1].match(/icon=\{\{?<?([A-Za-z0-9]+)\s+size=\{(\d+)\}/);
+          if (icon) sizes.push({ rel, size: Number(icon[2]) });
+        }
+      }
+      return sizes;
+    };
+    const oneFile: Record<string, string> = {
+      "src/routes/TasksRoute.tsx":
+        '<EmptyState icon={<FileText size={32} />} title="x" /><EmptyState icon={<Brain size={28} />} title="y" />',
+    };
+    expect(
+      collectAll(oneFile).map((s) => s.size),
+      "a second call site in one file must not collapse into the first",
+    ).toEqual([32, 28]);
   });
 
   it("finds a call site that forgot, so the scan is not vacuous", () => {

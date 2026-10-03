@@ -36,8 +36,8 @@
  * row of a list that scales to hundreds is the thing this page is deciding
  * not to do. They are `ROW_ACTION` from `components/ui/rowAction`, which
  * is where the reasoning for 24px, for `focus-visible:` and for the
- * absence of a transition lives — and which the other three pages import
- * rather than re-spell, so four pages of row controls cannot drift apart.
+ * absence of a transition lives — and which the other four pages import
+ * rather than re-spell, so five pages of row controls cannot drift apart.
  */
 import { useEffect, useState } from "react";
 import { Calendar, Check, Edit3, ListTodo, Plus, Save, Trash2, X } from "lucide-react";
