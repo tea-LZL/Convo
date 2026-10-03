@@ -224,12 +224,23 @@ pub async fn memory_extract_and_revise(
     model_id: Option<String>,
     provider_id: Option<String>,
 ) -> Result<Vec<crate::memory::revise::Applied>, String> {
+    extract_and_revise(pool.inner(), &session_id, model_id, provider_id).await
+}
+
+/// The body behind `memory_extract_and_revise`, over a plain pool reference
+/// so tests can call it without a Tauri state.
+pub(crate) async fn extract_and_revise(
+    pool: &Arc<DbPool>,
+    session_id: &str,
+    model_id: Option<String>,
+    provider_id: Option<String>,
+) -> Result<Vec<crate::memory::revise::Applied>, String> {
     let (window, every_n, auto_extract, extraction_route) = {
         let conn = pool.get().map_err(|e| e.to_string())?;
         if !config::auto_extract(&conn) {
             return Ok(Vec::new());
         }
-        let window = crate::memory::extract::should_extract(&conn, &session_id, 2)
+        let window = crate::memory::extract::should_extract(&conn, session_id, 2)
             .map_err(|e| e.to_string())?;
         let routing = config::load_routing(&conn);
         (
@@ -248,19 +259,23 @@ pub async fn memory_extract_and_revise(
     };
     let _ = (every_n, auto_extract);
 
-    let facts = match crate::memory::extract::run_extraction(&pool, &window, extraction_route).await
+    let facts = match crate::memory::extract::run_extraction(pool, &window, extraction_route).await
     {
         Ok(facts) => facts,
         Err(e) => {
             tracing::warn!("extraction failed for {}: {}", session_id, e);
+            {
+                let conn = pool.get().map_err(|e| e.to_string())?;
+                crate::commands::memory_reviews::record_extraction_failure(&conn, session_id, &e)?;
+            }
             return Ok(Vec::new());
         }
     };
 
-    let applied = apply_round(&pool, &session_id, &facts).await;
+    let applied = apply_round(pool, session_id, &facts).await;
 
     let conn = pool.get().map_err(|e| e.to_string())?;
-    crate::memory::extract::set_watermark(&conn, &session_id, &window.watermark_message_id)?;
+    crate::memory::extract::set_watermark(&conn, session_id, &window.watermark_message_id)?;
     Ok(applied)
 }
 
@@ -447,7 +462,7 @@ pub async fn memory_index_fill(
 
 #[cfg(test)]
 mod tests {
-    use super::apply_round;
+    use super::{apply_round, extract_and_revise};
     use crate::memory::extract::ExtractedFact;
 
     /// A migrated in-memory pool, one connection, so `:memory:` is the same
@@ -654,5 +669,73 @@ mod tests {
             first_is_a_note,
             "the note was applied second, so its id did not exist when the fact was written: {applied:?}"
         );
+    }
+
+    /// A failed extraction leaves a failed inbox row and does not advance the
+    /// watermark. An empty result alone cannot tell "nothing durable" from
+    /// "the model was unreachable"; the failed row is what makes the second
+    /// case visible, and leaving the watermark alone keeps the unprocessed
+    /// messages eligible for the next round.
+    #[tokio::test]
+    async fn a_failed_extraction_leaves_a_failed_inbox_row() {
+        let pool = migrated_pool();
+        {
+            let conn = pool.get().unwrap();
+            for (i, (role, content)) in [
+                ("user", "The user's birthday is February 18th."),
+                ("assistant", "Noted."),
+                ("user", "Convo is a Tauri 2 chat client."),
+                ("assistant", "Understood."),
+            ]
+            .iter()
+            .enumerate()
+            {
+                conn.execute(
+                    "INSERT INTO messages (id, session_id, role, content, created_at) VALUES (?1, 's1', ?2, ?3, ?4)",
+                    rusqlite::params![
+                        format!("seed-{i}"),
+                        role,
+                        content,
+                        format!("2026-01-01T00:00:0{i}Z"),
+                    ],
+                )
+                .unwrap();
+            }
+        }
+
+        // No extraction route is configured and no per-call model is passed,
+        // so the model call fails before any network use.
+        let applied = extract_and_revise(&pool, "s1", None, None).await.unwrap();
+        assert!(
+            applied.is_empty(),
+            "a failed extraction applies nothing: {applied:?}"
+        );
+
+        let (status, error, facts_json): (String, String, String) = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT status, error, facts_json FROM pending_memory_reviews WHERE session_id = 's1' ORDER BY created_at DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "failed");
+        assert!(
+            !error.is_empty(),
+            "the inbox row must say why extraction failed"
+        );
+        assert_eq!(facts_json, "[]");
+
+        let watermarks: i64 = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM memory_watermark WHERE session_id = 's1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(watermarks, 0, "a failed round must not consume the window");
     }
 }

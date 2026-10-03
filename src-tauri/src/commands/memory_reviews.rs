@@ -90,6 +90,27 @@ fn fail_review(conn: &Connection, id: &str, error: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Record an extraction attempt that failed before it produced facts.
+///
+/// This is a new row rather than an update because the automatic path does
+/// not queue first: there is no `extracting` row to mark. The watermark is
+/// deliberately untouched by the caller, so the unprocessed messages stay
+/// eligible for the next round.
+pub(crate) fn record_extraction_failure(
+    conn: &Connection,
+    session_id: &str,
+    error: &str,
+) -> Result<String, String> {
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO pending_memory_reviews (id, session_id, facts_json, status, error)
+         VALUES (?1, ?2, '[]', 'failed', ?3)",
+        params![id, session_id, error],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
 fn retry_review(conn: &Connection, id: &str) -> Result<String, String> {
     let changed = conn
         .execute(
