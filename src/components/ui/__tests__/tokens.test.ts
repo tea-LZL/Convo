@@ -45,12 +45,14 @@ const read = (rel: string) => readFileSync(resolve(ROOT, rel), "utf8");
 
 const colors = tailwindConfig.theme.extend.colors as Record<string, unknown>;
 const boxShadow = tailwindConfig.theme.extend.boxShadow as Record<string, unknown>;
+const backgroundImage = tailwindConfig.theme.extend.backgroundImage as Record<string, unknown>;
 
-/** The three composited aliases, read from the declarations themselves. */
+/** The composited aliases, read from the declarations themselves. */
 const NAV_ACTIVE = colors["nav-active"] as string;
 const GROUP_HEADER = colors["group-header"] as string;
 const NAV_GLOW = boxShadow["nav-glow"] as string;
-const DECLARATIONS: Record<string, string> = { NAV_ACTIVE, GROUP_HEADER, NAV_GLOW };
+const NAV_HIGHLIGHT = backgroundImage["nav-highlight"] as string;
+const DECLARATIONS: Record<string, string> = { NAV_ACTIVE, GROUP_HEADER, NAV_GLOW, NAV_HIGHLIGHT };
 
 /** A composited value must not reappear as a theme token or a custom property. */
 const COMPOSITED_KEY = /(nav.?active|group.?header|nav.?glow)/i;
@@ -131,10 +133,31 @@ describe("composited aliases exist as declarations", () => {
     expect(colors["nav-glow"], "nav-glow must not be a colour alias").toBeUndefined();
   });
 
-  it("composes nav-glow as a right-edge bloom", () => {
-    // offset-x, offset-y (0 needs no unit), blur.
-    expect(NAV_GLOW).toMatch(/^\s*-?\d+(\.\d+)?px\s+-?\d+(\.\d+)?(px)?\s+-?\d+(\.\d+)?px/);
+  it("composes nav-glow as a tight right-edge bloom", () => {
+    // offset-x, offset-y (0 needs no unit), blur, spread. The spread is
+    // negative on purpose: it pulls the shadow inside the row so a short
+    // blur stays an accent instead of a haze around the 40px tab.
+    const parts = NAV_GLOW.match(
+      /^\s*(-?\d+(?:\.\d+)?)px\s+(-?\d+(?:\.\d+)?)(?:px)?\s+(-?\d+(?:\.\d+)?)px\s+(-?\d+(?:\.\d+)?)px\s+/,
+    );
+    expect(parts, "offset-x offset-y blur spread").not.toBeNull();
+    expect(Number(parts![1]), "bloom sits on the right edge").toBeGreaterThan(0);
+    expect(Number(parts![2])).toBe(0);
+    expect(Number(parts![3]), "blur must stay tighter than the row").toBeLessThanOrEqual(10);
+    expect(Number(parts![4]), "negative spread keeps the halo inside the row").toBeLessThan(0);
     expect(NAV_GLOW).toContain("var(--color-accent)");
+  });
+
+  it("fades the nav highlight into the active row's own colour", () => {
+    // The band sits on the right and its far stop is `nav-active` itself,
+    // so the fade ends at that colour and that opacity. A transparent
+    // stop would fade into whatever sits behind the row instead.
+    expect(NAV_HIGHLIGHT).toMatch(/^linear-gradient\(\s*to left,/);
+    expect(NAV_HIGHLIGHT).toContain(NAV_ACTIVE);
+    expect(NAV_HIGHLIGHT).not.toMatch(/\btransparent\b/);
+    const ratios = [...NAV_HIGHLIGHT.matchAll(/var\(--color-accent\)\s+(\d+(?:\.\d+)?)%/g)].map((m) => Number(m[1]));
+    expect(Math.max(...ratios), "the right edge carries more accent than the row").toBeGreaterThan(14);
+    expect(ratios).toContain(14);
   });
 });
 

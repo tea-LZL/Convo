@@ -24,9 +24,11 @@
  * already exists; both are out of scope, and the card's truncation
  * contract in `StatusCard.test.tsx` is stated against that 240px.
  *
- * The active row is `bg-nav-active` plus `shadow-nav-glow`, both of which
- * compose from the *active theme's* accent — see `tailwind.config.ts`. The
- * glow never animates: it marks the current row, which changes on every
+ * The active row is `bg-nav-active`, `bg-nav-highlight`, and
+ * `shadow-nav-glow`, all of which compose from the *active theme's*
+ * accent — see `tailwind.config.ts`. The highlight is a band on the
+ * right that fades into `nav-active`. It never animates, and neither
+ * does the glow: both mark the current row, which changes on every
  * navigation, so an animated bloom would sweep in from the left each time.
  * `prefers-reduced-motion` gates the row transitions for the same reason
  * the flag exists. The 64px rail uses the same treatment, so collapsing
@@ -108,7 +110,7 @@ function navRowClass(active: boolean, reducedMotion: boolean) {
     "w-full h-10 flex items-center gap-2.5 px-2.5 rounded-md text-sm min-w-0",
     motion,
     active
-      ? "bg-nav-active text-text shadow-nav-glow"
+      ? "bg-nav-active bg-nav-highlight text-text shadow-nav-glow"
       : "text-text-muted hover:text-text hover:bg-surface-2",
   ]
     .filter(Boolean)
@@ -288,14 +290,14 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
                 aria-current={active ? "page" : undefined}
                 onClick={() => navigate(n.path)}
                 // The same treatment as the expanded row, deliberately:
-                // `bg-nav-active text-text` and the non-animated
-                // `shadow-nav-glow`, so collapsing changes the width and
-                // nothing else. The motion gate is here rather than
-                // shared, because the rail has no label to give up
-                // space to and the geometry is fixed.
+                // `bg-nav-active bg-nav-highlight text-text` and the
+                // non-animated `shadow-nav-glow`, so collapsing changes
+                // the width and nothing else. The motion gate is here
+                // rather than shared, because the rail has no label to
+                // give up space to and the geometry is fixed.
                 className={`w-8 h-8 rounded-md flex items-center justify-center ${
                   reducedMotion ? "" : "transition-colors"
-                } ${active ? "bg-nav-active text-text shadow-nav-glow" : "text-text-muted hover:text-text hover:bg-surface-2"}`}
+                } ${active ? "bg-nav-active bg-nav-highlight text-text shadow-nav-glow" : "text-text-muted hover:text-text hover:bg-surface-2"}`}
               >
                 {n.icon}
               </button>

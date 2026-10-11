@@ -181,7 +181,7 @@ const railRow = (name: string) =>
  * wrong in the same way.
  */
 const navTreatment = (el: Element) =>
-  ["bg-nav-active", "text-text", "shadow-nav-glow", "text-text-muted", "hover:bg-surface-2"]
+  ["bg-nav-active", "bg-nav-highlight", "text-text", "shadow-nav-glow", "text-text-muted", "hover:bg-surface-2"]
     .filter((c) => Array.from(el.classList).includes(c));
 const statusCard = () => screen.queryByRole("region", { name: "Memory index" });
 
@@ -220,10 +220,11 @@ describe("Sidebar active row", () => {
   it("paints the active row with the composited surface and the glow", async () => {
     await renderSidebar();
     const active = navRow("Chat");
-    expect(active).toHaveClass("bg-nav-active", "shadow-nav-glow");
+    expect(active).toHaveClass("bg-nav-active", "bg-nav-highlight", "shadow-nav-glow");
     // Inactive rows carry neither, so this cannot pass on a token that is
     // simply applied to the whole nav.
     expect(navRow("Notes")).not.toHaveClass("bg-nav-active");
+    expect(navRow("Notes")).not.toHaveClass("bg-nav-highlight");
     expect(navRow("Notes")).not.toHaveClass("shadow-nav-glow");
   });
 
@@ -281,6 +282,7 @@ describe("Sidebar active row", () => {
     expect(wide.resting).not.toEqual(wide.active);
     expect(rail.resting).not.toEqual(rail.active);
     expect(wide.active).toContain("bg-nav-active");
+    expect(wide.active).toContain("bg-nav-highlight");
     expect(wide.active).toContain("shadow-nav-glow");
     // The old treatment is gone from both, named explicitly because it is
     // the exact thing that was wrong and it is a `bg-accent/15` away from
