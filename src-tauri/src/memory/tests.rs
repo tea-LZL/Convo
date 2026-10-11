@@ -3813,3 +3813,173 @@ fn injecting_a_note_logs_the_recall_without_touching_a_counter() {
         .unwrap();
     assert_eq!(events, 1);
 }
+
+// ---------------------------------------------------------------------------
+// Revision without an embedding index
+// ---------------------------------------------------------------------------
+
+/// The shortlist judge reply must be a number in range and a verdict. A
+/// verdict with no number is not an answer; a number out of range names no
+/// memory; either way the caller adds rather than rewriting.
+#[test]
+fn the_shortlist_reply_needs_a_number_and_a_verdict() {
+    use revise::{parse_shortlist_reply, Verdict};
+    assert_eq!(
+        parse_shortlist_reply("1 CONTRADICTS", 3),
+        Some((0, Verdict::Contradicts))
+    );
+    assert_eq!(
+        parse_shortlist_reply("2 complements.", 3),
+        Some((1, Verdict::Complements))
+    );
+    assert_eq!(
+        parse_shortlist_reply("3 identical", 3),
+        Some((2, Verdict::Identical))
+    );
+    assert_eq!(parse_shortlist_reply("NONE", 3), None);
+    assert_eq!(parse_shortlist_reply("", 3), None);
+    assert_eq!(
+        parse_shortlist_reply("CONTRADICTS", 3),
+        None,
+        "a verdict with no number is not an answer"
+    );
+    assert_eq!(
+        parse_shortlist_reply("9 CONTRADICTS", 3),
+        None,
+        "a number past the list names nothing"
+    );
+    assert_eq!(parse_shortlist_reply("maybe", 3), None);
+}
+
+#[test]
+fn the_shortlist_is_same_kind_enabled_and_live() {
+    let conn = migrated_conn();
+    add_memory_full(&conn, "live", "user_pref", "A", "the live one");
+    add_memory_full(&conn, "other-kind", "project_fact", "B", "a different kind");
+    add_memory_full(&conn, "disabled", "user_pref", "C", "switched off");
+    conn.execute(
+        "UPDATE memory_items SET is_enabled = 0 WHERE id = 'disabled'",
+        [],
+    )
+    .unwrap();
+    add_memory_full(&conn, "superseded", "user_pref", "D", "replaced already");
+    conn.execute(
+        "UPDATE memory_items SET superseded_by = 'live' WHERE id = 'superseded'",
+        [],
+    )
+    .unwrap();
+
+    let items = revise::shortlist_for(&conn, &fact("anything", 0.9)).unwrap();
+    let ids: Vec<&str> = items.iter().map(|row| row.owner_id.as_str()).collect();
+    assert!(ids.contains(&"live"), "the live same-kind row is missing");
+    assert!(!ids.contains(&"other-kind"), "a different kind leaked in");
+    assert!(!ids.contains(&"disabled"), "a disabled row leaked in");
+    assert!(!ids.contains(&"superseded"), "a superseded row leaked in");
+}
+
+/// The reported failure, end to end: no embedding model, the user updates
+/// their nickname, and the old memory is superseded rather than left beside
+/// a new one. The judge is a real HTTP round trip — `serve_once` is a real
+/// loopback server, because stubbing it at the provider seam would test a
+/// second implementation of the thing under test.
+#[tokio::test]
+async fn a_nickname_change_supersedes_the_old_nickname_without_an_embedding_model() {
+    let url = crate::providers::tests::serve_once(
+        "200 OK",
+        "{\"message\":{\"role\":\"assistant\",\"content\":\"1 CONTRADICTS\"},\"done\":true}\n",
+        "application/x-ndjson",
+    )
+    .await;
+    let pool = migrated_pool();
+    {
+        let conn = pool.get().unwrap();
+        add_memory_full(
+            &conn,
+            "old-nick",
+            "user_pref",
+            "User's nickname",
+            "Kevin Dude Menata",
+        );
+        // The judge runs on the default chat provider, so one must exist and
+        // point at the server that answers the verdict.
+        conn.execute(
+            "INSERT INTO providers (id, kind, name, base_url, is_default)
+             VALUES ('p1', 'ollama', 'Local', ?1, 1)",
+            params![url],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO models (id, provider_id, name) VALUES ('m1', 'p1', 'llama3')",
+            [],
+        )
+        .unwrap();
+    }
+
+    let candidate = extract::ExtractedFact {
+        kind: "user_pref".into(),
+        title: Some("Preferred Name".into()),
+        content: "The user prefers to be called John.".into(),
+        tags: None,
+        confidence: 0.95,
+        is_note: false,
+        note_body: None,
+    };
+
+    let applied = revise::apply_candidate(&pool, "s1", &candidate)
+        .await
+        .unwrap();
+    let new_id = match applied {
+        Applied::Superseded { new_id, old_id } => {
+            assert_eq!(old_id, "old-nick", "the wrong memory was replaced");
+            new_id
+        }
+        other => panic!("expected a supersede, got {other:?}"),
+    };
+
+    let conn = pool.get().unwrap();
+    let superseded: Option<String> = conn
+        .query_row(
+            "SELECT superseded_by FROM memory_items WHERE id = 'old-nick'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(superseded.as_deref(), Some(new_id.as_str()));
+    let live: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memory_items
+             WHERE superseded_by IS NULL AND content LIKE '%John%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(live, 1, "the replacement must be the only live nickname");
+}
+
+// ---------------------------------------------------------------------------
+// The extractor stops making entities out of the user's own attributes
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_entity_for_the_users_own_name_is_dropped() {
+    for raw in [
+        r#"[{"kind":"entity","title":"Alias","content":"john","confidence":0.9}]"#,
+        r#"[{"kind":"entity","title":"Name","content":"Kevin Dude Menata","confidence":0.9}]"#,
+        r#"[{"kind":"entity","title":"Nickname","content":"Kevin","confidence":0.9}]"#,
+    ] {
+        assert!(
+            extract::parse_candidates(raw).unwrap().is_empty(),
+            "a self-attribute entity survived: {raw}"
+        );
+    }
+}
+
+#[test]
+fn a_real_entity_is_kept() {
+    let raw =
+        r#"[{"kind":"entity","title":"Sarah","content":"owns the auth service","confidence":0.9}]"#;
+    let facts = extract::parse_candidates(raw).unwrap();
+    assert_eq!(facts.len(), 1);
+    assert_eq!(facts[0].kind, "entity");
+    assert_eq!(facts[0].content, "owns the auth service");
+}

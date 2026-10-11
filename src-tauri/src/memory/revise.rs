@@ -5,10 +5,12 @@
 //! what to do with it *given what is already known*, which is a much
 //! narrower problem with a small decision table.
 //!
-//! An LLM judge is consulted for exactly one case: two memories close
-//! enough that they might be the same thing. Below that floor the cosine
-//! is decisive on its own and no call is made, so the common path costs
-//! no latency and cannot be corrupted by a bad generation.
+//! An LLM judge is consulted in two cases. With an embedding index, two
+//! memories close enough that they might be the same thing; below that
+//! floor the cosine is decisive on its own and no call is made. Without an
+//! embedding index there is no cosine to rank by, so the judge is given a
+//! shortlist of the candidate's own kind and asked which entry the new fact
+//! restates, replaces, or complements.
 
 use crate::memory::config;
 use crate::memory::embed::KnowledgeRow;
@@ -67,6 +69,11 @@ pub struct Nearest {
     pub score: f64,
 }
 
+/// How many existing memories the no-vector judge is shown. Small enough
+/// that the model keeps the list in view, large enough to hold the handful
+/// of facts a user accumulates about one kind.
+pub const SHORTLIST_LIMIT: usize = 12;
+
 /// Read a judge response.
 ///
 /// Deliberately narrow. A model that answers with a paragraph, a list, or
@@ -100,6 +107,42 @@ pub fn parse_verdict(raw: &str) -> Verdict {
     }
 }
 
+/// Read a shortlist judge response: a 1-based number and a verdict, or
+/// `NONE`.
+///
+/// Returns the 0-based index into the shortlist. Anything that is not a
+/// number in range paired with a verdict is `None`, which the caller reads
+/// as `Add`. The pair is required: a number with no verdict is not an
+/// answer, and a verdict with no number is not a target.
+pub fn parse_shortlist_reply(raw: &str, len: usize) -> Option<(usize, Verdict)> {
+    let upper = raw.trim().to_ascii_uppercase();
+    if upper.is_empty() || upper.contains("NONE") {
+        return None;
+    }
+    let verdict = if upper.contains("CONTRADICT") {
+        Verdict::Contradicts
+    } else if upper.contains("COMPLEMENT") {
+        Verdict::Complements
+    } else if upper.contains("IDENTICAL") {
+        Verdict::Identical
+    } else {
+        return None;
+    };
+    let number = upper
+        .split_whitespace()
+        .filter_map(|token| {
+            token
+                .trim_matches(|c: char| !c.is_ascii_digit())
+                .parse::<usize>()
+                .ok()
+        })
+        .next()?;
+    if number == 0 || number > len {
+        return None;
+    }
+    Some((number - 1, verdict))
+}
+
 /// The decision table from spec 7.4, with the confidence gates applied
 /// after it.
 ///
@@ -125,7 +168,23 @@ pub fn decide(
             _ => RevisionAction::Review,
         },
     };
-    let action = match action {
+    let action = gate(action, confidence);
+    RevisionDecision {
+        action,
+        target_id: None,
+        merged_content: None,
+        reason: describe(cosine, verdict, confidence, action),
+    }
+}
+
+/// Apply the confidence gates to a decision.
+///
+/// Gating after the table matters: an auto-write is never something the
+/// table decided on its own, so a bug in the thresholds degrades to review
+/// rather than to a silent rewrite. Shared with the no-vector path so the
+/// two cannot drift.
+fn gate(action: RevisionAction, confidence: f64) -> RevisionAction {
+    match action {
         RevisionAction::Add if confidence < AUTO_ADD_CONFIDENCE => RevisionAction::Review,
         RevisionAction::Supersede | RevisionAction::Merge
             if confidence < AUTO_REWRITE_CONFIDENCE =>
@@ -133,12 +192,32 @@ pub fn decide(
             RevisionAction::Review
         }
         other => other,
+    }
+}
+
+/// The decision for a candidate matched by the judge with no vector.
+///
+/// The cosine table does not apply: there is no cosine, only the judge's
+/// word about whether the new memory restates, replaces, or adds to the
+/// shortlisted one. `None` or an unreadable verdict is `Add` — never a
+/// rewrite — so a phrase-parroting model cannot silently replace a memory
+/// it did not actually judge.
+fn decide_from_verdict(candidate: &ExtractedFact, verdict: Option<Verdict>) -> RevisionDecision {
+    let action = match verdict {
+        Some(Verdict::Identical) => RevisionAction::Reinforce,
+        Some(Verdict::Contradicts) => RevisionAction::Supersede,
+        Some(Verdict::Complements) => RevisionAction::Merge,
+        _ => RevisionAction::Add,
     };
+    let action = gate(action, candidate.confidence);
     RevisionDecision {
         action,
         target_id: None,
         merged_content: None,
-        reason: describe(cosine, verdict, confidence, action),
+        reason: format!(
+            "{:?} at confidence {:.2} (no vector; judge said {:?})",
+            action, candidate.confidence, verdict
+        ),
     }
 }
 
@@ -223,6 +302,41 @@ pub fn find_nearest(
         }
     }
     Ok(best)
+}
+
+/// Existing memories of the candidate's own kind, most recent first.
+///
+/// The no-vector match set. With no embedding route there is no cosine to
+/// rank by, so the judge is handed this list and asked which entry the
+/// candidate restates, replaces, or adds to. Same kind because an update is
+/// almost always within a kind — a nickname replaces a nickname, a
+/// preference a preference — and the cap keeps the prompt bounded.
+pub fn shortlist_for(
+    conn: &rusqlite::Connection,
+    candidate: &ExtractedFact,
+) -> rusqlite::Result<Vec<KnowledgeRow>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT id, kind, title, content, is_enabled, superseded_by, access_count, updated_at
+         FROM memory_items
+         WHERE is_enabled = 1 AND superseded_by IS NULL AND kind = ?1
+         ORDER BY updated_at DESC, rowid DESC
+         LIMIT {}",
+        SHORTLIST_LIMIT
+    ))?;
+    let rows = stmt.query_map(rusqlite::params![candidate.kind], |r| {
+        Ok(KnowledgeRow {
+            owner_type: "memory".into(),
+            owner_id: r.get(0)?,
+            kind: r.get(1)?,
+            title: r.get(2)?,
+            content: r.get(3)?,
+            is_enabled: r.get::<_, i64>(4)? != 0,
+            superseded_by: r.get(5)?,
+            access_count: r.get(6)?,
+            updated_at: r.get(7)?,
+        })
+    })?;
+    rows.collect()
 }
 
 #[cfg(test)]
@@ -721,14 +835,22 @@ fn candidate_text(candidate: &ExtractedFact) -> String {
 /// review.
 const JUDGE_SYSTEM: &str = "You compare an existing memory with a newly extracted one and decide their relationship. Reply with exactly one word, nothing else:\nIDENTICAL - the new one restates the existing one.\nCONTRADICTS - the new one reverses or replaces the existing one.\nCOMPLEMENTS - the new one adds detail to the existing one without contradicting it.\nDo not explain. Do not add punctuation. One word only.";
 
+/// The no-vector judge prompt. Same three verdicts as [`JUDGE_SYSTEM`], but
+/// the existing side is a numbered shortlist and the reply names which entry
+/// it applies to. `CONTRADICTS` is spelled out with the common case — a
+/// changed name, date, or preference — because that is the one this path
+/// exists to catch, and a local model reads an example far better than a
+/// definition.
+const JUDGE_SHORTLIST_SYSTEM: &str = "You are given a numbered list of existing memories and one newly extracted memory. Decide whether the new memory restates, contradicts, or adds to ONE of the existing ones.\nReply with exactly two tokens: the number of that memory, then one of IDENTICAL, CONTRADICTS, COMPLEMENTS.\nIDENTICAL - it says the same thing.\nCONTRADICTS - it reverses or replaces it, for example a changed name, date, or preference.\nCOMPLEMENTS - it adds detail without contradicting.\nIf it relates to none of them, reply exactly NONE.\nDo not explain. No punctuation.";
+
 /// Decide and apply one extracted candidate, end to end.
 ///
-/// The embedding route is what makes the table possible at all: with no
-/// comparable vector for the candidate there is no cosine, so every
-/// candidate looks brand new and the table degenerates to all-ADD. A
-/// missing embedding model therefore means "propose everything", which the
-/// confidence gate then narrows — an honest outcome for a missing index,
-/// rather than a pretend.
+/// Two ways to find what to revise against. With an embedding route the
+/// candidate gets a vector, cosine ranks the nearest memory, and the judge
+/// runs above the duplicate floor. Without one there is no cosine, so the
+/// judge is given a shortlist of the candidate's own kind and asked which
+/// entry it restates, replaces, or adds to. Only when neither finds a
+/// target does the candidate become a new memory.
 pub async fn apply_candidate(
     pool: &std::sync::Arc<crate::db::DbPool>,
     session_id: &str,
@@ -753,36 +875,49 @@ pub async fn apply_candidate(
         None => Vec::new(),
     };
 
-    // Find the nearest existing memory. Scoped so the connection is
-    // released before any await.
-    let nearest: Option<Nearest> = if candidate_vector.is_empty() {
-        None
-    } else {
-        let conn = pool.get().map_err(|e| e.to_string())?;
-        find_nearest(&conn, &candidate_vector).map_err(|e| e.to_string())?
-    };
-
-    // The judge is consulted only above the duplicate floor. Below it the
-    // cosine is decisive on its own, which is what keeps the common path
-    // free of a round trip.
-    let needs_judge = nearest
-        .as_ref()
-        .is_some_and(|n| n.score >= config::DUP_FLOOR);
-    let verdict = match (&nearest, needs_judge) {
-        (Some(nearest), true) => {
-            match judge(pool, &nearest.row.content, &candidate.content).await {
-                Ok(raw) => Some(parse_verdict(&raw)),
-                Err(e) => {
-                    tracing::warn!("judge unavailable, routing to review: {}", e);
-                    Some(Verdict::Unreadable)
+    // Find something to revise against. With a vector, cosine ranks it and
+    // the judge runs only above the duplicate floor, so the common path
+    // stays free of a round trip. Without a vector there is no cosine to
+    // rank by, so the judge is given a shortlist of the candidate's own
+    // kind instead; that is the whole non-embedding revision path, and the
+    // reason a missing embedding model no longer means all-ADD.
+    let (nearest, verdict): (Option<Nearest>, Option<Verdict>) = if !candidate_vector.is_empty() {
+        let nearest = {
+            let conn = pool.get().map_err(|e| e.to_string())?;
+            find_nearest(&conn, &candidate_vector).map_err(|e| e.to_string())?
+        };
+        let needs_judge = nearest
+            .as_ref()
+            .is_some_and(|n| n.score >= config::DUP_FLOOR);
+        let verdict = match (&nearest, needs_judge) {
+            (Some(nearest), true) => {
+                match judge(pool, &nearest.row.content, &candidate.content).await {
+                    Ok(raw) => Some(parse_verdict(&raw)),
+                    Err(e) => {
+                        tracing::warn!("judge unavailable, routing to review: {}", e);
+                        Some(Verdict::Unreadable)
+                    }
                 }
             }
+            _ => None,
+        };
+        (nearest, verdict)
+    } else if candidate.is_note {
+        // Notes live in their own table; there is nothing to shortlist.
+        (None, None)
+    } else {
+        match nearest_from_shortlist(pool, candidate).await {
+            Some((nearest, verdict)) => (Some(nearest), Some(verdict)),
+            None => (None, None),
         }
-        _ => None,
     };
 
     let decision = {
-        let mut decision = decide(candidate, nearest.as_ref().map(|n| n.score), verdict);
+        let mut decision = if candidate_vector.is_empty() {
+            decide_from_verdict(candidate, verdict)
+        } else {
+            decide(candidate, nearest.as_ref().map(|n| n.score), verdict)
+        };
         decision.target_id = nearest.as_ref().map(|n| n.row.owner_id.clone());
         decision
     };
@@ -899,6 +1034,108 @@ async fn judge(
     Ok(out)
 }
 
+/// One call that asks the judge which shortlisted memory the candidate
+/// relates to, and how. Used only when there is no candidate vector.
+async fn judge_shortlist(
+    pool: &std::sync::Arc<crate::db::DbPool>,
+    candidate: &ExtractedFact,
+    items: &[KnowledgeRow],
+) -> Result<String, String> {
+    use crate::providers::types::{ChatRequest, MessageContent};
+    use futures_util::StreamExt;
+
+    let (provider, model) = resolve_chat_provider(pool)?;
+    let mut list = String::new();
+    for (index, row) in items.iter().enumerate() {
+        let title = row.title.as_deref().map(str::trim).unwrap_or("");
+        if title.is_empty() {
+            list.push_str(&format!("{}. {}\n", index + 1, row.content));
+        } else {
+            list.push_str(&format!("{}. {}: {}\n", index + 1, title, row.content));
+        }
+    }
+    let new_line = match candidate.title.as_deref().map(str::trim) {
+        Some(title) if !title.is_empty() => format!("{}: {}", title, candidate.content),
+        _ => candidate.content.clone(),
+    };
+    let request = ChatRequest {
+        model,
+        messages: vec![MessageContent {
+            role: "user".into(),
+            content: format!(
+                "EXISTING MEMORIES:\n{}\nNEWLY EXTRACTED:\n{}\n\nReply with '<number> <VERDICT>' or 'NONE'.",
+                list, new_line
+            ),
+            thinking: None,
+            images: vec![],
+        }],
+        stream: false,
+        system: Some(JUDGE_SHORTLIST_SYSTEM.to_string()),
+        temperature: Some(0.0),
+        top_p: None,
+        top_k: None,
+        num_ctx: None,
+        repeat_penalty: None,
+        stop: None,
+    };
+    let mut stream = provider.chat_stream(request).await?;
+    let mut out = String::new();
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(chunk) => {
+                if let Some(message) = chunk.message {
+                    out.push_str(&message.content);
+                }
+                if chunk.done {
+                    break;
+                }
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Ok(out)
+}
+
+/// The memory to revise against when there is no candidate vector, and the
+/// judge's verdict. `None` means nothing to revise against, so the caller
+/// adds.
+async fn nearest_from_shortlist(
+    pool: &std::sync::Arc<crate::db::DbPool>,
+    candidate: &ExtractedFact,
+) -> Option<(Nearest, Verdict)> {
+    let items = {
+        let conn = pool.get().ok()?;
+        match shortlist_for(&conn, candidate) {
+            Ok(items) => items,
+            Err(e) => {
+                tracing::warn!("could not read the revision shortlist: {}", e);
+                return None;
+            }
+        }
+    };
+    if items.is_empty() {
+        return None;
+    }
+    let raw = match judge_shortlist(pool, candidate, &items).await {
+        Ok(raw) => raw,
+        Err(e) => {
+            tracing::warn!("shortlist judge unavailable, adding instead: {}", e);
+            return None;
+        }
+    };
+    let (index, verdict) = parse_shortlist_reply(&raw, items.len())?;
+    Some((
+        Nearest {
+            row: items[index].clone(),
+            // The judge, not a cosine, chose this row. The number is
+            // carried for the reason string only; the action comes from
+            // the verdict.
+            score: config::DUP_FLOOR,
+        },
+        verdict,
+    ))
+}
+
 /// The default provider, for a job with no dedicated route.
 fn resolve_chat_provider(
     pool: &std::sync::Arc<crate::db::DbPool>,
@@ -1000,5 +1237,56 @@ async fn merge_text_for(
         None
     } else {
         Some(trimmed.to_string())
+    }
+}
+
+#[cfg(test)]
+mod no_vector_decision_tests {
+    use super::*;
+    use crate::memory::extract::ExtractedFact;
+
+    fn candidate(confidence: f64) -> ExtractedFact {
+        ExtractedFact {
+            kind: "user_pref".into(),
+            title: Some("Nickname".into()),
+            content: "The user's nickname is John".into(),
+            tags: None,
+            confidence,
+            is_note: false,
+            note_body: None,
+        }
+    }
+
+    #[test]
+    fn the_verdict_is_the_action_when_there_is_no_cosine() {
+        let c = candidate(0.95);
+        assert_eq!(
+            decide_from_verdict(&c, Some(Verdict::Contradicts)).action,
+            RevisionAction::Supersede
+        );
+        assert_eq!(
+            decide_from_verdict(&c, Some(Verdict::Identical)).action,
+            RevisionAction::Reinforce
+        );
+        assert_eq!(
+            decide_from_verdict(&c, Some(Verdict::Complements)).action,
+            RevisionAction::Merge
+        );
+        assert_eq!(
+            decide_from_verdict(&c, None).action,
+            RevisionAction::Add,
+            "no verdict is never a rewrite"
+        );
+    }
+
+    #[test]
+    fn a_low_confidence_no_vector_rewrite_is_held_for_review() {
+        // Below the rewrite gate even a contradiction must not auto-write;
+        // it goes to the inbox, exactly as the cosine path does.
+        let c = candidate(0.5);
+        assert_eq!(
+            decide_from_verdict(&c, Some(Verdict::Contradicts)).action,
+            RevisionAction::Review
+        );
     }
 }

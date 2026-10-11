@@ -193,6 +193,39 @@ fn parse_json_value(raw: &str) -> Result<serde_json::Value, String> {
     Err("Invalid extraction JSON".into())
 }
 
+/// Whether an `entity` candidate is really a fact about the user wearing the
+/// wrong kind.
+///
+/// The extractor sometimes labels the user's own name or nickname as an
+/// `entity`, which then spawns a duplicate that never revises the real
+/// preference. The prompt now forbids it; this is the backstop for the
+/// models that ignore the instruction. It is deliberately narrow: only the
+/// `entity` kind, only a title that names one of the user's own attributes,
+/// and only a short value — a genuine entity ("Sarah: owns the auth
+/// service") has a title that is not one of these words and is left alone.
+fn is_self_attribute_entity(kind: &str, title: Option<&str>, content: &str) -> bool {
+    if kind != "entity" {
+        return false;
+    }
+    let Some(title) = title else {
+        return false;
+    };
+    const SELF_ATTRIBUTES: &[&str] = &[
+        "name",
+        "nickname",
+        "alias",
+        "username",
+        "handle",
+        "birthday",
+        "email",
+        "phone",
+        "preferred name",
+        "full name",
+    ];
+    let normalized = title.trim().to_ascii_lowercase();
+    SELF_ATTRIBUTES.contains(&normalized.as_str()) && content.split_whitespace().count() <= 6
+}
+
 pub fn parse_candidates(raw: &str) -> Result<Vec<ExtractedFact>, String> {
     let value = parse_json_value(raw)?;
     let items: Vec<&serde_json::Value> = match &value {
@@ -249,6 +282,9 @@ pub fn parse_candidates(raw: &str) -> Result<Vec<ExtractedFact>, String> {
         let kind =
             explicit_kind.or_else(|| inferred_personal_fact_kind(title.as_deref(), Some(&content)));
         let Some(kind) = kind else { continue };
+        if is_self_attribute_entity(kind, title.as_deref(), &content) {
+            continue;
+        }
 
         facts.push(ExtractedFact {
             kind: kind.into(),
@@ -431,7 +467,7 @@ pub fn should_extract(
 /// unchanged, including the "never use the keys type, fact, value" clause
 /// and the transient-filtering list, because those encode observed
 /// failures of real local models.
-pub const EXTRACTION_SYSTEM: &str = "You extract durable facts about the user and their work from a conversation. Output ONLY valid JSON: a bare array of objects with exactly these keys: kind, title, content, tags, confidence, is_note, note_body. Do not wrap the array in an object such as extracted_facts. Allowed kind values are exactly 'user_pref' for user preferences, 'project_fact' for project facts, 'decision' for a choice made, 'constraint' for a rule that must be respected, 'skill' for reusable instructions, and 'entity' for a person, service, or repository. confidence is a number from 0 to 1 stating how sure you are. Set is_note to true and put the long form in note_body when the item is a structured document or a runbook rather than a one-line fact. tags must be null or one comma-separated string, never an array. Example: [{\"kind\":\"user_pref\",\"title\":\"Birthday\",\"content\":\"The user's birthday is February 18th.\",\"tags\":null,\"confidence\":0.9,\"is_note\":false,\"note_body\":null}]. Never use the keys type, fact, value, details, fact_type, detail, or context. Never return task/request or communication goal/task items or one-off task details. Include only items likely to remain true across many future sessions — preferences, recurring projects, decisions and the reasoning behind them, standing rules, coding style, role descriptions, environment facts. Skip transient task details, debugging chatter, and one-off questions. Return at most 8 items. If nothing durable is found, return an empty array []. Output ONLY the JSON, no commentary.";
+pub const EXTRACTION_SYSTEM: &str = "You extract durable facts about the user and their work from a conversation. Output ONLY valid JSON: a bare array of objects with exactly these keys: kind, title, content, tags, confidence, is_note, note_body. Do not wrap the array in an object such as extracted_facts. Allowed kind values are exactly 'user_pref' for user preferences, 'project_fact' for project facts, 'decision' for a choice made, 'constraint' for a rule that must be respected, 'skill' for reusable instructions, and 'entity' for a person, service, or repository. Facts about the user themselves - their name, nickname, birthday, preferences, or their own environment - are 'user_pref', never 'entity'; use 'entity' only for a person, service, or repository that is not the user. One attribute is one item: do not emit an 'entity' item whose only content is the user's own name or value. confidence is a number from 0 to 1 stating how sure you are. Set is_note to true and put the long form in note_body when the item is a structured document or a runbook rather than a one-line fact. tags must be null or one comma-separated string, never an array. Example: [{\"kind\":\"user_pref\",\"title\":\"Birthday\",\"content\":\"The user's birthday is February 18th.\",\"tags\":null,\"confidence\":0.9,\"is_note\":false,\"note_body\":null}]. Never use the keys type, fact, value, details, fact_type, detail, or context. Never return task/request or communication goal/task items or one-off task details. Include only items likely to remain true across many future sessions — preferences, recurring projects, decisions and the reasoning behind them, standing rules, coding style, role descriptions, environment facts. Skip transient task details, debugging chatter, and one-off questions. Return at most 8 items. If nothing durable is found, return an empty array []. Output ONLY the JSON, no commentary.";
 
 /// Extract candidates from a window, using the caller's provider.
 pub async fn run_extraction(
