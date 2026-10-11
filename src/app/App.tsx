@@ -7,7 +7,7 @@ import { Sidebar } from "../components/sidebar/Sidebar";
 import { TitleBar } from "../components/chrome/TitleBar";
 import { CommandPalette } from "../components/CommandPalette";
 import { SessionSearch } from "../components/SessionSearch";
-import { ToastViewport } from "../stores/toasts";
+import { ToastViewport, toast } from "../stores/toasts";
 import { ErrorBoundary } from "../components/ui/ErrorBoundary";
 import { useGlobalKeyHandler } from "../hooks/useGlobalKeyHandler";
 import { useMediaQuery } from "../hooks/useMediaQuery";
@@ -15,6 +15,7 @@ import { useThemeStore } from "../stores/theme";
 import { useShortcutsStore } from "../stores/shortcuts";
 import { usePaletteStore } from "../stores/palette";
 import { useMemoryStore } from "../stores/memory";
+import { useSessionsStore } from "../stores/sessions";
 import { ChatRoute } from "../routes/ChatRoute";
 import { CompareRoute } from "../routes/CompareRoute";
 import { DocumentsRoute } from "../routes/DocumentsRoute";
@@ -66,7 +67,20 @@ function AppShell() {
   useEffect(() => {
     registerMany([
       { id: "palette", combo: "ctrl+k", action: () => togglePalette(), description: "Open command palette" },
-      { id: "new-chat", combo: "ctrl+n", action: () => window.dispatchEvent(new CustomEvent("convo:new-chat")), description: "New chat" },
+      { id: "new-chat", combo: "ctrl+n", description: "New chat", action: () => {
+        // Create and navigate here rather than dispatching an event: the
+        // event had no listener, so Ctrl+N did nothing. Routing through the
+        // same store calls the sidebar's New chat uses keeps the two in step.
+        void (async () => {
+          try {
+            const session = await useSessionsStore.getState().create();
+            useSessionsStore.getState().setActive(session.id);
+            navigate(`/chat/${session.id}`);
+          } catch (error) {
+            toast.error(String(error), "Chat could not be created");
+          }
+        })();
+      } },
       { id: "toggle-sidebar", combo: "ctrl+b", action: () => {
         if (isNarrow) setNarrowOverride((v) => !v);
         else setUserCollapsed((c) => !c);
