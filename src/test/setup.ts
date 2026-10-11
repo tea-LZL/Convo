@@ -36,6 +36,25 @@ vi.mock("@tauri-apps/api/event", () => ({
   emit: vi.fn(),
 }));
 
+// The custom title bar drives the native window. jsdom has no Tauri runtime,
+// so the window handle is stubbed. One shared instance, so a test can import
+// `getCurrentWindow` and assert on the same vi.fn objects the bar called.
+const windowMocks = vi.hoisted(() => ({
+  instance: {
+    minimize: vi.fn(async () => {}),
+    maximize: vi.fn(async () => {}),
+    unmaximize: vi.fn(async () => {}),
+    toggleMaximize: vi.fn(async () => {}),
+    isMaximized: vi.fn(async () => false),
+    close: vi.fn(async () => {}),
+    onResized: vi.fn(async () => () => {}),
+  },
+}));
+
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => windowMocks.instance,
+}));
+
 vi.mock("@tauri-apps/plugin-notification", () => ({
   sendNotification: vi.fn(),
 }));
