@@ -235,18 +235,22 @@ pub(crate) async fn extract_and_revise(
     model_id: Option<String>,
     provider_id: Option<String>,
 ) -> Result<Vec<crate::memory::revise::Applied>, String> {
-    let (window, every_n, auto_extract, extraction_route) = {
+    let (window, extraction_route) = {
         let conn = pool.get().map_err(|e| e.to_string())?;
         if !config::auto_extract(&conn) {
             return Ok(Vec::new());
         }
-        let window = crate::memory::extract::should_extract(&conn, session_id, 2)
+        // `every_n = 1` is "run on every completed exchange". The previous
+        // fixed value of 2 meant a first exchange never qualified — a fresh
+        // chat that says "remember my cat is named Mao Mao" and gets its
+        // answer produced two messages, below the four-message threshold,
+        // and nothing was extracted or even recorded. The `memory.auto_extract`
+        // setting is the user's off switch; the window is the cost control.
+        let window = crate::memory::extract::should_extract(&conn, session_id, 1)
             .map_err(|e| e.to_string())?;
         let routing = config::load_routing(&conn);
         (
             window,
-            2,
-            true,
             match (routing.extraction, model_id.clone(), provider_id.clone()) {
                 (Some(route), _, _) => Some((route.provider_id, route.model)),
                 (None, Some(m), Some(p)) => Some((p, m)),
@@ -257,7 +261,6 @@ pub(crate) async fn extract_and_revise(
     let Some(window) = window else {
         return Ok(Vec::new());
     };
-    let _ = (every_n, auto_extract);
 
     let facts = match crate::memory::extract::run_extraction(pool, &window, extraction_route).await
     {
@@ -733,5 +736,59 @@ mod tests {
             )
             .unwrap();
         assert_eq!(watermarks, 0, "a failed round must not consume the window");
+    }
+
+    /// The after-a-turn trigger must reach the model on the first exchange,
+    /// not skip it. A session with one exchange and no extraction route
+    /// fails loudly — a failed inbox row — rather than returning an empty
+    /// result that is indistinguishable from "nothing durable was said".
+    /// This is the fix for the "remember X" in a fresh chat that silently
+    /// did nothing: the threshold used to be two exchanges.
+    #[tokio::test]
+    async fn a_single_exchange_reaches_extraction_rather_than_being_skipped() {
+        let pool = migrated_pool();
+        {
+            let conn = pool.get().unwrap();
+            for (i, (role, content)) in [
+                ("user", "remember that my cat is named Mao Mao"),
+                (
+                    "assistant",
+                    "I will remember that your cat is named Mao Mao.",
+                ),
+            ]
+            .iter()
+            .enumerate()
+            {
+                conn.execute(
+                    "INSERT INTO messages (id, session_id, role, content, created_at) VALUES (?1, 's1', ?2, ?3, ?4)",
+                    rusqlite::params![
+                        format!("one-{i}"),
+                        role,
+                        content,
+                        format!("2026-01-01T00:00:0{i}Z"),
+                    ],
+                )
+                .unwrap();
+            }
+        }
+
+        // No extraction route and no per-call model, so the model call fails
+        // before any network use. The point is that it is attempted at all.
+        let applied = extract_and_revise(&pool, "s1", None, None).await.unwrap();
+        assert!(applied.is_empty(), "a failed round applies nothing");
+
+        let status: String = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT status FROM pending_memory_reviews WHERE session_id = 's1' ORDER BY created_at DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            status, "failed",
+            "the first exchange was skipped instead of attempted"
+        );
     }
 }

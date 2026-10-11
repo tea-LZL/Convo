@@ -1815,6 +1815,30 @@ fn no_extraction_runs_before_the_second_exchange() {
 }
 
 #[test]
+fn a_single_exchange_extracts_at_the_every_exchange_threshold() {
+    // The after-a-turn path calls `should_extract(.., 1)`. One exchange is
+    // two messages and must qualify: a fresh chat that says "remember my cat
+    // is named Mao Mao" and gets its answer otherwise never extracts, which
+    // is the exact case this threshold was changed for.
+    let conn = migrated_conn();
+    seed_session(
+        &conn,
+        "s1",
+        &[
+            ("user", "remember my cat is named Mao Mao"),
+            (
+                "assistant",
+                "I will remember that your cat is named Mao Mao.",
+            ),
+        ],
+    );
+    let window = extract::should_extract(&conn, "s1", 1)
+        .unwrap()
+        .expect("a completed first exchange must extract");
+    assert_eq!(window.messages.len(), 2);
+}
+
+#[test]
 fn no_extraction_runs_twice_for_the_same_messages() {
     // Review Focus 4. Without a watermark the second pass re-proposes
     // every fact and REINFORCE fires on all of them, so the user's memory
