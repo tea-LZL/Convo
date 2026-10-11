@@ -129,7 +129,7 @@ pub fn rows_needing_embedding(
                ON e.owner_type = 'memory' AND e.owner_id = m.id
         WHERE m.is_enabled = 1
           AND m.superseded_by IS NULL
-          AND LENGTH(m.content) >= ?1
+          AND LENGTH(COALESCE(m.title, '') || ' ' || m.content) >= ?1
           AND (e.id IS NULL OR e.model <> ?2 OR e.dim <> ?3)
         UNION ALL
         SELECT 'note', n.id, 'note', n.title, n.body, 1, NULL, 0, n.updated_at
@@ -137,7 +137,7 @@ pub fn rows_needing_embedding(
         LEFT JOIN memory_embeddings e
                ON e.owner_type = 'note' AND e.owner_id = n.id
         WHERE (n.pinned = 1 OR ?4 = 1)
-          AND LENGTH(n.body) >= ?1
+          AND LENGTH(COALESCE(n.title, '') || ' ' || n.body) >= ?1
           AND (e.id IS NULL OR e.model <> ?2 OR e.dim <> ?3)
         ORDER BY 2
     ";

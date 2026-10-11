@@ -1,0 +1,11 @@
+-- Index notes the first repair left invisible.
+--
+-- V010 created notes_fts, then decided the index was already full because
+-- COUNT(*) on an external-content FTS table returns the number of notes
+-- even when the inverted index is empty. MATCH found nothing. A database
+-- that ran that version has user_version 10, so the corrected check in
+-- V010 does not run again. This migration rebuilds the index only when it
+-- has no documents and the notes table does.
+--
+-- The decision is made in the Rust hook: the shadow table that records
+-- indexed documents is not something this file can branch on.

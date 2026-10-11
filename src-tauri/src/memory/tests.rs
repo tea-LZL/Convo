@@ -192,7 +192,7 @@ fn the_spec_constants_have_the_values_the_spec_pins() {
     assert_eq!(config::DUP_FLOOR, 0.92);
     assert_eq!(config::RECENCY_HALF_LIFE_DAYS, 30.0);
     assert_eq!(config::CONTEXT_BUDGET_FRACTION, 0.15);
-    assert_eq!(config::MIN_CONTENT_LENGTH, 32);
+    assert_eq!(config::MIN_CONTENT_LENGTH, 8);
     assert_eq!(config::EMBED_BATCH, 32);
 }
 
@@ -374,6 +374,40 @@ fn rows_needing_embedding_honours_the_minimum_length() {
     add_memory(&conn, "exact", &exact);
     let rows = rows_needing_embedding(&conn, "m", 768, false).unwrap();
     assert!(rows.iter().any(|r| r.owner_id == "exact"));
+}
+
+/// The live failure this floor was rewritten for: `User's nickname` /
+/// `Kevin` is five characters of content. The old content-only
+/// thirty-two-character gate dropped it, so the one memory a user is most
+/// likely to ask for never got a vector. The floor now measures title plus
+/// content, so a short fact with a naming title is embeddable.
+#[test]
+fn rows_needing_embedding_reads_the_title_as_part_of_the_text() {
+    let conn = migrated_conn();
+    conn.execute(
+        "INSERT INTO memory_items (id, kind, title, content)
+         VALUES ('nick', 'user_pref', 'User''s nickname', 'Kevin')",
+        [],
+    )
+    .unwrap();
+    let rows = rows_needing_embedding(&conn, "m", 768, false).unwrap();
+    assert!(
+        rows.iter().any(|r| r.owner_id == "nick"),
+        "a titled short fact must be embeddable: {rows:?}"
+    );
+
+    // A genuinely tiny row is still dropped: no title, a two-character body.
+    conn.execute(
+        "INSERT INTO memory_items (id, kind, title, content)
+         VALUES ('frag', 'user_pref', '', 'hi')",
+        [],
+    )
+    .unwrap();
+    let rows = rows_needing_embedding(&conn, "m", 768, false).unwrap();
+    assert!(
+        !rows.iter().any(|r| r.owner_id == "frag"),
+        "a two-character fragment is still noise"
+    );
 }
 
 #[test]
@@ -834,6 +868,75 @@ fn recall_finds_an_exact_keyword_match() {
     assert_eq!(hits[0].owner_id, "db-pool", "got {:?}", ids(&hits));
 }
 
+/// "what's my name?" does not contain the token `nickname`, and "who am I?"
+/// contains no keyword token at all. A saved nickname is the memory the
+/// user expects either question to return.
+#[test]
+fn asking_for_a_name_recalls_a_saved_nickname() {
+    let conn = migrated_conn();
+    add_memory_full(
+        &conn,
+        "nick",
+        "user_pref",
+        "User nickname",
+        "The user's nickname is Kevin.",
+    );
+    add_memory_full(
+        &conn,
+        "editor",
+        "user_pref",
+        "Editor",
+        "The user uses Neovim",
+    );
+
+    for query in [
+        "what's my name",
+        "what is my name?",
+        "who am I",
+        "what is my nickname",
+    ] {
+        let hits = retrieve::recall(&conn, &recall_opts(query));
+        assert!(
+            ids(&hits).contains(&"nick"),
+            "{query:?} missed the nickname, got {:?}",
+            ids(&hits)
+        );
+        assert!(
+            !ids(&hits).contains(&"editor"),
+            "{query:?} recalled an unrelated preference: {:?}",
+            ids(&hits)
+        );
+    }
+
+    // "called" is in the identity group, but only a question about the
+    // user expands it. An ordinary question must not surface the nickname.
+    let unrelated = retrieve::recall(&conn, &recall_opts("what is this called"));
+    assert!(
+        !ids(&unrelated).contains(&"nick"),
+        "an unrelated question recalled the nickname: {:?}",
+        ids(&unrelated)
+    );
+
+    let disabled = migrated_conn();
+    add_memory_full(
+        &disabled,
+        "nick",
+        "user_pref",
+        "User nickname",
+        "The user's nickname is Kevin.",
+    );
+    disabled
+        .execute(
+            "UPDATE memory_items SET is_enabled = 0 WHERE id = 'nick'",
+            [],
+        )
+        .unwrap();
+    assert!(
+        retrieve::recall(&disabled, &recall_opts("what's my name")).is_empty(),
+        "a disabled nickname is not a name the model should be told"
+    );
+}
+
 fn ids(hits: &[retrieve::RankedMemory]) -> Vec<&str> {
     hits.iter().map(|h| h.owner_id.as_str()).collect()
 }
@@ -1071,6 +1174,37 @@ fn a_memory_the_session_allowed_survives_the_vector_route() {
         hits[0].reason.contains("semantic"),
         "and it must still be reported as the vector route's find: {}",
         hits[0].reason
+    );
+}
+
+/// A recall over a large index still returns the right row. This is the
+/// correctness guard for the vector route's query rewrite: the old shape
+/// scanned every embedding and re-queried the owner table once per hit, and
+/// a rewrite that dropped or re-paired a row would still pass the small
+/// fixtures above. It is deliberately not a wall-clock assertion — the p95
+/// budget is measured in release, and a timing bound in CI would be flaky.
+#[test]
+fn recall_stays_correct_across_a_large_index() {
+    let conn = migrated_conn();
+    for i in 0..2_000 {
+        let id = format!("filler-{i}");
+        add_memory_full(
+            &conn,
+            &id,
+            "project_fact",
+            "Filler",
+            "an unrelated durable fact about tooling and process",
+        );
+        upsert_embedding(&conn, "memory", &id, STUB_MODEL, &[0.0, 1.0, 0.0]).unwrap();
+    }
+    add_semantic_only_memory(&conn, "needle");
+
+    let hits = retrieve::recall_with_query_vector(&conn, &semantic_opts(None), STUB_VECTOR);
+    assert_eq!(
+        ids(&hits).first().copied(),
+        Some("needle"),
+        "the vector route lost or reordered the one matching row: {:?}",
+        ids(&hits)
     );
 }
 
@@ -2484,6 +2618,48 @@ async fn fill_index_stores_a_vector_for_every_eligible_row() {
     assert_eq!(stored, 2);
 }
 
+/// The bootstrap case: an index with no vectors has no dimension, and the
+/// fill must learn it from the provider rather than refuse to run. Before
+/// this, a user whose only memories were hand-written could never build the
+/// first vector, so semantic recall was permanently off.
+#[tokio::test]
+async fn fill_index_bootstraps_from_an_empty_index_and_learns_the_dimension() {
+    let pool = migrated_pool();
+    {
+        let conn = pool.get().unwrap();
+        add_memory_full(&conn, "m1", "user_pref", "Name", "Kevin");
+    }
+    let written = index::fill_index(
+        &pool,
+        &StubEmbedder {
+            dim: 8,
+            per_input: None,
+        },
+        "e",
+        0,
+        false,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        written, 1,
+        "the first vector must be written when no dimension is stored"
+    );
+    let conn = pool.get().unwrap();
+    let dim: i64 = conn
+        .query_row(
+            "SELECT dim FROM memory_embeddings WHERE owner_id = 'm1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        dim, 8,
+        "the dimension learned from the provider must be stored"
+    );
+}
+
 /// A disabled or superseded row is not embedded. Re-embedding a superseded
 /// memory would put a vector back into the index for something recall is
 /// supposed to exclude.
@@ -2685,15 +2861,17 @@ async fn fill_index_is_idempotent() {
     assert_eq!(second, 0, "a second fill re-embedded a row it already had");
 }
 
-/// Content shorter than `MIN_CONTENT_LENGTH` is not embedded. A three-word
-/// memory is cheaper to match lexically than to embed, and every vector it
-/// adds is a vector a real memory has to compete with.
+/// Content whose embeddable text is shorter than `MIN_CONTENT_LENGTH` is not
+/// embedded. A one-token fragment is cheaper to match lexically than to
+/// embed, and every vector it adds is a vector a real memory has to compete
+/// with. The floor measures title plus content, so the `short` row below is
+/// excluded only because it is tiny in both.
 #[tokio::test]
 async fn fill_index_skips_content_too_short_to_be_worth_embedding() {
     let pool = migrated_pool();
     {
         let conn = pool.get().unwrap();
-        add_memory_full(&conn, "short", "user_pref", "Hi", "likes tabs");
+        add_memory_full(&conn, "short", "user_pref", "", "hi");
         add_memory_full(
             &conn,
             "long",

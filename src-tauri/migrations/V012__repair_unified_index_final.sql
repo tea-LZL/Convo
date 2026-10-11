@@ -1,0 +1,22 @@
+-- One idempotent repair for every database, whatever version it reached.
+--
+-- V010 repaired the columns a database could lack after its `user_version`
+-- had already moved past V006, and rebuilt `notes_fts` when V010 itself had
+-- recorded the migration without filling the index. V011 repeated only the
+-- notes rebuild for databases that ran V010's first, wrong check. Neither
+-- runs again once its version is recorded.
+--
+-- That leaves two ways a database reaches us un-repaired:
+--   * it recorded V010 before the column repair was added to that hook, so
+--     `memory_items.superseded_by` is missing and every recall SELECT errors
+--     and is discarded;
+--   * it recorded V011 after a hook that failed, so `notes_fts` is still
+--     empty and no later migration re-checks it.
+--
+-- This file carries no SQL. The whole repair is the Rust hook, which reads
+-- `pragma_table_info` and the FTS shadow tables and cannot be expressed as
+-- this SQLite's DDL (it rejects `ADD COLUMN IF NOT EXISTS`). The hook:
+-- adds the columns V006 and V008 introduced, creates the indexes that name
+-- them, and rebuilds `notes_fts` and `memory_fts` only when their inverted
+-- index is empty while their content table is not. Running it on an
+-- already-repaired database changes nothing.

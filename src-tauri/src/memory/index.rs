@@ -23,6 +23,12 @@ use crate::providers::Provider;
 
 /// Embed and store every row that needs it. Safe to call repeatedly.
 ///
+/// `dim` is the index's dimension. `0` means the index is empty of vectors
+/// under `model`, so the dimension is learned from the first vector the
+/// provider returns. That is the bootstrap case: before this, the caller
+/// refused to run at all until some other path had embedded one row, so a
+/// user who added memories by hand could never build the first vector.
+///
 /// Returns how many rows were written. A provider that returns the wrong
 /// number of vectors, or vectors of the wrong dimension, is an error
 /// naming both — a short vector silently compared against a long one
@@ -44,6 +50,10 @@ pub async fn fill_index(
         return Ok(0);
     }
 
+    // Learned from the first batch when the caller passed 0. Held in a
+    // local so the loop below checks every vector against one dimension
+    // rather than against whatever the last batch happened to return.
+    let mut dim = dim;
     let mut written = 0usize;
     for batch in rows.chunks(config::EMBED_BATCH) {
         let inputs: Vec<String> = batch.iter().map(embeddable_text).collect();
@@ -55,6 +65,13 @@ pub async fn fill_index(
                 vectors.len(),
                 batch.len()
             ));
+        }
+        if dim == 0 {
+            dim = vectors
+                .iter()
+                .map(|vector| vector.len())
+                .find(|len| *len > 0)
+                .ok_or("the embedding provider returned zero-length vectors")?;
         }
         for (row, vector) in batch.iter().zip(vectors.iter()) {
             if vector.len() != dim {

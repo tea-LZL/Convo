@@ -58,7 +58,14 @@ pub const FALLBACK_CONTEXT_LENGTH: u32 = 4096;
 
 /// Shorter content is not worth a vector: it is noise in a cosine
 /// neighbourhood and a waste of an embedding call.
-pub const MIN_CONTENT_LENGTH: usize = 32;
+///
+/// The floor is measured against the *embeddable text* (title plus content,
+/// see `index::embeddable_text`), not the content alone. A memory whose
+/// content is a single word but whose title names it — `User's nickname` /
+/// `Kevin`, `Birthday` / `February 18th` — is worth a vector and was
+/// excluded by the old content-only, 32-character gate. Eight is short
+/// enough to admit those and long enough to drop a one-token fragment.
+pub const MIN_CONTENT_LENGTH: usize = 8;
 
 /// How many texts to send in one embed request.
 pub const EMBED_BATCH: usize = 32;

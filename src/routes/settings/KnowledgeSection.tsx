@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { api, Provider } from "../../lib/api";
+import { api, KnowledgeIndexStatus, Provider } from "../../lib/api";
 import { errorClass, recordLog } from "../../lib/logger";
+import { Button } from "../../components/ui/Button";
 import { Select, Switch, TextInput } from "../../components/ui/Form";
 
 // Every key below is read by a function in src-tauri/src/memory/config.rs,
@@ -13,12 +14,13 @@ const TOP_K_KEY = "memory.top_k";
 const BUDGET_KEY = "memory.context_budget_fraction";
 const AUTO_EXTRACT_KEY = "memory.auto_extract";
 const ROUTING_KEY = "memory.routing";
+const EMBED_NOTES_KEY = "memory.embed_all_notes";
 
-// `memory.embed_all_notes` is deliberately absent. `config::embed_all_notes`
-// exists but nothing calls it, and the argument that would carry it
-// (`memory_index_fill`) is itself uncalled, so a switch here would write a
-// row no code path consults. `EXTRACT_EVERY_N_EXCHANGES` has no reader at
-// all: the trigger is a hardcoded `gen >= 2` in src/stores/chatStream.ts.
+// `memory.embed_all_notes` is now wired: the Build-index action below passes
+// its value as `memory_index_fill`'s `embedNotes` argument, and
+// `config::embed_all_notes` reads the same row. `EXTRACT_EVERY_N_EXCHANGES`
+// still has no reader: Rust's `should_extract` owns the threshold, and the
+// frontend trigger in src/stores/chatStream.ts now fires after every turn.
 
 /** config::TOP_K_DEFAULT */
 const TOP_K_DEFAULT = 6;
@@ -82,6 +84,15 @@ function acceptsBudget(raw: string): boolean {
 export function effectiveAutoExtract(raw: string | null): boolean {
   if (raw === null) return true;
   return raw.trim().toLowerCase() !== "false";
+}
+
+/**
+ * Effective `memory.embed_all_notes`. `config::embed_all_notes` reads only
+ * the literal `true`, and so does this: anything else is off, which is the
+ * default because a long-form note library is expensive to embed.
+ */
+export function effectiveEmbedNotes(raw: string | null): boolean {
+  return (raw ?? "").trim().toLowerCase() === "true";
 }
 
 /** The raw `memory.routing` row, untyped, exactly as `load_routing` wants it. */
@@ -149,6 +160,13 @@ export function KnowledgeSection() {
   // first and replacing them a tick later shows the user values that are not
   // theirs, and makes "which value is real" unanswerable.
   const [loaded, setLoaded] = useState(false);
+  // The semantic index. `indexStatus` is Rust's own view (how many rows wait,
+  // whether the model is configured); `indexMessage` is the result of the
+  // last Build-index run. Both are read here and nowhere else on the page.
+  const [embedNotes, setEmbedNotes] = useState(false);
+  const [indexStatus, setIndexStatus] = useState<KnowledgeIndexStatus | null>(null);
+  const [indexBusy, setIndexBusy] = useState(false);
+  const [indexMessage, setIndexMessage] = useState<string | null>(null);
 
   // A write rewrites the row, so it reads the row from a ref rather than
   // from one render's snapshot: two edits in a tick must not both start
@@ -194,8 +212,14 @@ export function KnowledgeSection() {
     // documents. Nothing is written back here. A key that fails to read has
     // not been unset by anyone, and re-saving the fallback would overwrite a
     // value the backend still honours.
-    void Promise.all([read(TOP_K_KEY), read(BUDGET_KEY), read(AUTO_EXTRACT_KEY), read(ROUTING_KEY)])
-      .then(([topKRaw, budgetRaw, autoExtractRaw, routingRaw]) => {
+    void Promise.all([
+      read(TOP_K_KEY),
+      read(BUDGET_KEY),
+      read(AUTO_EXTRACT_KEY),
+      read(ROUTING_KEY),
+      read(EMBED_NOTES_KEY),
+    ])
+      .then(([topKRaw, budgetRaw, autoExtractRaw, routingRaw, embedNotesRaw]) => {
         if (!active) return;
         const topKValue = String(effectiveTopK(topKRaw));
         const budgetValue = String(effectiveBudgetFraction(budgetRaw));
@@ -205,10 +229,12 @@ export function KnowledgeSection() {
           [BUDGET_KEY]: budgetValue,
           [AUTO_EXTRACT_KEY]: autoExtractValue,
           [ROUTING_KEY]: routingRaw ?? "",
+          [EMBED_NOTES_KEY]: String(effectiveEmbedNotes(embedNotesRaw)),
         };
         setTopK(topKValue);
         setBudget(budgetValue);
         setAutoExtract(autoExtractValue === "true");
+        setEmbedNotes(effectiveEmbedNotes(embedNotesRaw));
         const row = parseRoutingRow(routingRaw);
         rowRef.current = row;
         const parsed = emptyDrafts();
@@ -226,6 +252,23 @@ export function KnowledgeSection() {
     api.listProviders()
       .then((items) => { if (active) setProviders(items); })
       .catch((e) => { if (active) fail("get:providers", "list_providers", e); });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    // `await` inside the try, not a `.then`: the Tauri boundary is untyped at
+    // runtime, and a caller that resolves with something that is not a
+    // promise must not take the section down. `StatusCard` uses the same
+    // shape against the same command for the same reason.
+    void (async () => {
+      try {
+        const next = await api.knowledgeIndexStatus();
+        if (active) setIndexStatus(next ?? null);
+      } catch (e) {
+        if (active) fail("get:index-status", "knowledge_index_status", e);
+      }
+    })();
     return () => { active = false; };
   }, []);
 
@@ -251,6 +294,37 @@ export function KnowledgeSection() {
     const previous = autoExtract;
     setAutoExtract(next);
     void write(AUTO_EXTRACT_KEY, String(next), "set_memory_auto_extract", () => setAutoExtract(previous));
+  };
+
+  const toggleEmbedNotes = (next: boolean) => {
+    const previous = embedNotes;
+    setEmbedNotes(next);
+    void write(EMBED_NOTES_KEY, String(next), "set_memory_embed_all_notes", () => setEmbedNotes(previous));
+  };
+
+  const buildIndex = async () => {
+    setIndexBusy(true);
+    setIndexMessage(null);
+    try {
+      const written = await api.memoryIndexFill(embedNotes);
+      try {
+        setIndexStatus(await api.knowledgeIndexStatus());
+      } catch (e) {
+        // The fill succeeded; only the refresh failed. Do not overwrite the
+        // success message with the refresh error.
+        fail("get:index-status", "knowledge_index_status", e);
+      }
+      setIndexMessage(
+        written === 0
+          ? "Nothing to index — every eligible item already has a vector."
+          : `Indexed ${written} item${written === 1 ? "" : "s"}.`,
+      );
+    } catch (e) {
+      setIndexMessage(String(e));
+      fail("memory-index-fill", "memory_index_fill", e);
+    } finally {
+      setIndexBusy(false);
+    }
   };
 
   const setCapability = (capability: Capability, draft: Draft) => {
@@ -351,6 +425,58 @@ export function KnowledgeSection() {
                 description="After each chat with at least two exchanges, ask the model to propose durable facts. Only the literal value false turns this off, so an unset or unrecognised value leaves it on."
                 checked={autoExtract}
                 onChange={toggleAutoExtract}
+              />
+            </div>
+          </Card>
+
+          <Card className="mt-4">
+            <h3 className="text-sm font-medium text-text">Semantic index</h3>
+            <p className="text-xs text-text-muted mt-0.5 mb-1">
+              Recall fuses keyword search with vectors from an embedding model. Without one, only
+              memories that share words with the question are found — asking by the word "name"
+              misses a memory titled "User's nickname".
+            </p>
+            <div className="py-3 border-t border-border">
+              <div className="flex items-center justify-between gap-4">
+                <div className="min-w-0">
+                  <p className="text-sm text-text">
+                    {indexStatus?.embeddingModel
+                      ? `Embedding model: ${indexStatus.embeddingModel}`
+                      : "No embedding model configured"}
+                  </p>
+                  {indexStatus && (
+                    <p className="text-xs text-text-muted mt-0.5">
+                      {indexStatus.embeddedCount} embedded · {indexStatus.needsEmbedding} waiting
+                    </p>
+                  )}
+                </div>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  loading={indexBusy}
+                  disabled={indexBusy || !indexStatus?.embeddingModel}
+                  onClick={() => void buildIndex()}
+                >
+                  Build index
+                </Button>
+              </div>
+              {indexStatus?.semanticNote && (
+                <p className="text-xs text-text-subtle mt-2">{indexStatus.semanticNote}</p>
+              )}
+              {!indexStatus?.embeddingModel && (
+                <p className="text-xs text-text-subtle mt-2">
+                  Set an Embedding route under Model routing, pull that model in Ollama, then Build
+                  index.
+                </p>
+              )}
+              {indexMessage && <p className="text-xs text-text mt-2">{indexMessage}</p>}
+            </div>
+            <div className="py-3 border-t border-border">
+              <Switch
+                label="Index unpinned notes too"
+                description="By default only pinned notes get a vector: a long-form note library is expensive to embed and rarely what a chat query is reaching for."
+                checked={embedNotes}
+                onChange={toggleEmbedNotes}
               />
             </div>
           </Card>

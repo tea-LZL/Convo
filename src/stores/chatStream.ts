@@ -366,18 +366,20 @@ async function ensureListeners() {
       // presentation state, so navigation cannot lose a completed turn.
       maybeAutoTitle(cid, s.messages);
 
-      const gen = s._streamGeneration ?? 0;
       const lastModel = s._lastModel;
       const lastProvider = s._lastProviderId;
-      if (gen >= 2) {
-        import("../stores/settings").then(({ useSettingsStore }) => {
-          if (!useSettingsStore.getState().memoryAutoEvaluate) return;
-          void useMemoryStore.getState()
-            .extractAndRevise(cid, lastModel, lastProvider)
-            .then(reportRevisions)
-            .catch(console.error);
-        }).catch(console.error);
-      }
+      // Run after every completed turn and let Rust decide. `should_extract`
+      // owns the threshold (two exchanges / four messages since the
+      // watermark), so a second frontend gate here is a second threshold that
+      // can suppress extraction with nothing on the Rust side to record it.
+      // The `memoryAutoEvaluate` toggle is the user's off switch; it stays.
+      import("../stores/settings").then(({ useSettingsStore }) => {
+        if (!useSettingsStore.getState().memoryAutoEvaluate) return;
+        void useMemoryStore.getState()
+          .extractAndRevise(cid, lastModel, lastProvider)
+          .then(reportRevisions)
+          .catch(console.error);
+      }).catch(console.error);
 
       playDoneSound(false);
       if (shouldNotifyForCompletedConversation(cid)) {

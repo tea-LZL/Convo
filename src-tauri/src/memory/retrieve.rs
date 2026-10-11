@@ -406,6 +406,18 @@ const STOP_WORDS: &[&str] = &[
     "there", "their", "been", "being", "does", "doing", "just", "like", "some",
 ];
 
+/// First-person tokens, kept *before* stop-word removal. "my" and "i" are
+/// too short to survive into the FTS expression, and they are the only
+/// signal that a question is about the user rather than about a name in
+/// the project.
+const SELF_PRONOUNS: &[&str] = &["i", "im", "me", "my", "mine", "myself"];
+
+/// One identity concept. FTS tokenizes `name` and `nickname` as unrelated
+/// words, so "what's my name?" misses a memory titled "User nickname".
+/// This is that one group, not a synonym list: it is consulted only when
+/// the question is about the user.
+const IDENTITY_TERMS: &[&str] = &["name", "nickname", "username", "handle", "called"];
+
 /// Everything the routes need. `embedding_model: None` disables the vector
 /// route rather than failing: a user with no embedding model configured
 /// still gets keyword recall, which is the most likely first-run state.
@@ -422,29 +434,94 @@ pub struct RecallOptions<'a> {
     pub lambda: f64,
 }
 
+/// Every alphanumeric token, including the short ones and the stop words.
+///
+/// [`fts_expression`] drops those before building MATCH syntax. Identity
+/// questions are decided here, while "my" and "who" are still visible.
+fn query_tokens(query: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    for raw in query.split(|c: char| !c.is_alphanumeric() && c != '_') {
+        let token = raw.to_lowercase();
+        if token.is_empty() || tokens.contains(&token) {
+            continue;
+        }
+        tokens.push(token);
+    }
+    tokens
+}
+
+/// Whether this question is asking who the user is.
+///
+/// Self-reference alone is not enough: "what editor do I use" is about
+/// the user and must stay a normal keyword query. The question also has
+/// to be an identity one — a name, a nickname, or "who am I".
+fn identity_question(tokens: &[String]) -> bool {
+    let about_self = tokens.iter().any(|t| SELF_PRONOUNS.contains(&t.as_str()));
+    about_self
+        && tokens
+            .iter()
+            .any(|t| t == "who" || IDENTITY_TERMS.contains(&t.as_str()))
+}
+
+/// `("name" OR "nickname" OR ...)`. One clause, so a question about a
+/// name still matches a memory that only says nickname.
+fn identity_clause() -> String {
+    let parts = IDENTITY_TERMS
+        .iter()
+        .map(|term| format!("\"{term}\""))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    format!("({parts})")
+}
+
+fn quote_token(token: &str) -> String {
+    format!("\"{}\"", token.replace('"', ""))
+}
+
 /// Build an FTS5 MATCH expression from a free-text query.
 ///
 /// Tokens shorter than three characters and stop words are dropped, and
 /// the rest are quoted so a token containing FTS operators cannot become
 /// syntax. Returns `None` when nothing survives, which the caller treats
 /// as "no keyword route" rather than as an error.
+///
+/// An identity question is the exception. Its content word is expanded to
+/// the identity group, and a question like "who am I" — which otherwise
+/// survives as no tokens at all, because every word is a stop word or too
+/// short — searches that group instead of searching for nothing.
 fn fts_expression(query: &str, join: &str) -> Option<(String, Vec<String>)> {
+    let raw = query_tokens(query);
+    let identity = identity_question(&raw);
     let mut tokens: Vec<String> = Vec::new();
-    for raw in query.split(|c: char| !c.is_alphanumeric() && c != '_') {
-        let token = raw.to_lowercase();
+    for token in &raw {
         if token.len() < 3 || STOP_WORDS.contains(&token.as_str()) {
             continue;
         }
-        if !tokens.contains(&token) {
-            tokens.push(token);
+        if !tokens.contains(token) {
+            tokens.push(token.clone());
         }
     }
     if tokens.is_empty() {
-        return None;
+        if !identity {
+            return None;
+        }
+        return Some((
+            identity_clause(),
+            IDENTITY_TERMS
+                .iter()
+                .map(|term| (*term).to_string())
+                .collect(),
+        ));
     }
     let expression = tokens
         .iter()
-        .map(|t| format!("\"{}\"", t.replace('"', "")))
+        .map(|token| {
+            if identity && IDENTITY_TERMS.contains(&token.as_str()) {
+                identity_clause()
+            } else {
+                quote_token(token)
+            }
+        })
         .collect::<Vec<_>>()
         .join(join);
     Some((expression, tokens))
@@ -646,72 +723,92 @@ fn cosine_route(
 
 /// Every row that has a vector under `model`, filtered the same way the
 /// keyword route filters.
+///
+/// One query per owner type, not one per row. The previous shape scanned
+/// every embedding and then ran a `query_row` for each owner it found —
+/// N+1 round trips against a <50ms p95 budget. The filters here are the
+/// ones the keyword route's SQL applies, so a disabled or superseded
+/// memory never reaches the vector route either; the session allowlist is
+/// enforced once, after the merge, and is deliberately not repeated here.
 fn all_indexed_rows(
     conn: &rusqlite::Connection,
     model: &str,
 ) -> rusqlite::Result<Vec<(KnowledgeRow, Vec<f32>)>> {
-    let sql = "
-        SELECT e.owner_type, e.owner_id, e.dim, e.vec
+    let mut out: Vec<(KnowledgeRow, Vec<f32>)> = Vec::new();
+
+    let memory_sql = "
+        SELECT m.id, m.kind, m.title, m.content, m.access_count, m.updated_at,
+               e.dim, e.vec
         FROM memory_embeddings e
+        JOIN memory_items m ON m.id = e.owner_id
         WHERE e.model = ?1
-        ORDER BY e.owner_type, e.owner_id
+          AND e.owner_type = 'memory'
+          AND m.is_enabled = 1
+          AND m.superseded_by IS NULL
+        ORDER BY m.id
     ";
-    let mut stmt = conn.prepare(sql)?;
-    let entries = stmt.query_map(params![model], |row| {
-        let owner_type: String = row.get(0)?;
-        let owner_id: String = row.get(1)?;
-        let dim: usize = row.get(2)?;
-        let bytes: Vec<u8> = row.get(3)?;
-        Ok((owner_type, owner_id, dim, bytes))
+    let mut stmt = conn.prepare(memory_sql)?;
+    let rows = stmt.query_map(params![model], |row| {
+        let dim: usize = row.get(6)?;
+        let bytes: Vec<u8> = row.get(7)?;
+        Ok((
+            KnowledgeRow {
+                owner_type: "memory".into(),
+                owner_id: row.get(0)?,
+                kind: row.get(1)?,
+                title: row.get(2)?,
+                content: row.get(3)?,
+                is_enabled: true,
+                superseded_by: None,
+                access_count: row.get(4)?,
+                updated_at: row.get(5)?,
+            },
+            dim,
+            bytes,
+        ))
     })?;
-    let mut out = Vec::new();
-    for entry in entries {
-        let (owner_type, owner_id, dim, bytes) = entry?;
-        let Some(vector) = super::embed::decode(&bytes, dim) else {
-            continue;
-        };
-        let row = match owner_type.as_str() {
-            "memory" => conn.query_row(
-                "SELECT kind, title, content, is_enabled, superseded_by, access_count, updated_at
-                 FROM memory_items WHERE id = ?1 AND is_enabled = 1 AND superseded_by IS NULL",
-                params![owner_id],
-                |r| {
-                    Ok(KnowledgeRow {
-                        owner_type: owner_type.clone(),
-                        owner_id: owner_id.clone(),
-                        kind: r.get(0)?,
-                        title: r.get(1)?,
-                        content: r.get(2)?,
-                        is_enabled: r.get::<_, i64>(3)? != 0,
-                        superseded_by: r.get(4)?,
-                        access_count: r.get(5)?,
-                        updated_at: r.get(6)?,
-                    })
-                },
-            ),
-            "note" => conn.query_row(
-                "SELECT title, body, updated_at FROM notes WHERE id = ?1",
-                params![owner_id],
-                |r| {
-                    Ok(KnowledgeRow {
-                        owner_type: owner_type.clone(),
-                        owner_id: owner_id.clone(),
-                        kind: "note".into(),
-                        title: r.get(0)?,
-                        content: r.get(1)?,
-                        is_enabled: true,
-                        superseded_by: None,
-                        access_count: 0,
-                        updated_at: r.get(2)?,
-                    })
-                },
-            ),
-            _ => continue,
-        };
-        if let Ok(row) = row {
-            out.push((row, vector));
+    for row in rows {
+        let (knowledge, dim, bytes) = row?;
+        if let Some(vector) = super::embed::decode(&bytes, dim) {
+            out.push((knowledge, vector));
         }
     }
+
+    let note_sql = "
+        SELECT n.id, n.title, n.body, n.updated_at, e.dim, e.vec
+        FROM memory_embeddings e
+        JOIN notes n ON n.id = e.owner_id
+        WHERE e.model = ?1
+          AND e.owner_type = 'note'
+        ORDER BY n.id
+    ";
+    let mut stmt = conn.prepare(note_sql)?;
+    let rows = stmt.query_map(params![model], |row| {
+        let dim: usize = row.get(4)?;
+        let bytes: Vec<u8> = row.get(5)?;
+        Ok((
+            KnowledgeRow {
+                owner_type: "note".into(),
+                owner_id: row.get(0)?,
+                kind: "note".into(),
+                title: row.get(1)?,
+                content: row.get(2)?,
+                is_enabled: true,
+                superseded_by: None,
+                access_count: 0,
+                updated_at: row.get(3)?,
+            },
+            dim,
+            bytes,
+        ))
+    })?;
+    for row in rows {
+        let (knowledge, dim, bytes) = row?;
+        if let Some(vector) = super::embed::decode(&bytes, dim) {
+            out.push((knowledge, vector));
+        }
+    }
+
     Ok(out)
 }
 
@@ -913,15 +1010,20 @@ pub fn recall_with_query_vector(
     };
 
     // Merge into candidates keyed by owner, so a row found by both routes
-    // carries both ranks rather than appearing twice.
+    // carries both ranks rather than appearing twice. A `HashSet` guards the
+    // first-seen order: the old `Vec::contains` was a linear scan per
+    // candidate, which is quadratic in the corpus size on a recall path with
+    // a <50ms p95 budget.
     let mut order: Vec<(String, String)> = Vec::new();
+    let mut order_seen: std::collections::HashSet<(String, String)> =
+        std::collections::HashSet::new();
     let mut bm25_rank: std::collections::HashMap<(String, String), usize> =
         std::collections::HashMap::new();
     let mut terms: std::collections::HashMap<(String, String), Vec<String>> =
         std::collections::HashMap::new();
     for hit in &keyword {
         let key = (hit.row.owner_type.clone(), hit.row.owner_id.clone());
-        if !order.contains(&key) {
+        if order_seen.insert(key.clone()) {
             order.push(key.clone());
         }
         bm25_rank.insert(key.clone(), hit.rank);
@@ -937,7 +1039,7 @@ pub fn recall_with_query_vector(
         std::collections::HashMap::new();
     for (index, (row, score, vector)) in semantic.iter().enumerate() {
         let key = (row.owner_type.clone(), row.owner_id.clone());
-        if !order.contains(&key) {
+        if order_seen.insert(key.clone()) {
             order.push(key.clone());
         }
         cosine_rank.insert(key.clone(), index + 1);

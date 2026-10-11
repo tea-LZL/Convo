@@ -499,7 +499,9 @@ describe("SettingsRoute density: the standard rhythm, measured", () => {
     // ancestor carrying a rule" and this assertion is about the element
     // that *has* the rule — with the rule taken away, `rowOf` would climb
     // past it and find something else, and the mutation came back green.
-    const switchRow = screen.getByRole("switch").parentElement!.parentElement!;
+    const switchRow = screen
+      .getByRole("switch", { name: "Extract memories automatically" })
+      .parentElement!.parentElement!;
     expect(switchRow.textContent, "the switch row is the one holding the switch").toContain("Extract memories automatically");
     await expectVisibleRule(switchRow, "top", "the Knowledge section's switch row");
 
@@ -873,15 +875,18 @@ describe("SettingsRoute in the shared vocabulary", () => {
       "no switch may fall back to the primitive's unnamed label",
     ).not.toBeInTheDocument();
 
-    // The seventh switch on this page is the Knowledge section's, and it
-    // already passed `label` before this task. Named here so "every switch"
-    // means every switch rather than the six in one section.
+    // The seventh and eighth switches on this page are the Knowledge
+    // section's, and both already passed `label` before this task. Named here
+    // so "every switch" means every switch rather than the six in one section.
     cleanup();
     const knowledge = renderSettings();
     await openSection(knowledge.container, "knowledge");
-    expect(screen.getAllByRole("switch"), "the knowledge section has one switch").toHaveLength(1);
+    expect(screen.getAllByRole("switch"), "the knowledge section has two switches").toHaveLength(2);
     expect(
       screen.getByRole("switch", { name: "Extract memories automatically" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", { name: "Index unpinned notes too" }),
     ).toBeInTheDocument();
   });
 

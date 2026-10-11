@@ -141,12 +141,14 @@ describe("KnowledgeSection — rendering", () => {
     expect([...keys].sort()).toEqual([
       "memory.auto_extract",
       "memory.context_budget_fraction",
+      "memory.embed_all_notes",
       "memory.routing",
       "memory.top_k",
     ]);
-    // `memory.embed_all_notes` has a reader that nothing calls, and
-    // EXTRACT_EVERY_N_EXCHANGES has no reader at all. Neither gets a control.
-    expect(keys).not.toContain("memory.embed_all_notes");
+    // Every key above has a reader in src-tauri/src/memory/config.rs and is
+    // consulted on the live path: `memory.embed_all_notes` is passed to
+    // `memory_index_fill` by the Build-index action.
+    // EXTRACT_EVERY_N_EXCHANGES has no reader at all and gets no control.
     expect(keys.some((k) => k.includes("EXCHANGE"))).toBe(false);
   });
 });

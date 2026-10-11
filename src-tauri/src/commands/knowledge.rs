@@ -405,11 +405,14 @@ fn created_memory_id(applied: &crate::memory::revise::Applied) -> Option<&str> {
 /// create: memories added by hand, notes, and anything written while the
 /// embedding route was unconfigured or failing.
 ///
-/// The dimension comes from what is already stored, not from
-/// configuration. A configured model and the vectors on disk are the only
-/// two sources, and if they disagree the stored vectors are the truth about
+/// The dimension comes from what is already stored when there is something
+/// stored, and from the first vector the provider returns when there is
+/// not. A configured model and the vectors on disk are the only two
+/// sources, and if they disagree the stored vectors are the truth about
 /// what this index holds — mixing the two would produce confident wrong
-/// scores rather than a visible error.
+/// scores rather than a visible error. A zero dimension is the empty-index
+/// bootstrap, not a failure: this command is the way the first vector gets
+/// written, so it cannot require one to already exist.
 #[tauri::command]
 pub async fn memory_index_fill(
     pool: State<'_, Arc<DbPool>>,
@@ -429,13 +432,6 @@ pub async fn memory_index_fill(
             .unwrap_or(0);
         (route, dim.max(0) as usize)
     };
-    if dim == 0 {
-        return Err(format!(
-            "nothing is embedded for {} yet, so its dimension is unknown; \
-             add one memory with the model enabled first",
-            route.model
-        ));
-    }
 
     let (provider_kind, base_url) = {
         let conn = pool.get().map_err(|e| e.to_string())?;
