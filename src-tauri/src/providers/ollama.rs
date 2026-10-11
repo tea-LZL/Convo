@@ -44,6 +44,93 @@ impl OllamaProvider {
     }
 }
 
+/// The body Ollama's `/api/chat` actually reads.
+///
+/// The request used to be serialized straight from [`ChatRequest`], which
+/// put `system` and the sampling fields at the top level. `/api/chat` reads
+/// neither: it takes the system prompt as the first `messages` entry and
+/// every sampling knob inside `options`. The effect was silent — the
+/// request was accepted, the model answered, and the entire assembled
+/// system prompt, persona and `<memory-context>` block included, never
+/// reached it. That is why "what is my name" was answered from the weights
+/// alone while the recall log recorded an injection.
+#[derive(serde::Serialize)]
+struct OllamaChatRequest {
+    model: String,
+    messages: Vec<OllamaMessage>,
+    stream: bool,
+    options: OllamaOptions,
+}
+
+#[derive(serde::Serialize)]
+struct OllamaMessage {
+    role: String,
+    content: String,
+    /// Ollama takes raw base64, not a `data:` URL.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    images: Vec<String>,
+}
+
+#[derive(serde::Serialize, Default)]
+struct OllamaOptions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_p: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_k: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    num_ctx: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repeat_penalty: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stop: Option<Vec<String>>,
+}
+
+impl From<ChatRequest> for OllamaChatRequest {
+    fn from(r: ChatRequest) -> Self {
+        let mut messages: Vec<OllamaMessage> = Vec::with_capacity(r.messages.len() + 1);
+        if let Some(system) = r.system.as_ref().filter(|s| !s.is_empty()) {
+            messages.push(OllamaMessage {
+                role: "system".into(),
+                content: system.clone(),
+                images: vec![],
+            });
+        }
+        for m in r.messages {
+            messages.push(OllamaMessage {
+                role: m.role,
+                content: m.content,
+                // `thinking` is deliberately not sent back: Ollama emits it
+                // and does not accept it as input.
+                images: m.images.into_iter().map(strip_data_url).collect(),
+            });
+        }
+        Self {
+            model: r.model,
+            messages,
+            stream: r.stream,
+            options: OllamaOptions {
+                temperature: r.temperature,
+                top_p: r.top_p,
+                top_k: r.top_k,
+                num_ctx: r.num_ctx,
+                repeat_penalty: r.repeat_penalty,
+                stop: r.stop,
+            },
+        }
+    }
+}
+
+/// Drop a `data:<mime>;base64,` prefix, which Ollama does not want. A bare
+/// base64 string is passed through unchanged.
+fn strip_data_url(image: String) -> String {
+    match image.split_once(";base64,") {
+        Some((_, rest)) => rest.to_string(),
+        None => image,
+    }
+}
+
 #[async_trait]
 impl Provider for OllamaProvider {
     fn list_models<'a>(&'a self) -> ProviderFuture<'a, Vec<ModelInfo>> {
@@ -104,9 +191,10 @@ impl Provider for OllamaProvider {
 
     fn chat_stream<'a>(&'a self, request: ChatRequest) -> ProviderFuture<'a, ProviderStream> {
         Box::pin(async move {
+            let body = OllamaChatRequest::from(request);
             let resp = self
                 .auth(self.http.post(self.url("api/chat")))
-                .json(&request)
+                .json(&body)
                 .send()
                 .await
                 .map_err(|e| ProviderError::Http(e.to_string()))?;

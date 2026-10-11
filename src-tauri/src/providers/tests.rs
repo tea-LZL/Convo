@@ -211,6 +211,118 @@ async fn serve_echoing_headers() -> (String, Arc<Mutex<Option<String>>>) {
     (format!("http://{}", address), captured)
 }
 
+/// A loopback server that reads the whole request — headers and the body
+/// named by `Content-Length` — captures it, and answers with a canned body.
+/// `serve_once` reads only the first packet, which is enough for a status
+/// assertion but can lose a POST body written separately.
+async fn serve_capturing_request(
+    response_body: &'static str,
+    content_type: &'static str,
+) -> (String, Arc<Mutex<Option<String>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let captured: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let sink = captured.clone();
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut buf = Vec::new();
+        let mut chunk = [0_u8; 4096];
+        loop {
+            let read = match socket.read(&mut chunk).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => n,
+            };
+            buf.extend_from_slice(&chunk[..read]);
+            if let Some(head_end) = find_subsequence(&buf, b"\r\n\r\n") {
+                let head = String::from_utf8_lossy(&buf[..head_end]).to_lowercase();
+                let content_length = head
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length:"))
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                if buf.len() >= head_end + 4 + content_length {
+                    break;
+                }
+            }
+        }
+        *sink.lock().await = Some(String::from_utf8_lossy(&buf).to_string());
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            content_type,
+            response_body.len(),
+            response_body,
+        );
+        let _ = socket.write_all(response.as_bytes()).await;
+    });
+    (format!("http://{}", address), captured)
+}
+
+fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+/// The system prompt and the sampling knobs must reach Ollama's
+/// `/api/chat`. They used to be sent as top-level fields, which that
+/// endpoint ignores: the persona and the whole `<memory-context>` block
+/// never arrived, and every model answered from its weights alone while the
+/// recall log recorded a successful injection.
+#[tokio::test]
+async fn ollama_carries_the_system_prompt_as_a_message_and_options() {
+    let (url, captured) = serve_capturing_request(
+        "{\"message\":{\"role\":\"assistant\",\"content\":\"hi\"},\"done\":true}\n",
+        "application/x-ndjson",
+    )
+    .await;
+    let provider = OllamaProvider::new(url, None);
+    let mut stream = provider
+        .chat_stream(ChatRequest {
+            model: "model".into(),
+            messages: vec![MessageContent {
+                role: "user".into(),
+                content: "what is my name".into(),
+                thinking: None,
+                images: vec![],
+            }],
+            stream: true,
+            system: Some("You MUST use these relevant facts: Kevin".into()),
+            temperature: Some(0.7),
+            top_p: Some(0.9),
+            top_k: Some(40),
+            num_ctx: Some(8192),
+            repeat_penalty: Some(1.1),
+            stop: Some(vec!["</s>".into()]),
+        })
+        .await
+        .unwrap();
+    while stream.next().await.is_some() {}
+
+    let request = captured.lock().await.clone().expect("no request captured");
+    let body = request.split("\r\n\r\n").nth(1).unwrap_or("");
+    let parsed: serde_json::Value = serde_json::from_str(body)
+        .unwrap_or_else(|e| panic!("request body is not JSON: {e}\n{body}"));
+
+    assert!(
+        parsed.get("system").is_none(),
+        "system must not be a top-level field; /api/chat ignores it:\n{body}"
+    );
+    let messages = parsed["messages"].as_array().expect("messages array");
+    assert_eq!(messages[0]["role"], "system");
+    assert!(
+        messages[0]["content"].as_str().unwrap().contains("Kevin"),
+        "the memory block did not survive the request build:\n{body}"
+    );
+    assert_eq!(messages[1]["role"], "user");
+    assert!(
+        parsed.get("temperature").is_none(),
+        "temperature must live under options, not at the top level:\n{body}"
+    );
+    assert_eq!(parsed["options"]["num_ctx"], 8192);
+    assert_eq!(parsed["options"]["temperature"], 0.7);
+    assert_eq!(parsed["options"]["top_k"], 40);
+}
+
 #[tokio::test]
 async fn ollama_sends_an_authorization_header_when_a_key_is_configured() {
     // OllamaProvider::new used to discard its api_key argument, so every
