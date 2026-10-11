@@ -61,15 +61,32 @@ export function ChatRoute() {
     return () => { cancelled = true; };
   }, []);
 
-  // Sync URL to activeId
+  // Sync URL to activeId. When the URL names a session the store has not
+  // marked active yet — the welcome screen's New conversation, which
+  // navigates before `activeId` is set — adopt it rather than bouncing back
+  // to /chat. Bouncing is only correct when the session is genuinely gone;
+  // a refresh still in flight means "not loaded yet", not "missing".
   useEffect(() => {
     if (loading || sessionsLoading || sessionsError) return;
     if (activeId && !sessionId) {
       navigate(`/chat/${activeId}`, { replace: true });
     } else if (!activeId && sessionId) {
+      if (sessions.some((session) => session.id === sessionId)) {
+        setActive(sessionId);
+        return;
+      }
+      // The store snapshot in this render can be a beat old: a refresh that
+      // began in the effect above has not resolved yet. Read the live store
+      // so "loading" is not mistaken for "deleted".
+      const current = useSessionsStore.getState();
+      if (current.sessions.some((session) => session.id === sessionId)) {
+        setActive(sessionId);
+        return;
+      }
+      if (current.loading) return;
       navigate("/chat", { replace: true });
     }
-  }, [activeId, loading, navigate, sessionId, sessionsError, sessionsLoading]);
+  }, [activeId, loading, navigate, sessionId, sessions, sessionsError, sessionsLoading, setActive]);
 
   // Listen for "Insert into chat" from other routes (e.g. Documents)
   useEffect(() => {
@@ -140,9 +157,17 @@ export function ChatRoute() {
 
 function EmptyChat({ hasProviders }: { hasProviders: boolean | null }) {
   const create = useSessionsStore((s) => s.create);
+  const setActive = useSessionsStore((s) => s.setActive);
   const navigate = useNavigate();
   const handleNew = async () => {
     const s = await create();
+    // Mark it active before navigating, exactly as the sidebar's New chat
+    // does. Without this the route lands on /chat/<id>, the URL-sync effect
+    // bounces to /chat because `activeId` is still null, and StrictMode's
+    // effect cleanup cancels the async refresh that would have set it — so
+    // the session is created, shows in the sidebar, and the pane never
+    // leaves the welcome screen.
+    setActive(s.id);
     navigate(`/chat/${s.id}`);
   };
 
@@ -230,6 +255,7 @@ function EmptyChat({ hasProviders }: { hasProviders: boolean | null }) {
             key={i}
             onClick={async () => {
               const sess = await create();
+              setActive(sess.id);
               navigate(`/chat/${sess.id}`);
               // Pre-fill input with the starter
               setTimeout(() => {

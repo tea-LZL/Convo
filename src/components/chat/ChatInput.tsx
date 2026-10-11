@@ -126,9 +126,11 @@ export function ChatInput({
     if (parsed) {
       const result = await runCommand(parsed, slashCtx);
       if (result.sent && result.text) {
-        await onSend(result.text);
+        // Clear before the await, for the same reason as the plain path
+        // below.
         setInput("");
         onInputChange("");
+        await onSend(result.text);
         return;
       }
       if (result.text !== undefined) {
@@ -143,9 +145,13 @@ export function ChatInput({
         return;
       }
     }
-    await onSend(text);
+    // Clear before awaiting the send. The user's message is appended to the
+    // store synchronously, so an emptying composer is the signal that the
+    // message was sent; clearing after `onSend` resolved meant the text sat
+    // there until the provider answered, which read as "the send did nothing".
     setInput("");
     onInputChange("");
+    await onSend(text);
   };
 
   const handleKey = (e: React.KeyboardEvent) => {
