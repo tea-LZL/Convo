@@ -3983,3 +3983,43 @@ fn a_real_entity_is_kept() {
     assert_eq!(facts[0].kind, "entity");
     assert_eq!(facts[0].content, "owns the auth service");
 }
+
+#[test]
+fn a_superseded_memory_reads_back_with_its_replacement_through_every_reader() {
+    let conn = migrated_conn();
+    add_memory_full(
+        &conn,
+        "old-m",
+        "project_fact",
+        "Deploy window",
+        "Ships land any time on Fridays.",
+    );
+    add_memory_full(
+        &conn,
+        "new-m",
+        "project_fact",
+        "Friday deploy window",
+        "Ships land after 2pm on Fridays.",
+    );
+    conn.execute(
+        "UPDATE memory_items SET superseded_by = 'new-m' WHERE id = 'old-m'",
+        [],
+    )
+    .unwrap();
+
+    for items in [
+        memory::list(&conn, None).unwrap(),
+        memory::list(&conn, Some("project_fact")).unwrap(),
+        memory::enabled(&conn).unwrap(),
+        memory::search(&conn, "Fridays", None, 30)
+            .unwrap()
+            .into_iter()
+            .map(|hit| hit.item)
+            .collect(),
+    ] {
+        let old = items.iter().find(|m| m.id == "old-m").expect("old row");
+        let new = items.iter().find(|m| m.id == "new-m").expect("new row");
+        assert_eq!(old.superseded_by.as_deref(), Some("new-m"));
+        assert_eq!(new.superseded_by, None);
+    }
+}

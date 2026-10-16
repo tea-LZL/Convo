@@ -202,4 +202,13 @@ describe("SessionMemoryModal", () => {
       expect.stringContaining("whether it is checked here or not"),
     );
   });
+
+  it("warns that scoping a chat to memories removes that chat's notes from recall", async () => {
+    render(<SessionMemoryModal open onClose={() => {}} sessionId="session-1" />);
+    await waitFor(() => screen.getByText(/Keep responses concise/));
+
+    const copy = document.body.textContent ?? "";
+    expect(copy).toMatch(/removes.*notes from.*recall|notes.*removed from.*recall/i);
+    expect(copy).toMatch(/memory ids only/i);
+  });
 });

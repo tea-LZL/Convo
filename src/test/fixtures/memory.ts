@@ -8,6 +8,7 @@ export const preferenceItem: MemoryItem = {
   tags: "tone,style",
   is_enabled: true,
   pinned: false,
+  superseded_by: null,
   created_at: "2024-01-01T00:00:00Z",
   updated_at: "2024-01-01T00:00:00Z",
 };
@@ -20,6 +21,7 @@ export const factItem: MemoryItem = {
   tags: "stack",
   is_enabled: true,
   pinned: false,
+  superseded_by: null,
   created_at: "2024-01-02T00:00:00Z",
   updated_at: "2024-01-02T00:00:00Z",
 };
@@ -32,6 +34,7 @@ export const skillItem: MemoryItem = {
   tags: "coding",
   is_enabled: false,
   pinned: false,
+  superseded_by: null,
   created_at: "2024-01-03T00:00:00Z",
   updated_at: "2024-01-03T00:00:00Z",
 };

@@ -91,6 +91,7 @@ import { RouteShell } from "../components/ui/RouteShell";
 import { ROW_ACTION, ROW_ACTION_IDLE } from "../components/ui/rowAction";
 import { IndexStatusBanner } from "../components/memory/IndexStatusBanner";
 import { RecallPanel } from "../components/memory/RecallPanel";
+import { SupersedeHistory } from "../components/memory/SupersedeHistory";
 import { useNavigate } from "react-router-dom";
 
 type KindFilter = "all" | "user_pref" | "project_fact" | "skill";
@@ -469,11 +470,12 @@ export function MemoryRoute() {
           <ul className="space-y-1">
             {visible.map((entry) => {
               const item = entry.item;
+              const replaced = Boolean(item.superseded_by);
               const tags = (item.tags ?? "").split(",").map((t) => t.trim()).filter(Boolean);
               const fromNote = provenance.get(item.id);
               const label = item.title || "memory item";
               return (
-                <li key={item.id} className={`bg-surface-1 border border-border rounded-lg p-2 group ${!item.is_enabled ? "opacity-50" : ""}`}>
+                <li key={item.id} id={`memory-${item.id}`} className={`bg-surface-1 border border-border rounded-lg p-2 group ${!item.is_enabled ? "opacity-50" : ""}`}>
                   <div className="flex items-start gap-1.5">
                     <Badge variant={KIND_VARIANT[item.kind] ?? "warn"}>
                       {KIND_LABEL[item.kind as KindFilter] || item.kind}
@@ -492,7 +494,7 @@ export function MemoryRoute() {
                         `title` is what makes truncation fair — the text is
                         only clipped, never shortened. */}
                     {item.title && (
-                      <div className="text-sm font-medium text-text min-w-0 truncate" title={item.title}>
+                      <div className={`text-sm font-medium min-w-0 truncate ${replaced ? "text-text-subtle line-through" : "text-text"}`} title={item.title}>
                         {item.title}
                       </div>
                     )}
@@ -576,10 +578,15 @@ export function MemoryRoute() {
                       }}
                     />
                   ) : (
-                    <div className="text-xs text-text-muted leading-relaxed mt-1 whitespace-pre-wrap break-words">{item.content}</div>
+                    <div className={`text-xs text-text-muted leading-relaxed mt-1 whitespace-pre-wrap break-words ${replaced ? "line-through" : ""}`}>{item.content}</div>
                   )}
-                  {(tags.length > 0 || fromNote) && (
+                  {(tags.length > 0 || fromNote || replaced) && (
                     <div className="flex flex-wrap items-center gap-1 mt-1.5">
+                      <SupersedeHistory
+                        item={item}
+                        items={items}
+                        onSelectReplacement={startEdit}
+                      />
                       {fromNote && (
                         <span
                           className={`${CHIP} border-border bg-surface-2 text-text-muted`}

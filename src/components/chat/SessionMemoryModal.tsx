@@ -99,8 +99,10 @@ export function SessionMemoryModal({ open, onClose, sessionId }: SessionMemoryMo
         Checked items are the ones recall may return for this chat; unchecking one only changes
         this chat. Recall sends the ones relevant to what you are asking, so checking is not the
         same as pinning. A pinned memory is sent in every chat whether it is checked here or not —
-        pin one from the Memory page to always include it. Unchecking the last one means no memory
-        is eligible here; checking them all again removes the restriction.
+        pin one from the Memory page to always include it. Scoping this chat to memories also
+        removes this chat&apos;s notes from recall, because the session allowlist holds memory ids
+        only. Unchecking the last one means no memory is eligible here; checking them all again
+        removes the restriction.
       </p>
       {/*
         The state a user must never have to infer: with every box unchecked,

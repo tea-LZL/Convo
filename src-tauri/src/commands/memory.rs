@@ -30,6 +30,7 @@ fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryItem> {
         created_at: row.get(6)?,
         updated_at: row.get(7)?,
         pinned: row.get::<_, i64>(8)? != 0,
+        superseded_by: row.get(9)?,
     })
 }
 
@@ -61,13 +62,13 @@ pub fn list_memory(
 pub fn list(conn: &rusqlite::Connection, kind: Option<&str>) -> Result<Vec<MemoryItem>, String> {
     let (sql, k): (&str, Option<&str>) = if kind.is_some() {
         (
-            "SELECT id, kind, title, content, tags, is_enabled, created_at, updated_at, pinned
+            "SELECT id, kind, title, content, tags, is_enabled, created_at, updated_at, pinned, superseded_by
              FROM memory_items WHERE kind = ?1 ORDER BY updated_at DESC",
             kind,
         )
     } else {
         (
-            "SELECT id, kind, title, content, tags, is_enabled, created_at, updated_at, pinned
+            "SELECT id, kind, title, content, tags, is_enabled, created_at, updated_at, pinned, superseded_by
              FROM memory_items ORDER BY kind, updated_at DESC",
             None,
         )
@@ -194,7 +195,7 @@ pub fn search(
         // which is tags: every excerpt came from the tag list, and a memory
         // with no tags is a NULL in that column, so the row could not be
         // read at all.
-        "SELECT m.id, m.kind, m.title, m.content, m.tags, m.is_enabled, m.created_at, m.updated_at, m.pinned,
+        "SELECT m.id, m.kind, m.title, m.content, m.tags, m.is_enabled, m.created_at, m.updated_at, m.pinned, m.superseded_by,
                 snippet(memory_fts, 1, '<mark>', '</mark>', '…', 16)
          FROM memory_fts JOIN memory_items m ON m.rowid = memory_fts.rowid
          WHERE memory_fts MATCH ?1",
@@ -207,7 +208,7 @@ pub fn search(
     let mapper = |row: &rusqlite::Row<'_>| -> rusqlite::Result<MemorySearchHit> {
         Ok(MemorySearchHit {
             item: row_to_item(row)?,
-            snippet: row.get::<_, String>(9)?,
+            snippet: row.get::<_, String>(10)?,
         })
     };
     // `?2` is bound even when its clause is absent. SQLite counts a
@@ -234,7 +235,7 @@ pub fn get_enabled_memory(pool: State<'_, Arc<DbPool>>) -> Result<Vec<MemoryItem
 pub fn enabled(conn: &rusqlite::Connection) -> Result<Vec<MemoryItem>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, kind, title, content, tags, is_enabled, created_at, updated_at, pinned
+            "SELECT id, kind, title, content, tags, is_enabled, created_at, updated_at, pinned, superseded_by
              FROM memory_items WHERE is_enabled = 1 ORDER BY kind, updated_at DESC",
         )
         .map_err(|e| e.to_string())?;

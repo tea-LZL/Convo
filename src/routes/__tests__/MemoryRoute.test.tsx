@@ -1548,6 +1548,37 @@ describe("MemoryRoute recall and index status", () => {
 
     expect(await screen.findByText(reason)).toBeInTheDocument();
   });
+
+  it("renders a superseded row struck through, names its replacement, and leaves a live row untouched", async () => {
+    const oldRow = listed("old-1", {
+      title: "Deploy window",
+      content: "Ships land any time on Fridays.",
+      superseded_by: "new-1",
+    });
+    const newRow = listed("new-1", {
+      title: "Friday deploy window",
+      content: "Ships land after 2pm on Fridays.",
+      superseded_by: null,
+    });
+    serveMemories([oldRow, newRow]);
+
+    const { container } = renderMemory();
+    const list = await memoryList(container);
+
+    const oldTitle = within(list).getByText("Deploy window");
+    const newTitle = within(list).getByText("Friday deploy window");
+    expect(oldTitle).toHaveClass("line-through");
+    expect(within(list).getByText("Ships land any time on Fridays.")).toHaveClass("line-through");
+    expect(newTitle).not.toHaveClass("line-through");
+    expect(within(list).getByText("Ships land after 2pm on Fridays.")).not.toHaveClass("line-through");
+
+    const reachReplacement = within(list).getByRole("button", {
+      name: /replaced by Friday deploy window/i,
+    });
+    expect(reachReplacement).toBeInTheDocument();
+    fireEvent.click(reachReplacement);
+    expect(await screen.findByRole("dialog", { name: "Edit memory" })).toBeInTheDocument();
+  });
 });
 
 

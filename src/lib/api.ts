@@ -220,6 +220,7 @@ export interface MemoryItem {
    * retrieval happens to rank.
    */
   pinned: boolean;
+  superseded_by?: string | null;
 }
 
 export interface MemorySearchHit {

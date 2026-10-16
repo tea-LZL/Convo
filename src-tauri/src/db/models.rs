@@ -144,6 +144,7 @@ pub struct MemoryItem {
     /// Set by `commands::memory::set_pinned`, never by `upsert_memory`. A
     /// pinned memory is injected on every send, budget permitting.
     pub pinned: bool,
+    pub superseded_by: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
