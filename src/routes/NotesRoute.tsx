@@ -57,6 +57,7 @@ import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { RouteShell } from "../components/ui/RouteShell";
 import { ROW_ACTION } from "../components/ui/rowAction";
 import { Badge } from "../components/ui/Form";
+import { appendToChatDraft } from "../components/chat/ChatInput";
 import { toast } from "../stores/toasts";
 
 /**
@@ -204,6 +205,12 @@ export function NotesRoute() {
       setError(String(e));
       toast.error(String(e), "Memory could not be unlinked");
     }
+  };
+
+  const addToChat = () => {
+    if (!body.trim()) return;
+    appendToChatDraft(body);
+    toast.info("Added to chat draft");
   };
 
   const notes = rows.map((r) => r.note);
@@ -357,6 +364,7 @@ export function NotesRoute() {
               >
                 {active.pinned ? <PinOff size={13} aria-hidden="true" /> : <Pin size={13} aria-hidden="true" />}
               </button>
+              <Button size="sm" variant="secondary" onClick={addToChat} disabled={!body.trim()} icon={<MessageSquare size={12} />}>Add to chat</Button>
               <Button size="sm" variant="ghost" onClick={() => setDeleteTargetId(activeId)} icon={<Trash2 size={12} />}>Delete</Button>
               <Button size="sm" variant="primary" onClick={save} loading={saving} disabled={!dirty} icon={<Save size={12} />}>Save</Button>
             </div>

@@ -253,6 +253,7 @@ export function ChatViewNew({ sessionId, providers, session }: { sessionId: stri
     setModelId: (id) => setModelId(id),
     setProviderId: (id) => setProviderId(id),
     currentModel: modelId,
+    currentProviderId: providerId,
     resendLast: async () => {
       const lastUser = [...chat.messages].reverse().find((m) => m.role === "user");
       if (lastUser) await chat.send(lastUser.content);

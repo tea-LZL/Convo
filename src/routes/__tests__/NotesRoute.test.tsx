@@ -8,6 +8,7 @@ import postcss from "postcss";
 import tailwindcss from "tailwindcss";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api, Note, NoteWithLinks } from "../../lib/api";
+import { ChatInput } from "../../components/chat/ChatInput";
 import { NotesRoute } from "../NotesRoute";
 import repoTailwind from "../../../tailwind.config";
 
@@ -387,6 +388,35 @@ describe("NotesRoute pinning and provenance", () => {
     expect(await screen.findByDisplayValue("Provider setup")).toBeInTheDocument();
     // search_notes returns plain notes, so links are unknown, not empty.
     expect(screen.queryByText(/^Produced/)).not.toBeInTheDocument();
+  });
+
+  it("adds the open note body to the chat draft without sending it", async () => {
+    vi.spyOn(api, "listNotes").mockResolvedValue([linked(note)]);
+    const onSend = vi.fn();
+    const onInputChange = vi.fn();
+
+    render(
+      <MemoryRouter>
+        <NotesRoute />
+        <ChatInput
+          disabled={false}
+          streaming={false}
+          attachments={{ attachments: [], addFiles: vi.fn() }}
+          onSend={onSend}
+          onStop={vi.fn()}
+          onInputChange={onInputChange}
+          slashCtx={{ sessionId: "session-1" }}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByDisplayValue("Provider setup")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Add to chat" }));
+
+    const composer = screen.getByRole("textbox", { name: "Message" });
+    expect(composer).toHaveValue("Provider setup");
+    expect(onInputChange).toHaveBeenCalledWith("Provider setup");
+    expect(onSend).not.toHaveBeenCalled();
   });
 });
 

@@ -8,6 +8,7 @@
  *   - show an error toast (e.g. /model foo not found)
  */
 import { api, SearchConfig, SearchResult } from "../lib/api";
+import { reportRevisions } from "../stores/chatStream";
 import { toast } from "../stores/toasts";
 import { useSessionsStore } from "../stores/sessions";
 
@@ -31,6 +32,7 @@ export interface SlashCommandContext {
   setModelId?: (id: string) => void;
   setProviderId?: (id: string) => void;
   currentModel?: string;
+  currentProviderId?: string;
   /** For /regenerate: resend the most recent user message. */
   resendLast?: () => Promise<void>;
   /** For /clear: clear all messages in the active session. */
@@ -171,6 +173,27 @@ export const SLASH_COMMANDS: Array<{
       try {
         await api.upsertTask({ title });
         toast.success("Task created");
+      } catch (e) {
+        toast.error(String(e));
+      }
+      return { clear: true };
+    },
+  },
+  {
+    name: "remember",
+    description: "Extract durable memory from this chat",
+    run: async (_args, ctx) => {
+      if (!ctx.sessionId) {
+        toast.warn("Start a chat first");
+        return { clear: true };
+      }
+      try {
+        const applied = await api.memoryExtractAndRevise(
+          ctx.sessionId,
+          ctx.currentModel,
+          ctx.currentProviderId,
+        );
+        reportRevisions(applied);
       } catch (e) {
         toast.error(String(e));
       }

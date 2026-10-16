@@ -8,6 +8,26 @@ import { useSettingsStore } from "../../stores/settings";
 import { parseCommand, runCommand, SlashCommandContext } from "../../lib/slashCommands";
 import type { ChatStatus } from "../../stores/chatStream";
 
+let pendingChatDraft = "";
+
+export function consumePendingChatDraft(): string {
+  const next = pendingChatDraft;
+  pendingChatDraft = "";
+  return next;
+}
+
+export function appendToChatDraft(text: string): void {
+  if (!text.trim()) return;
+  const ev = new CustomEvent<{ text: string }>("convo:add-to-chat", {
+    detail: { text },
+    cancelable: true,
+  });
+  if (typeof window !== "undefined" && !window.dispatchEvent(ev)) {
+    return;
+  }
+  pendingChatDraft = pendingChatDraft.trim() ? `${pendingChatDraft}\n\n${text}` : text;
+}
+
 type ChatInputAttachments = Pick<ReturnType<typeof useAttachments>, "attachments" | "addFiles">;
 
 function fallbackFilePicker(attachments: ChatInputAttachments) {
@@ -50,14 +70,39 @@ export function ChatInput({
   onInputChange: (text: string) => void;
   slashCtx: SlashCommandContext;
 }) {
-  const [input, setInput] = useState("");
+  const [input, setInput] = useState(() => consumePendingChatDraft());
   const enterToSend = useSettingsStore((s) => s.enterToSend);
   const ref = useRef<HTMLTextAreaElement>(null);
   const inputValueRef = useRef(input);
   inputValueRef.current = input;
+  const onInputChangeRef = useRef(onInputChange);
+  onInputChangeRef.current = onInputChange;
   const isMac = typeof navigator !== "undefined" && /mac/i.test(navigator.platform);
   const hasAttachmentError = attachments.attachments.some((attachment) => attachment.status === "error");
   const attachmentsBlocked = attachments.attachments.some((attachment) => attachment.status !== "ready");
+
+  useEffect(() => {
+    if (inputValueRef.current) {
+      onInputChangeRef.current(inputValueRef.current);
+    }
+  }, []);
+
+  useEffect(() => {
+    const onAddToChat = (e: Event) => {
+      const detail = (e as CustomEvent<{ text?: string }>).detail;
+      const incoming = detail?.text ?? "";
+      if (!incoming.trim()) return;
+      e.preventDefault();
+      const current = inputValueRef.current;
+      const next = current.trim() ? `${current}\n\n${incoming}` : incoming;
+      inputValueRef.current = next;
+      setInput(next);
+      onInputChangeRef.current(next);
+      ref.current?.focus();
+    };
+    window.addEventListener("convo:add-to-chat", onAddToChat);
+    return () => window.removeEventListener("convo:add-to-chat", onAddToChat);
+  }, []);
 
   useEffect(() => {
     if (ref.current) {
