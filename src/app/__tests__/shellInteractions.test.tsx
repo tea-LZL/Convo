@@ -59,4 +59,9 @@ describe("shell interactions", () => {
     expect(useTourStore.getState().active).toBe(false);
     expect(useTourStore.getState().dismissed).toBe(true);
   });
+
+  it("names the sidebar destinations in the tour in the same order the sidebar renders them", () => {
+    const explore = TOUR_STEPS.find((step) => step.id === "explore");
+    expect(explore?.body).toContain("Chat, Notes, Memory, Compare, Documents, and Tasks");
+  });
 });

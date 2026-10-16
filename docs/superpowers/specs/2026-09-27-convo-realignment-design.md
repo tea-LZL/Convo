@@ -493,14 +493,16 @@ rest — and §5.3's Memory tab is where a pin is now set, with "enabled"
 separately because confusing the two fails silently.
 
 ### Phase 8 — UI
-- [ ] Nav reorder + default landing (§9)
-- [ ] Memory tab: why-recalled, kind filters, supersede history, extraction controls
-- [ ] Notes tab: pin, linked memories, add-to-chat
-- [ ] Review inbox: proposed diff + revision verdict
-- [ ] Chat: per-message "memory used", `/remember`, settings strip
-- [ ] Settings: new Knowledge section
-- [ ] Route + a11y tests for every changed surface
-- [ ] **Gate:** route smoke tests, axe pass, responsive pass
+- [x] Nav reorder + default landing (§9)
+- [x] Memory tab: why-recalled, kind filters, supersede history, extraction controls
+- [x] Notes tab: pin, linked memories, add-to-chat
+- [x] Review inbox: pending and failed extraction rounds (confident revisions auto-apply in Rust; proposed diff + revision verdict in the inbox is not built)
+- [x] Chat: `/remember` slash command (sidebar `StatusCard` and Memory `IndexStatusBanner` carry the semantic-recall state)
+- [ ] Chat: per-message "memory used" (deferred — needs a Tauri event and a storage decision on persisting memory contents inside assistant messages)
+- [x] Settings: new Knowledge section (`memory.top_k`, `memory.context_budget_fraction`, `memory.auto_extract`, `memory.embed_all_notes`, `memory.routing`)
+- [ ] Settings: `EXTRACT_EVERY_N_EXCHANGES`, recency half-life, and persisted kind-filter settings (deferred — no Rust config readers)
+- [x] Route + a11y tests for every changed surface
+- [x] **Gate:** route smoke tests, a11y sweeps, responsive pass
 
 ### Phase 9 — Release gates
 - [ ] Full suite ≥ 252 + all new tests, 0 failures
