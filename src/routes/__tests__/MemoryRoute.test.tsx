@@ -1486,3 +1486,68 @@ describe("MemoryRoute heading outline", () => {
   });
 });
 
+describe("MemoryRoute recall and index status", () => {
+  it("mounts the index status banner and refreshes it after a pin or toggle", async () => {
+    const note =
+      "No embedding model configured. Recall is keyword-only, so it will miss memories that share no words with the question.";
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "list_memory") return [listed("m-1")];
+      if (command === "list_note_titles") return [];
+      if (command === "list_memory_reviews") return [];
+      if (command === "knowledge_index_status") {
+        return {
+          memoryCount: 1,
+          noteCount: 0,
+          embeddedCount: 0,
+          needsEmbedding: 0,
+          needsReindex: false,
+          embeddingModel: null,
+          semanticNote: note,
+        };
+      }
+      return null;
+    });
+
+    renderMemory();
+    expect(await screen.findByText(note)).toBeInTheDocument();
+
+    const statusCalls = () =>
+      vi.mocked(invoke).mock.calls.filter(([c]) => c === "knowledge_index_status").length;
+    const before = statusCalls();
+
+    fireEvent.click(await screen.findByRole("button", { name: /^Pin Pref m-1/ }));
+    await waitFor(() => expect(statusCalls()).toBeGreaterThan(before));
+  });
+
+  it("mounts the test-recall panel and renders Rust's reason verbatim", async () => {
+    const reason = 'matched "concise" in content · recalled 3× · updated today';
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "list_memory") return [listed("m-1")];
+      if (command === "list_note_titles") return [];
+      if (command === "list_memory_reviews") return [];
+      if (command === "memory_recall") {
+        return [
+          {
+            ownerType: "memory",
+            ownerId: "m-1",
+            kind: "user_pref",
+            title: "Pref m-1",
+            content: "Concise replies",
+            score: 0.032,
+            reason,
+          },
+        ];
+      }
+      return null;
+    });
+
+    renderMemory();
+    const input = await screen.findByRole("textbox", { name: "Test recall query" });
+    fireEvent.change(input, { target: { value: "concise" } });
+    fireEvent.click(screen.getByRole("button", { name: "Test recall" }));
+
+    expect(await screen.findByText(reason)).toBeInTheDocument();
+  });
+});
+
+

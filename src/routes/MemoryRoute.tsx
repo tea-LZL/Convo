@@ -89,6 +89,8 @@ import { useMemoryStore } from "../stores/memory";
 import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { RouteShell } from "../components/ui/RouteShell";
 import { ROW_ACTION, ROW_ACTION_IDLE } from "../components/ui/rowAction";
+import { IndexStatusBanner } from "../components/memory/IndexStatusBanner";
+import { RecallPanel } from "../components/memory/RecallPanel";
 import { useNavigate } from "react-router-dom";
 
 type KindFilter = "all" | "user_pref" | "project_fact" | "skill";
@@ -166,6 +168,7 @@ export function MemoryRoute() {
   const removeMemory = useMemoryStore((s) => s.remove);
   const [reviewId, setReviewId] = useState<string | null>(null);
   const [reviewSelected, setReviewSelected] = useState<Set<number>>(new Set());
+  const [statusTick, setStatusTick] = useState(0);
   const navigate = useNavigate();
 
   const refresh = async () => {
@@ -183,6 +186,11 @@ export function MemoryRoute() {
       ),
     ));
     setSearchHits(null);
+  };
+
+  const refreshAfterMutation = async () => {
+    await refresh();
+    setStatusTick((n) => n + 1);
   };
 
   useEffect(() => { refresh(); }, [filter]);
@@ -204,7 +212,7 @@ export function MemoryRoute() {
 
   const toggle = async (item: MemoryItem) => {
     await toggleMemory(item.id, !item.is_enabled);
-    await refresh();
+    await refreshAfterMutation();
   };
 
   // `set_memory_pinned` is the deliberate path: `upsert_memory` does not
@@ -214,7 +222,7 @@ export function MemoryRoute() {
   const setPinned = async (item: MemoryItem, pinned: boolean) => {
     try {
       await api.setMemoryPinned(item.id, pinned);
-      await refresh();
+      await refreshAfterMutation();
     } catch (e) {
       toast.error(String(e), "Pin could not be changed");
     }
@@ -222,7 +230,7 @@ export function MemoryRoute() {
 
   const remove = async (id: string) => {
     await removeMemory(id);
-    await refresh();
+    await refreshAfterMutation();
   };
 
   const startEdit = (item: MemoryItem) => {
@@ -418,6 +426,8 @@ export function MemoryRoute() {
         </div>
       )}
       <div className="p-4 max-w-2xl mx-auto w-full">
+        <IndexStatusBanner refreshKey={statusTick} />
+        <RecallPanel />
         {visible.length === 0 ? (
           <EmptyState
             // `RouteShell` owns this page's h1, so the title underneath
