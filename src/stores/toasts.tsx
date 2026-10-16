@@ -71,7 +71,10 @@ export function ToastViewport() {
   const dismiss = useToastStore((s) => s.dismiss);
 
   return (
-    <div className="fixed top-4 right-4 z-[200] flex flex-col gap-2 pointer-events-none">
+    // Bottom-right, where a desktop app's toasts belong. `flex-col` with a
+    // bottom anchor stacks new toasts at the corner and grows the stack
+    // upward, so the newest is always the one nearest the edge.
+    <div className="fixed bottom-4 right-4 z-[200] flex flex-col gap-2 pointer-events-none max-h-[calc(100vh-2rem)] overflow-hidden">
       {toasts.map((t) => (
         <div
           key={t.id}

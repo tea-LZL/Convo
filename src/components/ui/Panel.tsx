@@ -10,7 +10,7 @@ interface PanelProps {
 export function Panel({ children, className = "", bordered = true, padded = false }: PanelProps) {
   return (
     <div
-      className={`rounded-xl ${bordered ? "border border-border" : ""} bg-surface-1 ${padded ? "p-4" : ""} ${className}`}
+      className={`rounded-lg ${bordered ? "border border-border" : ""} bg-surface-1 ${padded ? "p-4" : ""} ${className}`}
     >
       {children}
     </div>

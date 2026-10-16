@@ -7,6 +7,8 @@ export const preferenceItem: MemoryItem = {
   content: "Keep responses concise and friendly.",
   tags: "tone,style",
   is_enabled: true,
+  pinned: false,
+  superseded_by: null,
   created_at: "2024-01-01T00:00:00Z",
   updated_at: "2024-01-01T00:00:00Z",
 };
@@ -18,6 +20,8 @@ export const factItem: MemoryItem = {
   content: "Convo is built with React, Zustand, and Tauri.",
   tags: "stack",
   is_enabled: true,
+  pinned: false,
+  superseded_by: null,
   created_at: "2024-01-02T00:00:00Z",
   updated_at: "2024-01-02T00:00:00Z",
 };
@@ -29,6 +33,8 @@ export const skillItem: MemoryItem = {
   content: "When reviewing code, check for types, tests, and edge cases.",
   tags: "coding",
   is_enabled: false,
+  pinned: false,
+  superseded_by: null,
   created_at: "2024-01-03T00:00:00Z",
   updated_at: "2024-01-03T00:00:00Z",
 };

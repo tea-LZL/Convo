@@ -1,7 +1,8 @@
 mod commands;
 mod db;
+pub mod memory;
 mod ollama_setup;
-mod providers;
+pub mod providers;
 mod services;
 mod state;
 mod streams;
@@ -14,6 +15,7 @@ use commands::chat_stream as chat_stream_cmd;
 use commands::compare as compare_cmd;
 use commands::documents as documents_cmd;
 use commands::hardware as hardware_cmd;
+use commands::knowledge as knowledge_cmd;
 use commands::memory as memory_cmd;
 use commands::memory_reviews as memory_reviews_cmd;
 use commands::models as models_cmd;
@@ -40,6 +42,9 @@ pub fn run() {
     if let Err(e) = db::run_migrations(&pool) {
         eprintln!("FATAL: DB migration failed: {}", e);
         std::process::exit(1);
+    }
+    if let Err(e) = services_mod::ensure_ollama_cloud_provider(&pool) {
+        eprintln!("convo: could not seed the Ollama Cloud provider: {}", e);
     }
     if let Err(e) = services_mod::ensure_default_ollama_provider(&pool) {
         eprintln!("WARN: default provider init: {}", e);
@@ -163,20 +168,28 @@ pub fn run() {
             themes_cmd::save_theme,
             themes_cmd::delete_theme,
             // Notes
-            notes_cmd::list_notes,
-            notes_cmd::upsert_note,
             notes_cmd::delete_note,
+            notes_cmd::list_note_titles,
+            notes_cmd::list_notes,
             notes_cmd::search_notes,
+            notes_cmd::set_note_pinned,
+            notes_cmd::unlink_memory_from_note,
+            notes_cmd::upsert_note,
             // Tasks
             tasks_cmd::list_tasks,
             tasks_cmd::upsert_task,
             tasks_cmd::delete_task,
             tasks_cmd::complete_task,
             // Memory
+            knowledge_cmd::knowledge_index_status,
+            knowledge_cmd::memory_extract_and_revise,
+            knowledge_cmd::memory_index_fill,
+            knowledge_cmd::memory_recall,
             memory_cmd::list_memory,
             memory_cmd::upsert_memory,
             memory_cmd::delete_memory,
             memory_cmd::toggle_memory,
+            memory_cmd::set_memory_pinned,
             memory_cmd::search_memory,
             memory_cmd::get_enabled_memory,
             memory_cmd::get_session_memory_overrides,

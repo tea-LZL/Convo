@@ -7,6 +7,7 @@ import {
   SLASH_COMMANDS,
 } from "../slashCommands";
 import { api } from "../api";
+import { useMemoryStore } from "../../stores/memory";
 import { toast } from "../../stores/toasts";
 
 vi.mock("../api", () => ({
@@ -15,6 +16,7 @@ vi.mock("../api", () => ({
     webSearch: vi.fn(),
     upsertNote: vi.fn(),
     upsertTask: vi.fn(),
+    memoryExtractAndRevise: vi.fn(),
   },
 }));
 
@@ -149,5 +151,27 @@ describe("runCommand", () => {
   it("catches synchronous errors and shows a toast", async () => {
     const result = await runCommand({ name: "search", args: "x", raw: "/search x" }, { sessionId: null });
     expect(result.clear).toBe(true);
+  });
+
+  it("runs /remember through memoryExtractAndRevise and reports with reportRevisions", async () => {
+    const extractSpy = vi.spyOn(useMemoryStore.getState(), "extractAndRevise").mockResolvedValueOnce([
+      { effect: "added", id: "m-1" },
+      { effect: "superseded", newId: "m-2", oldId: "m-0" },
+      { effect: "sentToReview", reviewId: "r-1" },
+    ]);
+
+    const result = await runCommand(
+      { name: "remember", args: "", raw: "/remember" },
+      { sessionId: "session-42", currentModel: "llama3", currentProviderId: "ollama-local" },
+    );
+
+    expect(extractSpy).toHaveBeenCalledWith(
+      "session-42",
+      "llama3",
+      "ollama-local",
+    );
+    expect(mockedToast.info).toHaveBeenCalledWith("2 remembered, 1 needs review", "Memory");
+    expect(result.clear).toBe(true);
+    extractSpy.mockRestore();
   });
 });

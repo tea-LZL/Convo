@@ -1,5 +1,41 @@
 /**
  * Hardware scan + model-fit recommendations.
+ *
+ * ── Why this page is in the final fix wave ───────────────────────────
+ * The third of three the restyle never reached. The plan's criterion 1
+ * says "every route" and its checklist counted ten; seven shipped. This
+ * one kept `rounded-xl` cards in two separate components, a `space-y-4`
+ * (16px) stack gap, `text-accent` on two decorative section icons, a
+ * bare `rounded` radius on its status chips and a `sm:p-8` content
+ * inset — all under a new 28px `RouteShell` title.
+ *
+ * Nothing noticed, because nothing asked: this page had no rhythm
+ * guard, so a page with no rhythm could not fail one.
+ * `HardwareRoute.test.tsx` is that guard, and it measures the same way
+ * `DiagnosticsRoute.test.tsx` does.
+ *
+ * ── The rhythm ───────────────────────────────────────────────────────
+ * The *standard* one — 8px between cards, 12px inside one. This page
+ * is not a data page, so it is not one of the two that earn the compact
+ * rhythm (decision D3: Memory, Documents and Tasks, where row count is
+ * the point). A fit list is *recommendations to read*, not a queue to
+ * scan, and its two-column grid has to stay legible at arm's length.
+ *
+ * ── Two components, one shape ─────────────────────────────────────────
+ * `Section` and `FitSection` are separate components because they take
+ * different children, and for six commits they drew the same object two
+ * ways: `Section` took a caller-supplied title, `FitSection` appended a
+ * count to it, and both wrote `rounded-xl p-4`. They now share the
+ * geometry, and the test walks *both* — a guard that measured one would
+ * have passed a page where the other had drifted, which is exactly the
+ * failure this page already had once.
+ *
+ * ── Icons ────────────────────────────────────────────────────────────
+ * Two channels, and they do not cross. `Monitor` and the GPU glyph are
+ * decoration on a section title, and decoration in the accent colour
+ * reads as a link or a selection — so they take `text-text-subtle`.
+ * `Check`, `AlertTriangle` and `X` *are* the verdict on a model, and
+ * keep the semantic tones the status card already established.
  */
 import { useEffect, useState } from "react";
 import { Monitor, CpuIcon as GpuIcon, Check, AlertTriangle, X, Download } from "lucide-react";
@@ -73,9 +109,9 @@ export function HardwareRoute() {
       description="Convo scans your machine to suggest models that fit. Numbers are best-effort; actual VRAM/RAM needs depend on the quant and context size."
       actions={<Button size="sm" variant="secondary" onClick={() => void scan()}>Re-scan</Button>}
     >
-      <div className="max-w-4xl mx-auto p-4 sm:p-8">
-        <div className="space-y-4">
-          <Section title="System" icon={<Monitor size={14} className="text-accent" />}>
+      <div className="max-w-4xl mx-auto p-4">
+        <div className="space-y-2">
+          <Section title="System" icon={<Monitor size={14} className="text-text-subtle" />}>
             <div className="grid grid-cols-2 gap-3">
               <Stat label="OS" value={`${hw.os} ${hw.arch}`} />
               <Stat label="CPU" value={hw.cpuBrand || "Unknown"} />
@@ -85,7 +121,7 @@ export function HardwareRoute() {
             </div>
           </Section>
 
-          <Section title={`GPUs (${hw.gpus.length})`} icon={<GpuIcon size={14} className="text-accent" />}>
+          <Section title={`GPUs (${hw.gpus.length})`} icon={<GpuIcon size={14} className="text-text-subtle" />}>
             {hw.gpus.length === 0 ? (
               <div className="text-sm text-text-muted">No GPU detected. Models will run on CPU/RAM.</div>
             ) : (
@@ -124,9 +160,27 @@ export function HardwareRoute() {
   );
 }
 
+/**
+ * The two fit verdicts, as one card.
+ *
+ * `rounded-lg` in 12px, the spec's card radius and the standard
+ * rhythm's card padding — the same geometry `Section` below draws, and
+ * the reason it is a shared constant rather than a second hand-written
+ * class list. The two were `rounded-xl p-4` and `rounded-lg p-3`
+ * simultaneously for six commits, which is two shapes for one object.
+ */
+const FIT_CARD = "bg-surface-1 border border-border rounded-lg p-3";
+
+/**
+ * The 10px verdict chip. A theme radius (`rounded-sm`) rather than the
+ * bare `rounded` this carried, so a retune of the theme's corner
+ * scale moves the chip with the cards around it.
+ */
+const VERDICT = "text-[10px] px-1.5 py-0.5 rounded-sm border";
+
 function FitSection({ title, icon, rows, navigate }: { title: string; icon: React.ReactNode; rows: ModelFit[]; navigate: (path: string) => void }) {
   return (
-    <div className="bg-surface-1 border border-border rounded-xl p-4">
+    <div className={FIT_CARD}>
       <div className="flex items-center gap-2 mb-3">
         {icon}
         <h2 className="text-sm font-semibold text-text">{title} ({rows.length})</h2>
@@ -140,9 +194,9 @@ function FitSection({ title, icon, rows, navigate }: { title: string; icon: Reac
                 <div className="text-[10px] text-text-subtle uppercase tracking-wider">{m.family} · {m.sizeLabel} · {m.recommendedQuant ?? "n/a"}</div>
               </div>
               {m.fits ? (
-                <span className="text-[10px] text-success px-1.5 py-0.5 rounded border border-success/30 bg-success/10">fits</span>
+                <span className={`${VERDICT} border-success/30 bg-success/10 text-success`}>fits</span>
               ) : (
-                <span className="text-[10px] text-warn px-1.5 py-0.5 rounded border border-warn/30 bg-warn/10">tight</span>
+                <span className={`${VERDICT} border-warn/30 bg-warn/10 text-warn`}>tight</span>
               )}
             </div>
             <div className="text-xs text-text-muted mt-1.5">{m.reason}</div>
@@ -158,9 +212,23 @@ function FitSection({ title, icon, rows, navigate }: { title: string; icon: Reac
   );
 }
 
+/**
+ * One section card, and the shape every section on this page is.
+ *
+ * `rounded-lg` is the spec's card radius and 12px inside is the
+ * standard rhythm's card padding — both measured in
+ * `HardwareRoute.test.tsx` rather than asserted here. It was
+ * `rounded-xl` in 16px, which is also a theme radius and so was not
+ * *wrong*; it was a second, larger shape for the same object, sitting
+ * under a title that had already been restyled.
+ *
+ * The heading is an `h2` under `RouteShell`'s `h1`, which is where the
+ * outline wants it: a screen-reader user moving by level gets a flat
+ * list of sections rather than a tree, and these are genuinely peers.
+ */
 function Section({ title, icon, children }: { title: string; icon: React.ReactNode; children: React.ReactNode }) {
   return (
-    <div className="bg-surface-1 border border-border rounded-xl p-4">
+    <div className={FIT_CARD}>
       <div className="flex items-center gap-2 mb-3">
         {icon}
         <h2 className="text-sm font-semibold text-text">{title}</h2>

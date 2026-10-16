@@ -88,7 +88,10 @@ export const MessageRow = React.memo(function MessageRow({
         </div>
       )}
       {msg.role === "assistant" && msg.thinking && (
-        <div className="mb-3 bg-surface-2/50 border border-border rounded-xl overflow-hidden">
+        <div
+          data-thinking-panel
+          className="mb-3 bg-surface-2/50 border border-border rounded-xl overflow-hidden"
+        >
           <button
             onClick={() => setCollapsedThinking((s) => {
               const n = new Set(s);
@@ -135,7 +138,22 @@ export const MessageRow = React.memo(function MessageRow({
           </div>
         </div>
       ) : msg.role === "user" ? (
-        <div className="bg-userbubble rounded-2xl px-3.5 py-2 text-sm text-text whitespace-pre-wrap break-words inline-block max-w-[85%]">
+        // A surface, a 1px border and a token radius — the same
+        // treatment every other filled token in the app wears, and the
+        // reason the edge does not depend on `--color-user-bubble`
+        // happening to contrast with the page in themes nobody has
+        // measured.
+        //
+        // `--radius-lg` is the card radius and is 16px in the four
+        // themes that keep the default scale, so this moved no pixel
+        // from the 1rem default it replaced; on Mono and High Contrast,
+        // which declare 6px, it goes 16px → 6px on purpose. The radius is
+        // pinned to `ChatSkeleton`'s placeholder half, and the pin is
+        // textual duplication — so `chatSurface.test.tsx` compares the two
+        // *renderings* rather than two literals, and a commit that
+        // converts one half and not the other fails there instead of
+        // silently disagreeing.
+        <div className="bg-userbubble border border-border rounded-lg px-3.5 py-2 text-sm text-text whitespace-pre-wrap break-words inline-block max-w-[85%]">
           {msg.content}
           <div className="mt-1 flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
             <IconButton icon={<Edit2 size={11} />} label="Edit & resend" size="sm" onClick={() => setEditingMessageId(msg.id)} />

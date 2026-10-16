@@ -19,26 +19,11 @@
  */
 import { create } from "zustand";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
-import { api, ChatMessage } from "../lib/api";
+import { api, AppliedRevision, ChatMessage } from "../lib/api";
 import { useMemoryStore } from "./memory";
 import { playDoneSound, playSendSound } from "../utils/sounds";
 import { sendNotification } from "@tauri-apps/plugin-notification";
 import { toast } from "./toasts";
-
-/** Default system prompt used when no memory context or override is set. */
-const DEFAULT_SYSTEM = [
-  "You are a helpful, concise assistant. Give direct, accurate answers.",
-  "Avoid rambling, repetition, and filler.",
-  "If you don't know something, say so honestly.",
-  "IMPORTANT: If memory or user context is provided below, use it. " +
-    "When the user asks who they are or about their name, preferences, " +
-    "projects, or environment, answer from the provided context.",
-].join(" ");
-
-const RECALL_STOP_WORDS = new Set([
-  "a", "an", "and", "are", "about", "do", "does", "for", "in", "is",
-  "me", "my", "of", "on", "or", "please", "the", "to", "what", "who",
-]);
 
 function imageDataForMessage(message: ChatMessage): string[] {
   if (!message.attachments_json) return [];
@@ -57,16 +42,6 @@ function imageDataForMessage(message: ChatMessage): string[] {
   } catch {
     return [];
   }
-}
-
-export function composeSystemPrompt(parts: {
-  override?: string;
-  alwaysOnMemory?: string;
-  recalledMemory?: string;
-}): string {
-  return [DEFAULT_SYSTEM, parts.override, parts.alwaysOnMemory, parts.recalledMemory]
-    .filter(Boolean)
-    .join("\n\n");
 }
 
 export interface SessionState {
@@ -142,9 +117,7 @@ export function evictSessionState(cid: string): void {
     if (!(cid in current.sessions)) return current;
     const sessions = { ...current.sessions };
     delete sessions[cid];
-    const loaded = { ...current._loaded };
-    delete loaded[cid];
-    return { sessions, _loaded: loaded, version: current.version + 1 };
+    return { sessions };
   });
 }
 
@@ -178,8 +151,11 @@ const DEFAULT_TITLES = new Set(["", "New Chat", "Untitled"]);
  * Frame-batched stream updates.
  *
  * The Tauri `chat-chunk` listener receives one event per token chunk
- * the model emits. With LLM bursts of 4-8 chunks in a 16ms frame,
- * a naive "mutate state + bump" per event drives 4-8 React re-renders
+ * the model emits. Those handlers deliberately mutate the working
+ * session WITHOUT publishing, and this drain is the only thing that
+ * publishes for them — that is what makes one render per frame instead
+ * of one per chunk. With LLM bursts of 4-8 chunks in a 16ms frame,
+ * a naive publish per event drives 4-8 React re-renders
  * per frame — the browser coalesces paints but the React tree still
  * re-runs.
  *
@@ -207,9 +183,12 @@ function scheduleFlush() {
       pendingDeltas.delete(key);
       const s = getOrCreate(pending.cid);
       if (!isCurrentStream(s, pending.streamId)) continue;
+      // Re-check at drain time: a terminal event may have closed the
+      // stream between staging and this frame.
+      if (!s.streaming) continue;
       s.streamContent += pending.content;
       s.streamThinking += pending.thinking;
-      if (pending.content || pending.thinking) bump(pending.cid);
+      if (pending.content || pending.thinking) publish(pending.cid);
     }
   });
 }
@@ -235,6 +214,37 @@ function isCurrentEvent(s: SessionState, event: StreamEventBase): boolean {
   return isCurrentStream(s, event.stream_id)
     && !!s._assistantMessageId
     && s._assistantMessageId === event.assistant_message_id;
+}
+
+/**
+ * Say what the revision table just did.
+ *
+ * The old path ended with candidates sitting in an inbox for a human to
+ * sort out, so the user could always see what memory wanted. The revision
+ * table writes the confident rows and leaves the ambiguous ones in the
+ * inbox, which means a turn can now change memory without anything on
+ * screen. That is correct and it is also invisible, so it gets one line —
+ * and only when there is something to say: a round that found nothing
+ * durable returns an empty list, and that is the common case, so staying
+ * silent there is what keeps the signal worth reading.
+ *
+ * Three buckets because they are not the same claim. A new row and an
+ * updated one are both "remembered" in the loose sense, but only the new
+ * one is something the user will see appear in the Memory tab, and an
+ * inbox row is not a write at all.
+ */
+export function reportRevisions(applied: AppliedRevision[]) {
+  const count = (effects: AppliedRevision["effect"][]) =>
+    applied.filter((entry) => effects.includes(entry.effect)).length;
+  const parts: string[] = [];
+  const added = count(["added", "superseded"]);
+  const updated = count(["reinforced", "merged"]);
+  const inbox = count(["sentToReview"]);
+  if (added) parts.push(`${added} remembered`);
+  if (updated) parts.push(`${updated} updated`);
+  if (inbox) parts.push(`${inbox} need${inbox === 1 ? "s" : ""} review`);
+  if (!parts.length) return;
+  toast.info(parts.join(", "), "Memory");
 }
 
 function appendAssistantMessage(
@@ -276,6 +286,12 @@ async function ensureListeners() {
         const cid = e.payload.conversation_id;
         const s = getOrCreate(cid);
         if (!isCurrentEvent(s, e.payload)) return;
+        // A closed stream accepts nothing. Without this, a chunk that
+        // arrives after `chat-done` / `chat-cancelled` — which clear
+        // neither _streamId nor _assistantMessageId — passes validation,
+        // sets streaming back to true, and resurrects a phantom tail on a
+        // message that was already saved.
+        if (!s.streaming) return;
         const key = eventStreamKey(cid, e.payload.stream_id);
         const pending = pendingDeltas.get(key) ?? {
           cid,
@@ -300,6 +316,7 @@ async function ensureListeners() {
         const cid = e.payload.conversation_id;
         const s = getOrCreate(cid);
         if (!isCurrentEvent(s, e.payload)) return;
+        if (!s.streaming) return;
         const key = eventStreamKey(cid, e.payload.stream_id);
         const pending = pendingDeltas.get(key) ?? {
           cid,
@@ -349,15 +366,20 @@ async function ensureListeners() {
       // presentation state, so navigation cannot lose a completed turn.
       maybeAutoTitle(cid, s.messages);
 
-      const gen = s._streamGeneration ?? 0;
       const lastModel = s._lastModel;
       const lastProvider = s._lastProviderId;
-      if (gen >= 2) {
-        import("../stores/settings").then(({ useSettingsStore }) => {
-          if (!useSettingsStore.getState().memoryAutoEvaluate) return;
-          void useMemoryStore.getState().queueReview(cid, lastModel, lastProvider).catch(console.error);
-        }).catch(console.error);
-      }
+      // Run after every completed turn and let Rust decide. `should_extract`
+      // owns the threshold (two exchanges / four messages since the
+      // watermark), so a second frontend gate here is a second threshold that
+      // can suppress extraction with nothing on the Rust side to record it.
+      // The `memoryAutoEvaluate` toggle is the user's off switch; it stays.
+      import("../stores/settings").then(({ useSettingsStore }) => {
+        if (!useSettingsStore.getState().memoryAutoEvaluate) return;
+        void useMemoryStore.getState()
+          .extractAndRevise(cid, lastModel, lastProvider)
+          .then(reportRevisions)
+          .catch(console.error);
+      }).catch(console.error);
 
       playDoneSound(false);
       if (shouldNotifyForCompletedConversation(cid)) {
@@ -365,7 +387,7 @@ async function ensureListeners() {
           sendNotification({ title: "Convo", body: "Response complete" });
         } catch { /* ignore */ }
       }
-      bump(cid);
+      publish(cid);
     })
   );
 
@@ -397,7 +419,7 @@ async function ensureListeners() {
         s.streamContent = "";
         s.streamThinking = "";
         toast.error(e.payload.error, "Chat error");
-        bump(cid);
+        publish(cid);
       }
     )
   );
@@ -435,7 +457,7 @@ async function ensureListeners() {
       );
       s.streamContent = "";
       s.streamThinking = "";
-      bump(cid);
+      publish(cid);
     })
   );
 }
@@ -449,27 +471,107 @@ function getOrCreate(id: string): SessionState {
   return s;
 }
 
-function bump(cid: string) {
-  // Bump a per-session version counter so subscribers re-render.
+/**
+ * Republish a session so subscribers see the mutations made to it.
+ *
+ * The session object itself is mutated in place, which is what keeps
+ * `s.messages` reference-stable across a stream — the identity of the
+ * *published* object is the change signal, not the inner one.
+ *
+ * Prefer `mutate`. This is separate only for the two cases that need to
+ * publish without an accompanying mutation: staging a chunk for the
+ * frame batch, and republishing after an async boundary.
+ */
+function publish(cid: string): void {
   useChatStreamStore.setState((prev) => ({
-    version: prev.version + 1,
     sessions: { ...prev.sessions, [cid]: { ...getOrCreate(cid) } },
   }));
+}
+
+/**
+ * Apply a mutation to a session and publish it, atomically.
+ *
+ * The point of fusing the two: this store used to mutate a session and
+ * then call a separate `bump`, and forgetting the bump produced a
+ * silently stale UI. There is no way to skip the publish here.
+ *
+ * Do NOT use this on the chunk hot path. `chat-chunk` arrives several
+ * times per frame; publishing per chunk would defeat the frame batching
+ * that keeps the tail at 60fps. Those handlers stage into `pendingDeltas`
+ * and let the rAF drain publish once.
+ */
+function mutate(cid: string, fn: (s: SessionState) => void): void {
+  const s = getOrCreate(cid);
+  fn(s);
+  publish(cid);
+}
+
+/** The reactive slice a streaming component needs from one session. */
+export interface StreamSlice {
+  streaming: boolean;
+  streamContent: string;
+  streamThinking: string;
+  status: ChatStatus;
+  error: string | null;
+}
+
+/**
+ * Projections are cached against the published session object.
+ *
+ * A selector that builds a fresh object literal on every call defeats
+ * zustand's `Object.is` comparison: every unrelated store notification
+ * would look like a change to every subscriber, which is the 60fps
+ * re-render storm this whole arrangement exists to avoid. `publish`
+ * creates a new session object per mutation, so the cache misses once
+ * per real change and hits forever after.
+ */
+const sliceCache = new WeakMap<SessionState, StreamSlice>();
+
+/**
+ * Select one session's stream slice in a single subscription.
+ *
+ * Prefer this over three separate `useChatStreamStore` calls when a
+ * component needs more than one streaming field. Do NOT widen a
+ * component's subscription to the whole session.
+ */
+export function selectStreamSlice(sessionId: string) {
+  return (s: ChatStreamStore): StreamSlice | undefined => {
+    const session = s.sessions[sessionId];
+    if (!session) return undefined;
+    let slice = sliceCache.get(session);
+    if (!slice) {
+      slice = {
+        streaming: session.streaming,
+        streamContent: session.streamContent,
+        streamThinking: session.streamThinking,
+        status: session.status,
+        error: session.error,
+      };
+      sliceCache.set(session, slice);
+    }
+    return slice;
+  };
+}
+
+/**
+ * Select one session's message list.
+ *
+ * The array reference is stable across stream updates, so a subscriber
+ * re-renders only when a message is added, removed, or edited. If this
+ * ever starts returning a fresh array per chunk, MessageList re-renders
+ * at 60fps and the v0.6.5 lag regression is back.
+ */
+export function selectMessages(sessionId: string) {
+  return (s: ChatStreamStore): ChatMessage[] | undefined => s.sessions[sessionId]?.messages;
 }
 
 interface ChatStreamStore {
   /** Per-session state snapshots for components to subscribe to. */
   sessions: Record<string, SessionState>;
-  /** Increments on any per-session change. Used to force re-renders. */
-  version: number;
-  /** Internal: tracks which sessions have been loaded from DB. */
-  _loaded: Record<string, boolean>;
 }
 
 export const useChatStreamStore = create<ChatStreamStore>(() => ({
   sessions: {},
-  version: 0,
-  _loaded: {},
 }));
 
 const sessionLoads = new Map<string, Promise<ChatMessage[]>>();
@@ -491,14 +593,14 @@ export async function loadSessionMessages(cid: string): Promise<ChatMessage[]> {
   if (existing) return existing;
   const load = (async () => {
     s.loadingMessages = true;
-    bump(cid);
+    publish(cid);
     try {
       const msgs = (await api.listMessages(cid)) ?? [];
       if (s.messages.length === 0 && !s.streaming) s.messages = msgs;
       return s.messages;
     } finally {
       s.loadingMessages = false;
-      bump(cid);
+      publish(cid);
       sessionLoads.delete(cid);
     }
   })();
@@ -510,14 +612,14 @@ export async function reloadSessionMessages(cid: string): Promise<ChatMessage[]>
   await ensureListeners();
   const s = getOrCreate(cid);
   s.loadingMessages = true;
-  bump(cid);
+  publish(cid);
   try {
     const msgs = (await api.listMessages(cid)) ?? [];
     s.messages = msgs;
     return msgs;
   } finally {
     s.loadingMessages = false;
-    bump(cid);
+    publish(cid);
   }
 }
 
@@ -527,20 +629,20 @@ export function getSessionState(cid: string): SessionState {
 
 export async function clearSessionMessages(cid: string) {
   await ensureListeners();
-  const s = getOrCreate(cid);
-  s.messages = [];
-  s.status = "idle";
-  s.streaming = false;
-  s.streamContent = "";
-  s.streamThinking = "";
-  s.error = null;
-  s._streamId = undefined;
-  s._assistantMessageId = undefined;
   pendingDeltas.forEach((pending, key) => {
     if (pending.cid === cid) pendingDeltas.delete(key);
   });
   clearStopTimer(cid);
-  bump(cid);
+  mutate(cid, (s) => {
+    s.messages = [];
+    s.status = "idle";
+    s.streaming = false;
+    s.streamContent = "";
+    s.streamThinking = "";
+    s.error = null;
+    s._streamId = undefined;
+    s._assistantMessageId = undefined;
+  });
   try {
     await api.clearMessages(cid);
   } catch (e) {
@@ -598,7 +700,7 @@ export async function sendMessage(
   terminalStreams.delete(eventStreamKey(cid, s._streamId));
   s._lastModel = model;
   s._lastProviderId = opts.providerId;
-  bump(cid);
+  publish(cid);
   playSendSound(false);
 
   // Persist the user message to DB immediately so it survives even
@@ -609,18 +711,13 @@ export async function sendMessage(
     s.messages = s.messages.filter((message) => message.id !== userMsg.id);
     s.streaming = false;
     s.status = "failed";
-    bump(cid);
+    publish(cid);
     throw e;
   }
 
-  const memoryBlock = await useMemoryStore.getState().buildContextBlock(cid);
-  const recalledBlock = await recallMemories(text, memoryBlock);
-
-  const fullSystem = composeSystemPrompt({
-    override: opts.systemOverride,
-    alwaysOnMemory: memoryBlock,
-    recalledMemory: recalledBlock,
-  });
+  // Rust assembles the persona, the memory block, and the directive. The
+  // frontend sends the user's override and nothing else.
+  const fullSystem = opts.systemOverride;
   // Truncate conversation history before sending to the LLM.
   // Keep the last 41 messages (~20 pairs + 1) to avoid context
   // overflow and model-repetition degredation on long conversations.
@@ -640,7 +737,7 @@ export async function sendMessage(
 
   try {
     s.status = "streaming";
-    bump(cid);
+    publish(cid);
     await api.chatStream({
       sessionId: cid,
       model,
@@ -655,7 +752,7 @@ export async function sendMessage(
     s.status = "failed";
     s.error = String(e);
     toast.error(String(e), "Send failed");
-    bump(cid);
+    publish(cid);
   }
 }
 
@@ -664,7 +761,7 @@ export async function stopStream(cid: string) {
   if (!s.streaming || !s._streamId) return;
   s._cancelRequestedGeneration = s._streamGeneration ?? 0;
   s.status = "stopping";
-  bump(cid);
+  publish(cid);
   try {
     await api.cancelChat(cid, s._streamId);
     clearStopTimer(cid);
@@ -687,13 +784,13 @@ export async function stopStream(cid: string) {
       current.error = "Stop request timed out";
       current.streamContent = "";
       current.streamThinking = "";
-      bump(cid);
+      publish(cid);
       stopTimers.delete(cid);
     }, 5000));
   } catch (e) {
     s.status = "failed";
     s.error = String(e);
-    bump(cid);
+    publish(cid);
     console.error("cancelChat:", e);
   }
 }
@@ -713,82 +810,6 @@ export async function retryLastMessage(
     ...opts,
     attachmentsJson: opts.attachmentsJson ?? lastUser.attachments_json,
   });
-}
-
-/**
- * Recall: find memories whose content or title shares words with the
- * user's message. Uses keyword overlap (similar to Odysseus's BM25)
- * rather than FTS5 AND matching — FTS5 requires ALL query tokens to
- * appear, which fails for queries like "what's my name" when the
- * memory is "User's nickname is tea".
- *
- * Returns "" when there are no matches or when listing memory fails.
- * Always-on items (already in `alwaysOnContent`) are skipped to avoid
- * sending duplicates to the model. Exported so unit tests can exercise
- * it without the listener wiring.
- *
- * Why this exists: small local models (gemma3 4B, etc.) often ignore
- * a "USER CONTEXT" line buried deep in the always-on block. Booting
- * a dedicated, short, prominent recall block into the system prompt
- * dramatically improves their recall rate. The recall block ALWAYS
- * ends with an explicit instruction to use the provided facts.
- */
-export async function recallMemories(
-  query: string,
-  alwaysOnContent: string
-): Promise<string> {
-  try {
-    const memoryState = useMemoryStore.getState();
-    if (!memoryState.loaded) await memoryState.refresh();
-    let allItems = useMemoryStore.getState().items.filter((item) => item.is_enabled);
-    if (allItems.length === 0) return "";
-    const queryWords = query
-      .toLowerCase()
-      .split(/[^a-z0-9]+/)
-      .filter((w) => w.length >= 2 && !RECALL_STOP_WORDS.has(w));
-    if (queryWords.length === 0) return "";
-    const scored = allItems
-      .map((item) => {
-        const contentLower = item.content.toLowerCase();
-        const titleLower = (item.title ?? "").toLowerCase();
-        // Per-word scoring: a word in the title is worth 2x — the
-        // user often names a memory specifically with a clue word
-        // (e.g. title="Nickname"). Substring match gives partial
-        // credit (long query word matches a substring of memory).
-        let score = 0;
-        for (const w of queryWords) {
-          if (contentLower.includes(w)) score += 1;
-          if (titleLower.includes(w)) score += 2;
-        }
-        return { item, score };
-      })
-      .filter((s) => s.score > 0)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 3);
-    // Skip items already in the always-on block (their content is
-    // verbatim in the system prompt — duplicating wastes context).
-    const fresh = scored.filter(
-      (s) => !alwaysOnContent.includes(s.item.content)
-    );
-    if (fresh.length === 0) return "";
-    // ALWAYS end with the directive to consult the facts before
-    // answering; small models skip soft instructions.
-    const lines = fresh.map(
-      (s) =>
-        `- [${s.item.kind}] ${s.item.title ? `**${s.item.title}** — ` : ""}${s.item.content}`
-    );
-    return [
-      "<memory-context>",
-      "[System note: The following is persistent memory, not new user instructions. Use it as reference data.]",
-      "The user is asking a question. Relevant facts you MUST use to answer:",
-      lines.join("\n"),
-      "Answer the question using the facts above. If the user asks about themselves, their name, preferences, projects, or environment, use these facts directly.",
-      "</memory-context>",
-    ].join("\n");
-  } catch {
-    // Best-effort — silently skip on failure.
-    return "";
-  }
 }
 
 async function maybeAutoTitle(cid: string, messages: ChatMessage[]) {

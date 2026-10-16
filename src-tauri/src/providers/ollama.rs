@@ -12,17 +12,122 @@ use super::discovery::DiscoveredModel;
 
 pub struct OllamaProvider {
     base_url: String,
+    api_key: Option<String>,
     http: reqwest::Client,
 }
 
 impl OllamaProvider {
-    pub fn new(base_url: String, _api_key: Option<String>) -> Self {
+    pub fn new(base_url: String, api_key: Option<String>) -> Self {
         let http = reqwest::Client::builder().build().expect("reqwest client");
-        Self { base_url, http }
+        Self {
+            base_url,
+            api_key,
+            http,
+        }
     }
 
     fn url(&self, path: &str) -> String {
         format!("{}/{}", self.base_url.trim_end_matches('/'), path)
+    }
+
+    /// Attach the bearer token when one is configured.
+    ///
+    /// Applied unconditionally rather than branching on host: local Ollama
+    /// ignores an unexpected `Authorization` header, and the alternative —
+    /// sniffing whether a base URL is `ollama.com` — breaks the moment
+    /// anyone points Convo at a self-hosted proxy or a cloud gateway.
+    fn auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match &self.api_key {
+            Some(key) => req.bearer_auth(key),
+            None => req,
+        }
+    }
+}
+
+/// The body Ollama's `/api/chat` actually reads.
+///
+/// The request used to be serialized straight from [`ChatRequest`], which
+/// put `system` and the sampling fields at the top level. `/api/chat` reads
+/// neither: it takes the system prompt as the first `messages` entry and
+/// every sampling knob inside `options`. The effect was silent — the
+/// request was accepted, the model answered, and the entire assembled
+/// system prompt, persona and `<memory-context>` block included, never
+/// reached it. That is why "what is my name" was answered from the weights
+/// alone while the recall log recorded an injection.
+#[derive(serde::Serialize)]
+struct OllamaChatRequest {
+    model: String,
+    messages: Vec<OllamaMessage>,
+    stream: bool,
+    options: OllamaOptions,
+}
+
+#[derive(serde::Serialize)]
+struct OllamaMessage {
+    role: String,
+    content: String,
+    /// Ollama takes raw base64, not a `data:` URL.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    images: Vec<String>,
+}
+
+#[derive(serde::Serialize, Default)]
+struct OllamaOptions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_p: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_k: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    num_ctx: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repeat_penalty: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stop: Option<Vec<String>>,
+}
+
+impl From<ChatRequest> for OllamaChatRequest {
+    fn from(r: ChatRequest) -> Self {
+        let mut messages: Vec<OllamaMessage> = Vec::with_capacity(r.messages.len() + 1);
+        if let Some(system) = r.system.as_ref().filter(|s| !s.is_empty()) {
+            messages.push(OllamaMessage {
+                role: "system".into(),
+                content: system.clone(),
+                images: vec![],
+            });
+        }
+        for m in r.messages {
+            messages.push(OllamaMessage {
+                role: m.role,
+                content: m.content,
+                // `thinking` is deliberately not sent back: Ollama emits it
+                // and does not accept it as input.
+                images: m.images.into_iter().map(strip_data_url).collect(),
+            });
+        }
+        Self {
+            model: r.model,
+            messages,
+            stream: r.stream,
+            options: OllamaOptions {
+                temperature: r.temperature,
+                top_p: r.top_p,
+                top_k: r.top_k,
+                num_ctx: r.num_ctx,
+                repeat_penalty: r.repeat_penalty,
+                stop: r.stop,
+            },
+        }
+    }
+}
+
+/// Drop a `data:<mime>;base64,` prefix, which Ollama does not want. A bare
+/// base64 string is passed through unchanged.
+fn strip_data_url(image: String) -> String {
+    match image.split_once(";base64,") {
+        Some((_, rest)) => rest.to_string(),
+        None => image,
     }
 }
 
@@ -31,8 +136,7 @@ impl Provider for OllamaProvider {
     fn list_models<'a>(&'a self) -> ProviderFuture<'a, Vec<ModelInfo>> {
         Box::pin(async move {
             let resp = self
-                .http
-                .get(self.url("api/tags"))
+                .auth(self.http.get(self.url("api/tags")))
                 .send()
                 .await
                 .map_err(|e| ProviderError::Http(e.to_string()))?;
@@ -87,10 +191,10 @@ impl Provider for OllamaProvider {
 
     fn chat_stream<'a>(&'a self, request: ChatRequest) -> ProviderFuture<'a, ProviderStream> {
         Box::pin(async move {
+            let body = OllamaChatRequest::from(request);
             let resp = self
-                .http
-                .post(self.url("api/chat"))
-                .json(&request)
+                .auth(self.http.post(self.url("api/chat")))
+                .json(&body)
                 .send()
                 .await
                 .map_err(|e| ProviderError::Http(e.to_string()))?;
@@ -119,6 +223,83 @@ impl Provider for OllamaProvider {
             Ok(Box::pin(parsed) as ProviderStream)
         })
     }
+
+    fn embed<'a>(
+        &'a self,
+        model: &'a str,
+        inputs: &'a [String],
+    ) -> ProviderFuture<'a, Vec<Vec<f32>>> {
+        Box::pin(async move {
+            if inputs.is_empty() {
+                return Ok(vec![]);
+            }
+            let resp = self
+                .auth(self.http.post(self.url("api/embed")))
+                .json(&serde_json::json!({ "model": model, "input": inputs }))
+                .send()
+                .await
+                .map_err(|e| ProviderError::Http(e.to_string()))?;
+            if !resp.status().is_success() {
+                let status = resp.status().as_u16();
+                let body = resp.text().await.unwrap_or_default();
+                return Err(ProviderError::Api { status, body });
+            }
+            let body: OllamaEmbedResponse = resp
+                .json()
+                .await
+                .map_err(|e| ProviderError::Parse(e.to_string()))?;
+            validate_embeddings(&body.embeddings, inputs.len())
+        })
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct OllamaEmbedResponse {
+    embeddings: Vec<Vec<f32>>,
+}
+
+/// Shared post-condition for every embedding response, local or cloud.
+///
+/// Retrieval fuses a query vector against document vectors by position, so
+/// a count mismatch, a ragged set, or a NaN would all corrupt ranking
+/// without ever erroring. All three are refused here, at the boundary,
+/// where there is still enough context to say what went wrong.
+pub(crate) fn validate_embeddings(
+    vectors: &[Vec<f32>],
+    expected: usize,
+) -> ProviderResult<Vec<Vec<f32>>> {
+    if vectors.len() != expected {
+        return Err(ProviderError::Parse(format!(
+            "embedding response returned {} vectors for {} inputs",
+            vectors.len(),
+            expected
+        )));
+    }
+    let dim = match vectors.first() {
+        Some(first) => first.len(),
+        // Zero inputs is legal and needs no validation.
+        None => return Ok(vec![]),
+    };
+    if dim == 0 {
+        return Err(ProviderError::Parse(
+            "embedding response returned a zero-length vector".to_string(),
+        ));
+    }
+    for vector in vectors {
+        if vector.len() != dim {
+            return Err(ProviderError::Parse(format!(
+                "embedding response mixed dimensions: {} and {}",
+                dim,
+                vector.len()
+            )));
+        }
+        if vector.iter().any(|v| !v.is_finite()) {
+            return Err(ProviderError::Parse(
+                "embedding response contained a non-finite value".to_string(),
+            ));
+        }
+    }
+    Ok(vectors.to_vec())
 }
 
 pub(crate) fn parse_ollama_line(line: &str) -> ProviderResult<Option<ChatResponseChunk>> {

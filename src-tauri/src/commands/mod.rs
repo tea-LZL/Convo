@@ -5,6 +5,7 @@ pub mod chat_stream;
 pub mod compare;
 pub mod documents;
 pub mod hardware;
+pub mod knowledge;
 pub mod memory;
 pub mod memory_reviews;
 pub mod models;

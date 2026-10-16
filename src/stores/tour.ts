@@ -37,7 +37,7 @@ export const TOUR_STEPS: TourStep[] = [
   {
     id: "explore",
     title: "Explore",
-    body: "The sidebar has Chat, Compare, Documents, Notes, Tasks, and Memory. Start a chat, then explore the rest.",
+    body: "The sidebar has Chat, Notes, Memory, Compare, Documents, and Tasks. Start a chat, then explore the rest.",
   },
 ];
 

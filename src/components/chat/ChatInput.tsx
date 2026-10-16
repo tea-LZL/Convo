@@ -8,6 +8,24 @@ import { useSettingsStore } from "../../stores/settings";
 import { parseCommand, runCommand, SlashCommandContext } from "../../lib/slashCommands";
 import type { ChatStatus } from "../../stores/chatStream";
 
+let pendingChatDraft = "";
+
+export function clearPendingChatDraft(): void {
+  pendingChatDraft = "";
+}
+
+export function appendToChatDraft(text: string): void {
+  if (!text.trim()) return;
+  pendingChatDraft = pendingChatDraft.trim() ? `${pendingChatDraft}\n\n${text}` : text;
+  const ev = new CustomEvent<{ text: string }>("convo:add-to-chat", {
+    detail: { text },
+    cancelable: true,
+  });
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(ev);
+  }
+}
+
 type ChatInputAttachments = Pick<ReturnType<typeof useAttachments>, "attachments" | "addFiles">;
 
 function fallbackFilePicker(attachments: ChatInputAttachments) {
@@ -50,14 +68,42 @@ export function ChatInput({
   onInputChange: (text: string) => void;
   slashCtx: SlashCommandContext;
 }) {
-  const [input, setInput] = useState("");
+  const [input, setInput] = useState(() => pendingChatDraft);
   const enterToSend = useSettingsStore((s) => s.enterToSend);
   const ref = useRef<HTMLTextAreaElement>(null);
   const inputValueRef = useRef(input);
   inputValueRef.current = input;
+  const onInputChangeRef = useRef(onInputChange);
+  onInputChangeRef.current = onInputChange;
   const isMac = typeof navigator !== "undefined" && /mac/i.test(navigator.platform);
   const hasAttachmentError = attachments.attachments.some((attachment) => attachment.status === "error");
   const attachmentsBlocked = attachments.attachments.some((attachment) => attachment.status !== "ready");
+
+  const updateDraft = (next: string) => {
+    pendingChatDraft = next;
+    inputValueRef.current = next;
+    setInput(next);
+    onInputChangeRef.current(next);
+  };
+
+  useEffect(() => {
+    if (inputValueRef.current) {
+      onInputChangeRef.current(inputValueRef.current);
+    }
+  }, []);
+
+  useEffect(() => {
+    const onAddToChat = (e: Event) => {
+      const detail = (e as CustomEvent<{ text?: string }>).detail;
+      const incoming = detail?.text ?? "";
+      if (!incoming.trim()) return;
+      e.preventDefault();
+      updateDraft(pendingChatDraft);
+      ref.current?.focus();
+    };
+    window.addEventListener("convo:add-to-chat", onAddToChat);
+    return () => window.removeEventListener("convo:add-to-chat", onAddToChat);
+  }, []);
 
   useEffect(() => {
     if (ref.current) {
@@ -126,26 +172,28 @@ export function ChatInput({
     if (parsed) {
       const result = await runCommand(parsed, slashCtx);
       if (result.sent && result.text) {
+        // Clear before the await, for the same reason as the plain path
+        // below.
+        updateDraft("");
         await onSend(result.text);
-        setInput("");
-        onInputChange("");
         return;
       }
       if (result.text !== undefined) {
-        setInput(result.text);
-        onInputChange(result.text);
+        updateDraft(result.text);
         setTimeout(() => ref.current?.focus(), 0);
         return;
       }
       if (result.clear) {
-        setInput("");
-        onInputChange("");
+        updateDraft("");
         return;
       }
     }
+    // Clear before awaiting the send. The user's message is appended to the
+    // store synchronously, so an emptying composer is the signal that the
+    // message was sent; clearing after `onSend` resolved meant the text sat
+    // there until the provider answered, which read as "the send did nothing".
+    updateDraft("");
     await onSend(text);
-    setInput("");
-    onInputChange("");
   };
 
   const handleKey = (e: React.KeyboardEvent) => {
@@ -156,14 +204,23 @@ export function ChatInput({
   };
 
   return (
-    <div className="rounded-lg border border-border bg-surface-1 shadow-panel">
+    // A card is a surface and a 1px border. This composer was the last
+    // card shadow anywhere in the app — Task 2 found it, left it, and
+    // named this task as the one that owns it — and dropping it needed a
+    // replacement, because a `bg-surface-1` composer on a `bg-surface-1`
+    // bar has nothing but the shadow telling them apart.
+    //
+    // `bg-surface-2` is that replacement, and it is not only a step: it is
+    // the fill every other input in this app already wears, from
+    // `TextInput` to the model pill in the header above. The composer is
+    // an input, so it now looks like one.
+    <div className="rounded-lg border border-border bg-surface-2">
       <textarea
         ref={ref}
         data-chat-input
         value={input}
         onChange={(e) => {
-          setInput(e.target.value);
-          onInputChange(e.target.value);
+          updateDraft(e.target.value);
         }}
         onKeyDown={handleKey}
         aria-label="Message"

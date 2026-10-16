@@ -2,7 +2,7 @@ pub mod discovery;
 pub mod ollama;
 pub mod openai_compat;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 pub mod types;
 
 use async_trait::async_trait;
@@ -47,6 +47,24 @@ pub trait Provider: Send + Sync {
     fn list_models<'a>(&'a self) -> ProviderFuture<'a, Vec<ModelInfo>>;
     fn probe<'a>(&'a self) -> ProbeFuture<'a>;
     fn chat_stream<'a>(&'a self, request: ChatRequest) -> ProviderFuture<'a, ProviderStream>;
+
+    /// Embed one or more inputs, returning one vector per input in the
+    /// order the inputs were given.
+    ///
+    /// Implementations MUST return exactly `inputs.len()` vectors, all of
+    /// the same dimension. A short, ragged, or reordered response is a
+    /// `ProviderError::Parse`, never a partial result: retrieval fuses
+    /// vectors against documents by position, so a mis-paired vector
+    /// corrupts ranking silently rather than erroring.
+    ///
+    /// A provider with no embedding endpoint returns
+    /// `ProviderError::NotConfigured`, which callers degrade on by falling
+    /// back to keyword-only retrieval. It must never panic or hang.
+    fn embed<'a>(
+        &'a self,
+        model: &'a str,
+        inputs: &'a [String],
+    ) -> ProviderFuture<'a, Vec<Vec<f32>>>;
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -67,7 +85,10 @@ pub async fn probe(
     api_key: Option<&str>,
 ) -> Result<ProbeResult, String> {
     let p: Box<dyn Provider> = match kind {
-        "ollama" => Box::new(ollama::OllamaProvider::new(base_url.to_string(), None)),
+        "ollama" => Box::new(ollama::OllamaProvider::new(
+            base_url.to_string(),
+            api_key.map(|s| s.to_string()),
+        )),
         "openai_compat" => Box::new(openai_compat::OpenAiCompatProvider::new(
             base_url.to_string(),
             api_key.map(|s| s.to_string()),

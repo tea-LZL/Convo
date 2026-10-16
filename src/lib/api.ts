@@ -160,6 +160,38 @@ export interface Note {
   source_message_id: string | null;
   created_at: string;
   updated_at: string;
+  pinned: boolean;
+}
+
+/**
+ * A memory a note produced. `source_note_id` on the memory is the only
+ * record of the link, so this list is a query result: a deleted memory
+ * disappears from it rather than leaving a dangling id. Superseded rows
+ * stay listed — the note produced them and the history is the point.
+ */
+export interface NoteLink {
+  id: string;
+  title: string | null;
+  content: string;
+  is_enabled: boolean;
+  superseded_by: string | null;
+}
+
+export interface NoteWithLinks {
+  note: Note;
+  linked_memories: NoteLink[];
+}
+
+/**
+ * A note's id and title plus the memories it produced — the whole note
+ * library without the bodies. A body is a free-text textarea, so a pasted
+ * document makes one note megabytes, and a caller that only labels rows with
+ * the note they came from must not pay for that on every read.
+ */
+export interface NoteTitle {
+  id: string;
+  title: string | null;
+  memory_ids: string[];
 }
 
 export interface Task {
@@ -182,6 +214,13 @@ export interface MemoryItem {
   is_enabled: boolean;
   created_at: string;
   updated_at: string;
+  /**
+   * Set through `setMemoryPinned` only. A pinned memory is injected on
+   * every send, budget permitting, so it is not conditional on what
+   * retrieval happens to rank.
+   */
+  pinned: boolean;
+  superseded_by?: string | null;
 }
 
 export interface MemorySearchHit {
@@ -189,11 +228,77 @@ export interface MemorySearchHit {
   snippet: string;
 }
 
+/**
+ * What one chat's memory list is scoped to.
+ *
+ * `configured: false` is a chat that has never touched the feature: every
+ * enabled memory is eligible, which is what an empty list has always meant
+ * and must keep meaning, or every untouched chat in the library would lose
+ * its memory. `configured: true` with an empty `itemIds` is the instruction
+ * "nothing is eligible in this chat" — an answer the ids alone could not
+ * carry, because they are also what an untouched chat looks like.
+ */
+export interface SessionMemoryScope {
+  itemIds: string[];
+  configured: boolean;
+}
+
 export interface ExtractedFact {
   kind: string;
   title: string | null;
   content: string;
   tags: string | null;
+  /**
+   * The extractor's own confidence, 0..1. Optional because rows written
+   * before the field existed deserialize without it, and the Rust side
+   * defaults a missing value to 0.5 rather than to full confidence.
+   */
+  confidence?: number;
+  /**
+   * The extractor marked this as long-form or structured, so it should
+   * become a note rather than a one-line memory. That is how the agent
+   * writes notes during a session.
+   */
+  is_note?: boolean;
+  note_body?: string | null;
+}
+
+/**
+ * What the Rust revision table did with one candidate. The `review`
+ * variant carries an id because that case is a row in the inbox, not a
+ * write — the caller may want to link to it.
+ */
+export type AppliedRevision =
+  | { effect: "added"; id: string }
+  | { effect: "reinforced"; id: string; confidence: number }
+  | { effect: "superseded"; newId: string; oldId: string }
+  | { effect: "merged"; id: string }
+  | { effect: "sentToReview"; reviewId: string };
+
+/** One ranked recall hit. `reason` is always populated, never empty. */
+export interface RankedMemory {
+  ownerType: "memory" | "note";
+  ownerId: string;
+  kind: string;
+  title: string | null;
+  content: string;
+  score: number;
+  reason: string;
+}
+
+/**
+ * What the index is missing, and why semantic recall may be unavailable.
+ * `semanticNote` is the user-facing explanation and is set whenever recall
+ * is degraded — a null there means both routes are live.
+ */
+export interface KnowledgeIndexStatus {
+  memoryCount: number;
+  noteCount: number;
+  embeddedCount: number;
+  needsEmbedding: number;
+  needsReindex: boolean;
+  embeddingModel: string | null;
+  semanticNote: string | null;
 }
 
 export interface MemoryReview {
@@ -453,7 +558,11 @@ export const api = {
   deleteTheme: (id: string) => invoke<void>("delete_theme", { id }),
 
   // Notes
-  listNotes: () => invoke<Note[]>("list_notes"),
+  listNotes: () => invoke<NoteWithLinks[]>("list_notes"),
+  // Ids and titles, not notes. `list_notes` sends every body in the library,
+  // which is megabytes of pasted text for a caller that reads two short
+  // strings per row.
+  listNoteTitles: () => invoke<NoteTitle[]>("list_note_titles"),
   upsertNote: (note: Partial<Note> & { body: string }) => invoke<string>("upsert_note", {
     note: {
       id: note.id ?? null,
@@ -462,10 +571,17 @@ export const api = {
       tags: note.tags ?? null,
       sourceSessionId: note.source_session_id ?? null,
       sourceMessageId: note.source_message_id ?? null,
+      // Honoured on create, ignored on update: the editor's save carries the
+      // whole note, so writing it back would unpin a note pinned elsewhere.
+      // setNotePinned is the deliberate path.
+      pinned: note.pinned ?? false,
     },
   }),
   deleteNote: (id: string) => invoke<void>("delete_note", { id }),
   searchNotes: (query: string) => invoke<Note[]>("search_notes", { query }),
+  setNotePinned: (id: string, pinned: boolean) => invoke<void>("set_note_pinned", { id, pinned }),
+  unlinkMemoryFromNote: (noteId: string, memoryId: string) =>
+    invoke<void>("unlink_memory_from_note", { noteId, memoryId }),
 
   // Tasks
   listTasks: () => invoke<Task[]>("list_tasks"),
@@ -498,13 +614,64 @@ export const api = {
     }),
   deleteMemory: (id: string) => invoke<void>("delete_memory", { id }),
   toggleMemory: (id: string, enabled: boolean) => invoke<void>("toggle_memory", { id, enabled }),
+  /**
+   * The deliberate path for a memory's pin. `upsertMemory` does not carry
+   * it: the editor saves the whole item, so writing the draft's pin back
+   * would unpin a memory pinned elsewhere.
+   */
+  setMemoryPinned: (id: string, pinned: boolean) => invoke<void>("set_memory_pinned", { id, pinned }),
   searchMemory: (query: string, kind?: string) =>
     invoke<MemorySearchHit[]>("search_memory", { query, kind: kind ?? null, limit: 30 }),
   getEnabledMemory: () => invoke<MemoryItem[]>("get_enabled_memory"),
   getSessionMemoryOverrides: (sessionId: string) =>
-    invoke<string[]>("get_session_memory_overrides", { sessionId }),
-  setSessionMemoryOverrides: (sessionId: string, itemIds: string[]) =>
-    invoke<void>("set_session_memory_overrides", { sessionId, itemIds }),
+    invoke<SessionMemoryScope>("get_session_memory_overrides", { sessionId }),
+  /**
+   * `configured: false` clears the chat's scope entirely and `itemIds` is
+   * ignored. `configured: true` with an empty `itemIds` restricts the chat
+   * to nothing, which is what a user who unchecks every box meant. Sending
+   * the empty list as `configured: false` instead would hand the whole
+   * library back, which is the bug `SessionMemoryScope` exists to end.
+   */
+  setSessionMemoryOverrides: (sessionId: string, itemIds: string[], configured: boolean) =>
+    invoke<void>("set_session_memory_overrides", { sessionId, itemIds, configured }),
+  /**
+   * Extract and apply in one Rust call. Returns what each candidate did,
+   * so the UI can report "3 remembered, 1 needs review" without owning the
+   * decision. `extractFactsFromSession` below is the older split path and
+   * still backs the manual review flow.
+   */
+  memoryExtractAndRevise: (sessionId: string, modelId?: string, providerId?: string) =>
+    invoke<AppliedRevision[]>("memory_extract_and_revise", {
+      sessionId,
+      modelId: modelId ?? null,
+      providerId: providerId ?? null,
+    }),
+  /**
+   * Hybrid recall: BM25 and cosine fused with RRF, plus reinforcement,
+   * recency and kind boosts. Never errors on a missing embedding model — it
+   * degrades to keyword-only and returns fewer results.
+   */
+  memoryRecall: (
+    query: string,
+    sessionId?: string,
+    topK?: number,
+    kinds?: string[],
+  ) =>
+    invoke<RankedMemory[]>("memory_recall", {
+      query,
+      sessionId: sessionId ?? null,
+      topK: topK ?? null,
+      kinds: kinds ?? null,
+    }),
+  knowledgeIndexStatus: () => invoke<KnowledgeIndexStatus>("knowledge_index_status"),
+  /**
+   * Embed everything that is missing a vector, and report how many rows
+   * were written. `embedNotes` gates the note arm: by default only pinned
+   * notes are indexed, because a long-form note library is expensive to
+   * embed and mostly not what a chat query reaches for.
+   */
+  memoryIndexFill: (embedNotes = false) =>
+    invoke<number>("memory_index_fill", { embedNotes }),
   extractFactsFromSession: (sessionId: string, modelId?: string, providerId?: string) =>
     invoke<ExtractedFact[]>("extract_facts_from_session", {
       sessionId,

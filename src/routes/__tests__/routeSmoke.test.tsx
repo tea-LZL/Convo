@@ -1,11 +1,12 @@
 import { useState } from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../../app/App";
 import { ErrorBoundary } from "../../components/ui/ErrorBoundary";
 import { useSessionsStore } from "../../stores/sessions";
+import { useShortcutsStore } from "../../stores/shortcuts";
 import { useTourStore } from "../../stores/tour";
 
 const session = {
@@ -107,6 +108,28 @@ describe("route smoke tests", () => {
     fireEvent.click(screen.getByRole("button", { name: "Hardware scan" }));
     await waitFor(() => expect(screen.getByRole("main")).toHaveAttribute("data-route", "/hardware"));
     expect(screen.queryByText("Something went wrong")).not.toBeInTheDocument();
+  });
+
+  it("opens a new chat from the Ctrl+N binding instead of dispatching into the void", async () => {
+    useShortcutsStore.setState({ bindings: [] });
+    window.history.replaceState(null, "", "#/hardware");
+    render(<App />);
+
+    await waitFor(() =>
+      expect(
+        useShortcutsStore.getState().bindings.some((binding) => binding.id === "new-chat"),
+      ).toBe(true),
+    );
+    const binding = useShortcutsStore.getState().bindings.find((b) => b.id === "new-chat")!;
+
+    await act(async () => {
+      binding.action();
+    });
+
+    await waitFor(() =>
+      expect(screen.getByRole("main")).toHaveAttribute("data-route", "/chat/session-1"),
+    );
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("create_session", expect.anything());
   });
 });
 

@@ -27,6 +27,14 @@ export default {
           hover: "var(--color-accent-hover)",
           muted: "var(--color-accent-muted)",
         },
+        // Composed from existing vars with color-mix, never a new CSS
+        // custom property. All six built-in themes define the same 26
+        // keys, so a new property would be undefined in every theme and a
+        // Solar user would get Solar's palette with default-coloured new
+        // chrome. A Tailwind alias that composes two existing vars is
+        // theme-following by construction and needs no theme to define it.
+        "nav-active": "color-mix(in oklab, var(--color-accent) 14%, var(--color-surface-2))",
+        "group-header": "var(--color-text-subtle)",
         success: "var(--color-success)",
         warn: "var(--color-warn)",
         error: "var(--color-error)",
@@ -42,6 +50,20 @@ export default {
       boxShadow: {
         panel: "var(--shadow-panel)",
         modal: "var(--shadow-modal)",
+        // A tight right-edge accent. A colour alias cannot produce a
+        // shadow-* class on its own, so this has to live here and not in
+        // `colors`. The blur stays small and the spread is negative: a
+        // 20px blur on a 40px row paints a haze above and below the tab
+        // instead of an accent. Never animate it — it marks the active
+        // nav item, which is re-rendered whenever the selection changes.
+        "nav-glow": "3px 0 8px -4px color-mix(in oklab, var(--color-accent) 70%, transparent)",
+      },
+      backgroundImage: {
+        // A band on the right of the active row. The second stop is the
+        // same mix as `nav-active`, so the band fades into the row's own
+        // colour and opacity. The first stop is that mix with more accent.
+        "nav-highlight":
+          "linear-gradient(to left, color-mix(in oklab, var(--color-accent) 55%, var(--color-surface-2)) 0%, color-mix(in oklab, var(--color-accent) 14%, var(--color-surface-2)) 40%)",
       },
       fontFamily: {
         sans: ["var(--font-ui)"],

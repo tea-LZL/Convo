@@ -172,7 +172,13 @@ export function ModelsSection() {
 
   return (
     <div>
-      <h1 className="text-xl font-semibold text-text">Models</h1>
+      {/* `h2`, not `h1`. This section drew its own heading rather than using
+          the `SectionTitle` its six siblings share, so the Settings page had
+          two `h1`s — the shell's and this one. A screen-reader user moving by
+          level heard the page announce itself twice, and every level-keyed
+          list built from the page inherited the ambiguity. The type is
+          `SectionTitle`'s, so the two still look like one thing. */}
+      <h2 className="text-xl font-semibold text-text">Models</h2>
       <p className="text-sm text-text-muted mt-1 mb-6">Discover, manage, and start chats with provider-scoped models.</p>
       <div className="flex items-center gap-2 mb-4 flex-wrap">
         <Select aria-label="Model provider" value={providerId} onChange={setProviderId} options={providers.map((p) => ({ value: p.id, label: p.name }))} />

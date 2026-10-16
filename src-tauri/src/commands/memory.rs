@@ -1,16 +1,24 @@
 use crate::db::models::{MemoryItem, MemorySearchHit};
 use rusqlite::{params, OptionalExtension};
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::State;
 use uuid::Uuid;
 
 use crate::db::DbPool;
 
+// The fact type and its parser live in the core module; the command re-exports
+// them so `memory_reviews.rs` and the frontend contract are unchanged.
+pub use crate::memory::extract::{parse_candidates, ExtractedFact};
+
 fn now() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
+/// Every memory reader maps its row through this, so the SELECT list and the
+/// `get` indices are one contract: they must agree, in this order, in every
+/// reader. The unit tests pin that, because a mismatch is not a compile
+/// error — a reordered pair of string columns compiles, runs, and returns
+/// one field's value in the other field's place.
 fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryItem> {
     Ok(MemoryItem {
         id: row.get(0)?,
@@ -21,6 +29,8 @@ fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryItem> {
         is_enabled: row.get::<_, i64>(5)? != 0,
         created_at: row.get(6)?,
         updated_at: row.get(7)?,
+        pinned: row.get::<_, i64>(8)? != 0,
+        superseded_by: row.get(9)?,
     })
 }
 
@@ -43,17 +53,25 @@ pub fn list_memory(
     kind: Option<String>,
 ) -> Result<Vec<MemoryItem>, String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
-    let (sql, k): (&str, Option<String>) = match &kind {
-        Some(_) => (
-            "SELECT id, kind, title, content, tags, is_enabled, created_at, updated_at
+    list(&conn, kind.as_deref())
+}
+
+/// The query behind `list_memory`, over `&Connection` so its positional
+/// `row.get` chain is testable. `None` lists every kind, which is what the
+/// command passes when the frontend sends no filter.
+pub fn list(conn: &rusqlite::Connection, kind: Option<&str>) -> Result<Vec<MemoryItem>, String> {
+    let (sql, k): (&str, Option<&str>) = if kind.is_some() {
+        (
+            "SELECT id, kind, title, content, tags, is_enabled, created_at, updated_at, pinned, superseded_by
              FROM memory_items WHERE kind = ?1 ORDER BY updated_at DESC",
             kind,
-        ),
-        None => (
-            "SELECT id, kind, title, content, tags, is_enabled, created_at, updated_at
+        )
+    } else {
+        (
+            "SELECT id, kind, title, content, tags, is_enabled, created_at, updated_at, pinned, superseded_by
              FROM memory_items ORDER BY kind, updated_at DESC",
             None,
-        ),
+        )
     };
     let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
     let rows = if let Some(k) = k {
@@ -76,6 +94,10 @@ pub fn upsert_memory(pool: State<'_, Arc<DbPool>>, item: MemoryInput) -> Result<
     let id = item.id.unwrap_or_else(|| Uuid::new_v4().to_string());
     let conn = pool.get().map_err(|e| e.to_string())?;
     if is_update {
+        // `pinned` is deliberately absent from this UPDATE, for the reason
+        // `upsert_note` gives: the editor saves the whole item, so writing an
+        // input's pin back would silently unpin a memory the user pinned
+        // elsewhere. Pin and unpin are `set_pinned`'s job, on purpose.
         conn.execute(
             "UPDATE memory_items SET kind = ?1, title = ?2, content = ?3, tags = ?4, is_enabled = ?5, updated_at = ?6 WHERE id = ?7",
             params![item.kind, item.title, item.content, item.tags, item.is_enabled, now(), id],
@@ -129,7 +151,19 @@ pub fn search_memory(
     limit: Option<i64>,
 ) -> Result<Vec<MemorySearchHit>, String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
-    let lim = limit.unwrap_or(30);
+    search(&conn, &query, kind.as_deref(), limit.unwrap_or(30))
+}
+
+/// The query behind `search_memory`, over `&Connection` so it is callable
+/// from a test. A command that can only be reached through a `State` is a
+/// command nothing can test, which is how the two bugs below survived: a
+/// kind-less search had never been run.
+pub fn search(
+    conn: &rusqlite::Connection,
+    query: &str,
+    kind: Option<&str>,
+    lim: i64,
+) -> Result<Vec<MemorySearchHit>, String> {
     let q = query.trim();
     if q.is_empty() {
         return Ok(vec![]);
@@ -156,8 +190,13 @@ pub fn search_memory(
         return Ok(vec![]);
     }
     let mut sql = String::from(
-        "SELECT m.id, m.kind, m.title, m.content, m.tags, m.is_enabled, m.created_at, m.updated_at,
-                snippet(memory_fts, 2, '<mark>', '</mark>', '…', 16)
+        // `snippet`'s column index is 0-based over
+        // `memory_fts (title, content, tags)`, so 1 is content. It was 2,
+        // which is tags: every excerpt came from the tag list, and a memory
+        // with no tags is a NULL in that column, so the row could not be
+        // read at all.
+        "SELECT m.id, m.kind, m.title, m.content, m.tags, m.is_enabled, m.created_at, m.updated_at, m.pinned, m.superseded_by,
+                snippet(memory_fts, 1, '<mark>', '</mark>', '…', 16)
          FROM memory_fts JOIN memory_items m ON m.rowid = memory_fts.rowid
          WHERE memory_fts MATCH ?1",
     );
@@ -169,29 +208,34 @@ pub fn search_memory(
     let mapper = |row: &rusqlite::Row<'_>| -> rusqlite::Result<MemorySearchHit> {
         Ok(MemorySearchHit {
             item: row_to_item(row)?,
-            snippet: row.get::<_, String>(8)?,
+            snippet: row.get::<_, String>(10)?,
         })
     };
-    let hits: Vec<MemorySearchHit> = if let Some(k) = kind {
-        stmt.query_map(params![fts_q, k, lim], mapper)
-            .map_err(|e| e.to_string())?
-            .collect::<Result<_, _>>()
-            .map_err(|e| e.to_string())?
-    } else {
-        stmt.query_map(params![fts_q, lim], mapper)
-            .map_err(|e| e.to_string())?
-            .collect::<Result<_, _>>()
-            .map_err(|e| e.to_string())?
-    };
+    // `?2` is bound even when its clause is absent. SQLite counts a
+    // statement's parameters by its highest index, and `LIMIT ?3` is there
+    // either way, so binding two is a "wrong number of parameters" error —
+    // which is what every kind-less search returned, always.
+    let hits: Vec<MemorySearchHit> = stmt
+        .query_map(params![fts_q, kind, lim], mapper)
+        .map_err(|e| e.to_string())?
+        .collect::<Result<_, _>>()
+        .map_err(|e| e.to_string())?;
     Ok(hits)
 }
 
 #[tauri::command]
 pub fn get_enabled_memory(pool: State<'_, Arc<DbPool>>) -> Result<Vec<MemoryItem>, String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
+    enabled(&conn)
+}
+
+/// The query behind `get_enabled_memory`, over `&Connection` so its positional
+/// `row.get` chain is testable. Disabled rows are excluded, exactly as they
+/// always were; a pin does not re-enable a memory the user turned off.
+pub fn enabled(conn: &rusqlite::Connection) -> Result<Vec<MemoryItem>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, kind, title, content, tags, is_enabled, created_at, updated_at
+            "SELECT id, kind, title, content, tags, is_enabled, created_at, updated_at, pinned, superseded_by
              FROM memory_items WHERE is_enabled = 1 ORDER BY kind, updated_at DESC",
         )
         .map_err(|e| e.to_string())?;
@@ -203,21 +247,146 @@ pub fn get_enabled_memory(pool: State<'_, Arc<DbPool>>) -> Result<Vec<MemoryItem
     Ok(rows)
 }
 
+/// Set or clear a memory's pin. A pinned memory is injected on every send,
+/// budget permitting, regardless of what retrieval ranks.
+///
+/// A pin on a memory that is not there is an error, not a no-op: `UPDATE`
+/// reports zero rows for an id that does not exist, and returning `Ok(())`
+/// for that is how a pin looks set when it never was.
+pub fn set_pinned(conn: &rusqlite::Connection, id: &str, pinned: bool) -> Result<(), String> {
+    let changed = conn
+        .execute(
+            "UPDATE memory_items
+             SET pinned = ?2,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE id = ?1",
+            params![id, if pinned { 1 } else { 0 }],
+        )
+        .map_err(|e| e.to_string())?;
+    if changed == 0 {
+        return Err(format!("no memory with id {id}"));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_memory_pinned(
+    pool: State<'_, Arc<DbPool>>,
+    id: String,
+    pinned: bool,
+) -> Result<(), String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    set_pinned(&conn, &id, pinned)
+}
+
+/// Record that a note produced a memory. The write half of the link that
+/// `memory_items.source_note_id` is, and the mirror of
+/// [`crate::commands::notes::unlink`].
+///
+/// Both ids are checked, and both are checked for a reason. `source_note_id`
+/// carries no foreign key — it was added by `ALTER TABLE` in V006, not
+/// declared `REFERENCES notes(id)` — so an `UPDATE` naming a note that was
+/// never written reports one changed row and leaves a dangling id that the
+/// Notes tab can never resolve. A claim about origin is a claim about two
+/// rows: if either is missing the link is not recorded.
+///
+/// Zero rows changed is an error, not a no-op, for the same reason
+/// [`set_pinned`] gives: `UPDATE` reports zero rows for an id that is not
+/// there, and returning `Ok(())` for that is how provenance looks recorded
+/// when nothing was written.
+///
+/// Plain `&Connection` rather than a command: nothing in the UI sets this,
+/// and a command with no caller is a surface nothing populates. Extraction
+/// is the only writer, and it writes through this one.
+pub fn set_source_note(
+    conn: &rusqlite::Connection,
+    note_id: &str,
+    memory_id: &str,
+) -> Result<(), String> {
+    let note_exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM notes WHERE id = ?1",
+            params![note_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if note_exists == 0 {
+        return Err(format!("no note with id {note_id}"));
+    }
+    let changed = conn
+        .execute(
+            "UPDATE memory_items
+             SET source_note_id = ?2,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE id = ?1",
+            params![memory_id, note_id],
+        )
+        .map_err(|e| e.to_string())?;
+    if changed == 0 {
+        return Err(format!("no memory with id {memory_id}"));
+    }
+    Ok(())
+}
+
+/// What one session's memory list is scoped to.
+///
+/// Three states, and the third is why this is not a `Vec<String>`.
+/// `configured == false` is a session that has never touched the feature:
+/// every enabled memory is eligible, which is what an empty override list
+/// has always meant. `configured == true` with an empty `item_ids` is the
+/// instruction "nothing is eligible in this chat" — a real answer the
+/// override rows alone could not express, because they are also what an
+/// untouched session looks like. The UI needs to tell the two apart to
+/// render the boxes, and recall needs it to honour the instruction.
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionMemoryScope {
+    /// The memory ids eligible for recall in this session. Empty when
+    /// `configured` is false, and possibly empty when it is true.
+    pub item_ids: Vec<String>,
+    /// Whether this session was scoped at all.
+    pub configured: bool,
+}
+
 #[tauri::command]
 pub fn get_session_memory_overrides(
     pool: State<'_, Arc<DbPool>>,
     session_id: String,
-) -> Result<Vec<String>, String> {
+) -> Result<SessionMemoryScope, String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
+    session_memory_scope(&conn, &session_id)
+}
+
+/// [`get_session_memory_overrides`] over `&Connection`, so the three states
+/// are testable without a `State`.
+///
+/// Override rows on their own mean scoped, because that is what every
+/// session written before `session_memory_scope` exists looks like, and
+/// reading it as unrestricted would widen those sessions to the whole
+/// library. The scope row is what says "deliberately, and to nothing".
+pub fn session_memory_scope(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+) -> Result<SessionMemoryScope, String> {
     let mut stmt = conn
-        .prepare("SELECT item_id FROM session_overrides WHERE session_id = ?1")
+        .prepare("SELECT item_id FROM session_overrides WHERE session_id = ?1 ORDER BY item_id")
         .map_err(|e| e.to_string())?;
-    let rows = stmt
+    let item_ids = stmt
         .query_map(params![session_id], |r| r.get::<_, String>(0))
         .map_err(|e| e.to_string())?
-        .collect::<Result<_, _>>()
+        .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
-    Ok(rows)
+    let deliberate: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM session_memory_scope WHERE session_id = ?1",
+            params![session_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(SessionMemoryScope {
+        configured: deliberate > 0 || !item_ids.is_empty(),
+        item_ids,
+    })
 }
 
 #[tauri::command]
@@ -225,18 +394,55 @@ pub fn set_session_memory_overrides(
     pool: State<'_, Arc<DbPool>>,
     session_id: String,
     item_ids: Vec<String>,
+    configured: bool,
 ) -> Result<(), String> {
     let mut conn = pool.get().map_err(|e| e.to_string())?;
+    write_session_memory_scope(&mut conn, &session_id, &item_ids, configured)
+}
+
+/// [`set_session_memory_overrides`] over `&Connection`, so the write is
+/// testable.
+///
+/// `configured == false` clears the session entirely — rows and scope row —
+/// and `item_ids` is ignored, because a session with no restriction is the
+/// one state an empty list has always meant and the one every untouched
+/// session is in. `configured == true` writes exactly `item_ids`, including
+/// the empty list: a scope row with no override rows is how a user says
+/// "this chat has no memory", and it is the only representation of that
+/// answer that is not indistinguishable from never having asked.
+///
+/// One transaction, because the two tables are one fact. A scope row
+/// written without its overrides is a session scoped to nothing that the
+/// user meant to scope to something.
+pub fn write_session_memory_scope(
+    conn: &mut rusqlite::Connection,
+    session_id: &str,
+    item_ids: &[String],
+    configured: bool,
+) -> Result<(), String> {
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     tx.execute(
         "DELETE FROM session_overrides WHERE session_id = ?1",
         params![session_id],
     )
     .map_err(|e| e.to_string())?;
-    for id in item_ids {
+    if configured {
+        for id in item_ids {
+            tx.execute(
+                "INSERT OR IGNORE INTO session_overrides (session_id, item_id) VALUES (?1, ?2)",
+                params![session_id, id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
         tx.execute(
-            "INSERT OR IGNORE INTO session_overrides (session_id, item_id) VALUES (?1, ?2)",
-            params![session_id, id],
+            "INSERT OR IGNORE INTO session_memory_scope (session_id) VALUES (?1)",
+            params![session_id],
+        )
+        .map_err(|e| e.to_string())?;
+    } else {
+        tx.execute(
+            "DELETE FROM session_memory_scope WHERE session_id = ?1",
+            params![session_id],
         )
         .map_err(|e| e.to_string())?;
     }
@@ -253,213 +459,6 @@ pub struct MemoryInput {
     pub content: String,
     pub tags: Option<String>,
     pub is_enabled: i64,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ExtractedFact {
-    pub kind: String,
-    pub title: Option<String>,
-    pub content: String,
-    pub tags: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ExtractedFactCandidate {
-    kind: Option<String>,
-    #[serde(rename = "type")]
-    legacy_kind: Option<String>,
-    category: Option<String>,
-    #[serde(rename = "fact_type")]
-    fact_type: Option<String>,
-    title: Option<String>,
-    fact: Option<String>,
-    detail: Option<String>,
-    content: Option<String>,
-    value: Option<String>,
-    details: Option<String>,
-    context: Option<String>,
-    notes: Option<String>,
-    tags: Option<serde_json::Value>,
-    labels: Option<serde_json::Value>,
-}
-
-fn normalize_fact_kind(value: &str) -> Option<&'static str> {
-    // ponytail: keep compatibility explicit; unknown model schemas are ignored rather than guessed.
-    match value.trim().to_ascii_lowercase().as_str() {
-        "user_pref"
-        | "personal_information"
-        | "personal information"
-        | "personal information / date"
-        | "personal information/date"
-        | "personal detail" => Some("user_pref"),
-        "project_fact" | "project fact" => Some("project_fact"),
-        "skill" | "instruction" | "reusable instruction" => Some("skill"),
-        _ => None,
-    }
-}
-
-fn trimmed_optional(value: Option<String>) -> Option<String> {
-    value.and_then(|value| {
-        let trimmed = value.trim();
-        (!trimmed.is_empty()).then(|| trimmed.to_string())
-    })
-}
-
-fn normalize_tags(value: Option<serde_json::Value>) -> Option<String> {
-    match value {
-        Some(serde_json::Value::String(value)) => trimmed_optional(Some(value)),
-        Some(serde_json::Value::Array(values)) => {
-            let tags = values
-                .into_iter()
-                .filter_map(|value| value.as_str().map(|tag| tag.trim().to_string()))
-                .filter(|tag| !tag.is_empty())
-                .collect::<Vec<_>>();
-            (!tags.is_empty()).then(|| tags.join(", "))
-        }
-        _ => None,
-    }
-}
-
-fn inferred_personal_fact_kind(title: Option<&str>, content: Option<&str>) -> Option<&'static str> {
-    let haystack = [title.unwrap_or(""), content.unwrap_or("")]
-        .join(" ")
-        .to_ascii_lowercase();
-    let transient_markers = [
-        "task",
-        "goal",
-        "draft",
-        "email",
-        "meeting",
-        "communication",
-        "request",
-        "recent",
-        "output",
-        "event",
-        "planning",
-        "gathering",
-        "invitation",
-        "template",
-        "setting up",
-    ];
-    if transient_markers
-        .iter()
-        .any(|marker| haystack.contains(marker))
-    {
-        return None;
-    }
-
-    let durable_markers = [
-        "birthday",
-        "birth date",
-        "nickname",
-        "user name",
-        "username",
-        "preferred",
-        "preference",
-        "prefers",
-        "likes",
-        "dislikes",
-        "timezone",
-        "time zone",
-        "location",
-        "city",
-        "country",
-        "occupation",
-        "pronoun",
-        "language",
-    ];
-    durable_markers
-        .iter()
-        .any(|marker| haystack.contains(marker))
-        .then_some("user_pref")
-}
-
-fn parse_json_value(raw: &str) -> Result<serde_json::Value, String> {
-    let trimmed = raw.trim();
-    if let Ok(value) = serde_json::from_str(trimmed) {
-        return Ok(value);
-    }
-
-    // Local reasoning models commonly add <think> blocks or prose around the
-    // JSON. Try the two bounded JSON spans without accepting arbitrary text.
-    for (open, close) in [('[', ']'), ('{', '}')] {
-        if let (Some(start), Some(end)) = (trimmed.find(open), trimmed.rfind(close)) {
-            if start < end {
-                if let Ok(value) = serde_json::from_str(&trimmed[start..=end]) {
-                    return Ok(value);
-                }
-            }
-        }
-    }
-
-    Err("Invalid extraction JSON".into())
-}
-
-fn parse_extracted_facts(raw: &str) -> Result<Vec<ExtractedFact>, String> {
-    let value = parse_json_value(raw)?;
-    let items: Vec<&serde_json::Value> = match &value {
-        serde_json::Value::Array(items) => items.iter().collect(),
-        serde_json::Value::Object(object) => {
-            ["extracted_facts", "facts", "memories", "items"]
-                .into_iter()
-                .find_map(|key| object.get(key).and_then(serde_json::Value::as_array))
-                .map(|items| items.iter().collect())
-                .or_else(|| {
-                    // A single fact object is accepted only when it has an
-                    // explicit fact-shaped field; arbitrary objects remain invalid.
-                    object.contains_key("kind").then_some(vec![&value])
-                })
-                .ok_or_else(|| "Expected extracted facts to be a JSON array".to_string())?
-        }
-        _ => return Err("Expected extracted facts to be a JSON array".into()),
-    };
-
-    let mut facts = Vec::with_capacity(items.len());
-    for item in items {
-        let Some(object) = item.as_object() else {
-            continue;
-        };
-        let candidate: ExtractedFactCandidate =
-            serde_json::from_value(serde_json::Value::Object(object.clone()))
-                .map_err(|e| format!("Invalid extracted fact object: {}", e))?;
-        let explicit_kind = [
-            candidate.kind.as_deref(),
-            candidate.legacy_kind.as_deref(),
-            candidate.category.as_deref(),
-            candidate.fact_type.as_deref(),
-        ]
-        .into_iter()
-        .flatten()
-        .find_map(normalize_fact_kind);
-        let title = trimmed_optional(
-            candidate
-                .title
-                .or(candidate.fact)
-                .or(candidate.detail)
-                .or(candidate.fact_type),
-        );
-        let Some(content) = trimmed_optional(
-            candidate
-                .content
-                .or(candidate.value)
-                .or(candidate.details)
-                .or(candidate.context)
-                .or(candidate.notes),
-        ) else {
-            continue;
-        };
-        let kind =
-            explicit_kind.or_else(|| inferred_personal_fact_kind(title.as_deref(), Some(&content)));
-        let Some(kind) = kind else { continue };
-
-        facts.push(ExtractedFact {
-            kind: kind.into(),
-            title,
-            content,
-            tags: normalize_tags(candidate.tags.or(candidate.labels)),
-        });
-    }
-    Ok(facts)
 }
 
 /// Ask the LLM to extract facts (user prefs, project facts, skills) from a
@@ -597,8 +596,8 @@ pub async fn extract_facts_from_session(
             Err(e) => return Err(format!("LLM error: {}", e)),
         }
     }
-    let facts = parse_extracted_facts(&out)
-        .map_err(|e| format!("Could not parse extracted facts: {}", e))?;
+    let facts =
+        parse_candidates(&out).map_err(|e| format!("Could not parse extracted facts: {}", e))?;
     Ok(facts)
 }
 
@@ -608,7 +607,7 @@ mod tests {
 
     #[test]
     fn normalizes_observed_legacy_fact_shape_and_drops_task_requests() {
-        let facts = parse_extracted_facts(
+        let facts = parse_candidates(
             r#"[
                 {"type":"personal_information","fact":"User's Birthday Date","value":"February 18th"},
                 {"type":"task/request","fact":"Email Draft Setup","details":"Drafting a birthday invitation email for friends."}
@@ -625,7 +624,7 @@ mod tests {
 
     #[test]
     fn normalizes_gemma_fact_type_shape_and_drops_communication_tasks() {
-        let facts = parse_extracted_facts(
+        let facts = parse_candidates(
             r#"```json
             [
               {"fact_type":"Personal Detail","detail":"Birthday Date","value":"February 18th"},
@@ -657,7 +656,7 @@ mod tests {
             ]
             ```"#,
         ] {
-            let facts = parse_extracted_facts(response).unwrap();
+            let facts = parse_candidates(response).unwrap();
 
             assert_eq!(facts.len(), 1);
             assert_eq!(facts[0].kind, "user_pref");
@@ -668,7 +667,7 @@ mod tests {
 
     #[test]
     fn normalizes_gemma_extracted_facts_wrapper_and_infers_birthday() {
-        let facts = parse_extracted_facts(
+        let facts = parse_candidates(
             r#"```json
             {
               "extracted_facts": [
@@ -696,7 +695,7 @@ mod tests {
 
     #[test]
     fn drops_live_gemma_milestone_and_event_planning_artifacts() {
-        let facts = parse_extracted_facts(
+        let facts = parse_candidates(
             r#"```json
             {
               "extracted_facts": [
@@ -717,7 +716,7 @@ mod tests {
 
     #[test]
     fn accepts_array_tags_and_normalizes_them_for_the_existing_schema() {
-        let facts = parse_extracted_facts(
+        let facts = parse_candidates(
             r#"[{"kind":"user_pref","title":"Style","content":"Prefers concise replies.","tags":["preference","communication"]}]"#,
         )
         .unwrap();
@@ -727,7 +726,7 @@ mod tests {
 
     #[test]
     fn preserves_canonical_fact_shape() {
-        let facts = parse_extracted_facts(
+        let facts = parse_candidates(
             r#"[{"kind":"project_fact","title":"Stack","content":"Convo uses Tauri.","tags":"stack"}]"#,
         )
         .unwrap();
@@ -762,10 +761,10 @@ mod tests {
 
     #[test]
     fn rejects_invalid_json_and_non_array_responses() {
-        let invalid_json = parse_extracted_facts("not json").unwrap_err();
+        let invalid_json = parse_candidates("not json").unwrap_err();
         assert!(invalid_json.contains("JSON"));
 
-        let non_array = parse_extracted_facts(r#"{"status":"ok"}"#).unwrap_err();
+        let non_array = parse_candidates(r#"{"status":"ok"}"#).unwrap_err();
         assert!(non_array.contains("array"));
     }
 }

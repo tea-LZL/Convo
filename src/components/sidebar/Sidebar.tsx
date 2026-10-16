@@ -1,10 +1,44 @@
 /**
  * The persistent left sidebar.
+ *
+ * Eight regions top to bottom, in this order, and the order is the point:
+ * header, search, nav, new chat, conversations, status, tools, footer.
+ * The status card sits *below* the scroll region rather than inside it,
+ * because a user with no embedding model is getting keyword-only recall
+ * silently, and a status that scrolls out of sight with the conversation
+ * list is not a status. The 64px rail cannot hold a card, so it holds a
+ * dot instead — same token, same words, and nothing that widens the rail.
+ *
+ * That list used to say **five** regions — "header, search, nav,
+ * conversations, status" — and then stake its authority on the order
+ * with "and the order is the point". A comment that claims the order is
+ * load-bearing and mis-describes the order is worse than no comment: it
+ * is written by someone who counted, so a reader checks the count rather
+ * than the code, and finds five. The count is now asserted in
+ * `Sidebar.test.tsx`, which walks the eight regions by what each one is
+ * rather than by the tag it happens to use — so the next region that
+ * gets added has to be added here *and* to a test that says what it is
+ * for, or the file and the test disagree in public.
+ *
+ * Width is unchanged. `w-60` is already 240px and the 64px collapsed rail
+ * already exists; both are out of scope, and the card's truncation
+ * contract in `StatusCard.test.tsx` is stated against that 240px.
+ *
+ * The active row is `bg-nav-active`, `bg-nav-highlight`, and
+ * `shadow-nav-glow`, all of which compose from the *active theme's*
+ * accent — see `tailwind.config.ts`. The highlight is a band on the
+ * right that fades into `nav-active`. It never animates, and neither
+ * does the glow: both mark the current row, which changes on every
+ * navigation, so an animated bloom would sweep in from the left each time.
+ * `prefers-reduced-motion` gates the row transitions for the same reason
+ * the flag exists. The 64px rail uses the same treatment, so collapsing
+ * changes the width and nothing else.
  */
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { MessageSquare, FileText, StickyNote, ListTodo, Brain, Settings, ChevronLeft, Plus, Search, BookOpen, GitCompareArrows, Cpu, Activity, Pencil, Pin, Archive, ArchiveRestore, Trash2, Copy, Check, Archive as ArchiveIcon } from "lucide-react";
+import { MessageSquare, FileText, StickyNote, ListTodo, Brain, Settings, ChevronLeft, Plus, Search, BookOpen, GitCompareArrows, Cpu, Activity, Pencil, Pin, Archive, ArchiveRestore, Trash2, Copy, Archive as ArchiveIcon } from "lucide-react";
 import { useSessionsStore, Session } from "../../stores/sessions";
+import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { IconButton } from "../ui/IconButton";
 import { Tooltip } from "../ui/Form";
 import { usePaletteStore } from "../../stores/palette";
@@ -16,6 +50,7 @@ import { TextInput } from "../ui/Form";
 import { Button } from "../ui/Button";
 import { api } from "../../lib/api";
 import { errorClass, recordLog } from "../../lib/logger";
+import { StatusCard, StatusDot } from "./StatusCard";
 
 interface NavItem {
   id: string;
@@ -24,14 +59,63 @@ interface NavItem {
   path: string;
 }
 
-const NAV: NavItem[] = [
-  { id: "chat", label: "Chat", icon: <MessageSquare size={16} />, path: "/chat" },
-  { id: "compare", label: "Compare", icon: <GitCompareArrows size={16} />, path: "/compare" },
-  { id: "documents", label: "Documents", icon: <FileText size={16} />, path: "/documents" },
-  { id: "notes", label: "Notes", icon: <StickyNote size={16} />, path: "/notes" },
-  { id: "tasks", label: "Tasks", icon: <ListTodo size={16} />, path: "/tasks" },
-  { id: "memory", label: "Memory", icon: <Brain size={16} />, path: "/memory" },
+// Spec section 9 demotes Compare, Documents and Tasks below the primary
+// three, and the reference expresses that as a group structure — so the
+// IA change and the visual change are one edit. Paths are load-bearing
+// (bookmarks and in-app navigation depend on them), so a regroup must
+// never move one.
+const NAV_GROUPS: { header?: string; items: NavItem[] }[] = [
+  {
+    items: [
+      { id: "chat", label: "Chat", icon: <MessageSquare size={15} />, path: "/chat" },
+      { id: "notes", label: "Notes", icon: <StickyNote size={15} />, path: "/notes" },
+      { id: "memory", label: "Memory", icon: <Brain size={15} />, path: "/memory" },
+    ],
+  },
+  {
+    header: "OTHER",
+    items: [
+      { id: "compare", label: "Compare", icon: <GitCompareArrows size={15} />, path: "/compare" },
+      { id: "documents", label: "Documents", icon: <FileText size={15} />, path: "/documents" },
+      { id: "tasks", label: "Tasks", icon: <ListTodo size={15} />, path: "/tasks" },
+    ],
+  },
 ];
+
+const NAV: NavItem[] = NAV_GROUPS.flatMap((g) => g.items);
+
+/**
+ * The nav row's resting and active treatment.
+ *
+ * `bg-nav-active` is an *opaque* `color-mix` against `surface-2`, which
+ * is correct here because a nav row sits on a known sidebar background.
+ * It is deliberately not interchangeable with the translucent
+ * `bg-accent/15` an `IconButton` uses for its active state: that one sits
+ * over four unknown surfaces and has to composite against whatever is
+ * beneath it. Two mechanisms, and the sidebar's is the opaque one.
+ *
+ * The 64px rail uses this too, and that is the load-bearing part. It
+ * used to paint its active row `bg-accent/15 text-accent` — the old
+ * treatment, on a 32px box with no glow — so collapsing the sidebar,
+ * the one control whose entire purpose is comparing widths, changed the
+ * current row's colour. `text-text` rather than `text-accent` is the
+ * same call the expanded row makes and the reason for it is in the
+ * spec: the icon inherits the row's type colour, which is the higher
+ * contrast of the two on every surface and keeps the label and the glyph
+ * reading as one thing.
+ */
+function navRowClass(active: boolean, reducedMotion: boolean) {
+  const motion = reducedMotion ? "" : "transition-colors duration-150";
+  return [
+    "w-full h-10 flex items-center gap-2.5 px-2.5 rounded-md text-sm min-w-0",
+    motion,
+    active
+      ? "bg-nav-active bg-nav-highlight text-text shadow-nav-glow"
+      : "text-text-muted hover:text-text hover:bg-surface-2",
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
 
 interface SessionContextMenu {
   session: Session;
@@ -61,6 +145,13 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const ctxMenuRef = useRef<HTMLDivElement>(null);
+
+  // Nav-row hover and active transitions respect the flag. The global
+  // rule in globals.css already zeroes durations, but a class that is
+  // never applied is a stronger statement than a class that is
+  // neutralised, and the glow is excluded from this either way: it must
+  // not animate for anyone.
+  const reducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
 
   useEffect(() => {
     refresh();
@@ -178,6 +269,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
   };
 
   if (collapsed) {
+    // The 64px rail. Its geometry is out of scope and unchanged.
     return (
       <aside className="w-12 h-full bg-surface-1 border-r border-border flex flex-col items-center py-2 gap-1 shrink-0">
         {NAV.map((n) => {
@@ -187,10 +279,25 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
               <button
                 type="button"
                 aria-label={n.label}
+                // `aria-current` was on the expanded nav only, so a
+                // screen-reader user lost the current-page announcement
+                // by collapsing the sidebar — the one control whose
+                // purpose is to make room, and it silently removed a
+                // piece of state rather than a piece of chrome. Every
+                // other control on this rail has kept its own name and
+                // its own state; this row has a current/not-current state
+                // and now says so.
+                aria-current={active ? "page" : undefined}
                 onClick={() => navigate(n.path)}
-                className={`w-8 h-8 rounded-md flex items-center justify-center transition-colors ${
-                  active ? "bg-accent/15 text-accent" : "text-text-muted hover:text-text hover:bg-surface-2"
-                }`}
+                // The same treatment as the expanded row, deliberately:
+                // `bg-nav-active bg-nav-highlight text-text` and the
+                // non-animated `shadow-nav-glow`, so collapsing changes
+                // the width and nothing else. The motion gate is here
+                // rather than shared, because the rail has no label to
+                // give up space to and the geometry is fixed.
+                className={`w-8 h-8 rounded-md flex items-center justify-center ${
+                  reducedMotion ? "" : "transition-colors"
+                } ${active ? "bg-nav-active bg-nav-highlight text-text shadow-nav-glow" : "text-text-muted hover:text-text hover:bg-surface-2"}`}
               >
                 {n.icon}
               </button>
@@ -204,7 +311,9 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
             aria-label="New chat"
             disabled={creating}
           onClick={handleNewChat}
-            className="w-8 h-8 rounded-md flex items-center justify-center bg-accent hover:bg-accent-hover text-white transition-colors"
+            className={`w-8 h-8 rounded-md flex items-center justify-center bg-accent hover:bg-accent-hover text-white ${
+              reducedMotion ? "" : "transition-colors"
+            }`}
           >
             <Plus size={14} />
           </button>
@@ -215,6 +324,14 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
         <Tooltip content="Settings" side="right">
           <IconButton icon={<Settings size={14} />} label="Settings" onClick={() => navigate("/settings")} />
         </Tooltip>
+        {/* The rail's entire memory status. A 6px dot is the smallest
+            thing that carries state in 64px, and it takes the same token
+            and the same words the card would — otherwise collapsing the
+            sidebar would remove the app's only warning that recall is
+            degraded. The rail stays 64px; nothing here widens it. */}
+        <div className="mt-1.5">
+          <StatusDot />
+        </div>
       </aside>
     );
   }
@@ -225,72 +342,114 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
 
   return (
     <aside className="w-60 h-full bg-surface-1 border-r border-border flex flex-col shrink-0">
-      <div className="p-3 flex items-center gap-2 border-b border-border">
-        <div className="w-7 h-7 rounded-md bg-accent flex items-center justify-center text-white font-semibold text-sm">
+      {/* 1 — Header. The wordmark and the collapse toggle. */}
+      <div className="h-12 px-3 flex items-center gap-2 border-b border-border shrink-0">
+        <div className="w-6 h-6 rounded-md bg-accent flex items-center justify-center text-white font-bold text-[11px] shrink-0">
           C
         </div>
         <div className="flex-1 min-w-0">
-          <div className="text-sm font-semibold text-text">Convo</div>
-           <div className="text-[10px] text-text-subtle -mt-0.5">v{appVersion ?? "?"} · local-first</div>
+          <div className="text-[13px] font-semibold text-text leading-tight">Convo</div>
+          <div className="text-[10px] text-text-subtle leading-tight truncate">
+            v{appVersion ?? "?"} · local-first
+          </div>
         </div>
         <IconButton icon={<ChevronLeft size={14} />} label="Collapse" onClick={onToggle} size="sm" />
       </div>
 
-      <div className="p-2">
+      {/* 2 — Search. Opens the palette that already exists; it is not a
+          second search surface, and the hint is platform-derived because
+          a literal ⌘K is wrong on two of the three platforms this ships
+          to. */}
+      <div className="px-2 py-2 shrink-0">
         <button
           type="button"
           aria-label="Search and commands"
           onClick={() => setPaletteOpen(true)}
-          className="w-full flex items-center gap-2 px-2.5 py-1.5 bg-surface-2 hover:bg-surface-3 border border-border rounded-md text-xs text-text-muted transition-colors"
+          className={`w-full min-w-0 flex items-center gap-2 px-2.5 h-8 bg-surface-2 hover:bg-surface-3 border border-border rounded-md text-xs text-text-muted ${
+            reducedMotion ? "" : "transition-colors"
+          }`}
         >
-          <Search size={12} />
-          <span className="flex-1 text-left">Search & commands</span>
-          <kbd className="text-[9px] bg-surface-3 border border-border rounded px-1 py-0.5 font-mono">{comboDisplay("ctrl+k", isMac)}</kbd>
+          <Search size={12} className="shrink-0" />
+          <span className="flex-1 min-w-0 text-left truncate">Search &amp; commands</span>
+          <kbd className="shrink-0 text-[9px] bg-surface-3 border border-border rounded px-1 py-0.5 font-mono">
+            {comboDisplay("ctrl+k", isMac)}
+          </kbd>
         </button>
       </div>
 
-      <nav className="px-2 pb-2 flex flex-col gap-0.5">
-        {NAV.map((n) => {
-          const active = location.pathname.startsWith(n.path);
-          return (
-            <button
-              key={n.id}
-              type="button"
-              onClick={() => navigate(n.path)}
-              className={`flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm transition-colors ${
-                active ? "bg-accent/15 text-accent" : "text-text-muted hover:text-text hover:bg-surface-2"
-              }`}
-            >
-              {n.icon}
-              <span className="flex-1 text-left">{n.label}</span>
-            </button>
-          );
-        })}
+      {/* 3 — Nav. Six 40px rows, two groups, the second labelled. */}
+      <nav className="px-2 flex flex-col shrink-0" aria-label="Sections">
+        {NAV_GROUPS.map((group, gi) => (
+          <div key={group.header ?? `group-${gi}`} className="flex flex-col">
+            {group.header && (
+              <>
+                {gi > 0 && <div className="h-px bg-border/60 mx-2.5 my-1.5" aria-hidden="true" />}
+                <div className="px-2.5 pb-1 pt-2 text-[10px] uppercase tracking-wider text-group-header font-semibold">
+                  {group.header}
+                </div>
+              </>
+            )}
+            {group.items.map((n) => {
+              const active = location.pathname.startsWith(n.path);
+              return (
+                <button
+                  key={n.id}
+                  type="button"
+                  aria-current={active ? "page" : undefined}
+                  onClick={() => navigate(n.path)}
+                  className={navRowClass(active, reducedMotion)}
+                >
+                  <span className="shrink-0 flex items-center">{n.icon}</span>
+                  <span className="flex-1 min-w-0 text-left truncate">{n.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        ))}
       </nav>
 
-      <div className="px-2 py-2 mt-1">
+      {/* 4 — New chat. A full-width primary action rather than an icon in
+          the footer, which is where the old five-region list implied it
+          lived. It is here because it belongs with the nav it navigates
+          away from, and because a rail that cannot hold the label needs
+          a Tooltip instead, which is why this region is the one that
+          changes shape between widths. */}
+      <div className="px-2 py-2 shrink-0">
         <button
           type="button"
           disabled={creating}
           onClick={handleNewChat}
-          className="w-full flex items-center gap-2 px-2.5 py-1.5 bg-accent hover:bg-accent-hover text-white rounded-md text-sm font-medium transition-colors"
+          className={`w-full flex items-center justify-center gap-2 px-2.5 h-8 bg-accent hover:bg-accent-hover text-white rounded-md text-xs font-medium ${
+            reducedMotion ? "" : "transition-colors"
+          }`}
         >
-          <Plus size={14} />
+          <Plus size={13} />
           New chat
         </button>
       </div>
 
+      {/* 5 — Conversations. The only scrolling region in the sidebar. */}
       {sessions.length > 0 && (
-        <div className="flex-1 overflow-y-auto px-2 py-1 border-t border-border mt-1">
+        <div className="flex-1 min-h-0 overflow-y-auto px-2 py-1 border-t border-border">
           <div className="flex items-center gap-1 px-2 py-1.5">
-            <div className="text-[10px] uppercase tracking-wider text-text-subtle font-semibold flex-1">
+            <div className="text-[10px] uppercase tracking-wider text-group-header font-semibold flex-1">
               {showArchived ? "Archived" : "Recent"}
             </div>
             <button
               type="button"
+              // The label has always flipped with the state, and nothing
+              // said what the state was: a screen reader read "Show
+              // archived chats, button" while the list underneath it was
+              // already showing archived chats. Found by
+              // `stateAgreement.test.tsx`, not by reading this file. The
+              // group header two lines up ("Recent" / "Archived") is the
+              // independent observable the agreement is against.
+              aria-pressed={showArchived}
               aria-label={showArchived ? "Show active chats" : "Show archived chats"}
               onClick={() => setShowArchived((v) => !v)}
-              className="text-[10px] text-text-subtle hover:text-text flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-surface-2"
+              className={`text-[10px] text-text-subtle hover:text-text flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-surface-2 ${
+                reducedMotion ? "" : "transition-colors"
+              }`}
               title={showArchived ? "Show active chats" : `Show archived (${archivedSessions.length})`}
             >
               {showArchived ? <MessageSquare size={10} /> : <ArchiveIcon size={10} />}
@@ -307,6 +466,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
                 key={s.id}
                 session={s}
                 active={s.id === activeId}
+                reducedMotion={reducedMotion}
                 onLeftClick={() => {
                   setActive(s.id);
                   navigate("/chat");
@@ -320,35 +480,43 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
         </div>
       )}
 
-      {!location.pathname.startsWith("/chat") && <div className="flex-1" />}
+      {!location.pathname.startsWith("/chat") && <div className="flex-1 min-h-0" />}
 
-      <div className="border-t border-border/40 px-2 py-1.5">
-        <div className="text-[10px] uppercase tracking-wider text-text-subtle font-semibold px-2 py-1">
+      {/* 6 — Status. Below the scroll region on purpose: a degraded index
+          has to be visible without navigating, which is the whole point
+          of surfacing it here. */}
+      <StatusCard />
+
+      {/* 7 — Tools. Hardware and Diagnostics, the two rows that are not
+          destinations in the six-row nav because they are diagnostics
+          rather than places you work. Same row treatment, so they read as
+          the same object class. */}
+      <div className="border-t border-border/60 px-2 py-1.5 shrink-0">
+        <div className="text-[10px] uppercase tracking-wider text-group-header font-semibold px-2 py-1">
           Tools
         </div>
         <button
           type="button"
           onClick={() => navigate("/hardware")}
-          className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm transition-colors ${
-            location.pathname === "/hardware" ? "bg-accent/15 text-accent" : "text-text-muted hover:text-text hover:bg-surface-2"
-          }`}
+          className={navRowClass(location.pathname === "/hardware", reducedMotion)}
         >
-          <Cpu size={14} />
-          Hardware scan
+          <span className="shrink-0 flex items-center"><Cpu size={14} /></span>
+          <span className="flex-1 min-w-0 text-left truncate">Hardware scan</span>
         </button>
         <button
           type="button"
           onClick={() => navigate("/diagnostics")}
-          className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-sm transition-colors ${
-            location.pathname === "/diagnostics" ? "bg-accent/15 text-accent" : "text-text-muted hover:text-text hover:bg-surface-2"
-          }`}
+          className={navRowClass(location.pathname === "/diagnostics", reducedMotion)}
         >
-          <Activity size={14} />
-          Diagnostics
+          <span className="shrink-0 flex items-center"><Activity size={14} /></span>
+          <span className="flex-1 min-w-0 text-left truncate">Diagnostics</span>
         </button>
       </div>
 
-      <div className="border-t border-border p-2 flex items-center gap-1">
+      {/* 8 — Footer. About and Settings as two icon buttons. The last
+          region, and the only one whose contents are settings rather than
+          a destination. */}
+      <div className="border-t border-border p-2 flex items-center gap-1 shrink-0">
         <IconButton
           icon={<BookOpen size={14} />}
           label="About"
@@ -409,18 +577,23 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
 }
 
 function SessionRow({
-  session, active, onLeftClick, onContextMenu, onPin, onArchive,
+  session, active, reducedMotion, onLeftClick, onContextMenu, onPin, onArchive,
 }: {
   session: Session;
   active: boolean;
+  reducedMotion: boolean;
   onLeftClick: () => void;
   onContextMenu: (e: React.MouseEvent) => void;
   onPin: () => void;
   onArchive: () => void;
 }) {
+  // The enter animation is not a nav-row transition, and globals.css
+  // already neutralises it under the flag; only the row's own colour
+  // transition is gated here.
+  const motion = reducedMotion ? "" : "transition-colors";
   return (
     <div
-      className={`group w-full rounded-md text-xs flex items-center gap-1 transition-colors animate-message-in ${
+      className={`group w-full min-w-0 rounded-md text-xs flex items-center gap-1 ${motion} animate-message-in ${
         active ? "bg-surface-3 text-text" : "text-text-muted hover:bg-surface-2 hover:text-text"
       }`}
     >
@@ -434,9 +607,17 @@ function SessionRow({
         {session.is_archived && <span className="text-text-subtle shrink-0"><ArchiveIcon size={9} /></span>}
         <span className="truncate">{session.title}</span>
       </button>
-      <div className="opacity-0 group-hover:opacity-100 flex items-center pr-1.5 gap-0.5 transition-opacity">
+      <div className={`opacity-0 group-hover:opacity-100 flex items-center pr-1.5 gap-0.5 ${reducedMotion ? "" : "transition-opacity"}`}>
         <button
           type="button"
+          // The two session toggles, and the reason the guard is worth
+          // having on a file this plan restyled but did not write these
+          // lines in: a label that flips between "Pin" and "Unpin" is a
+          // promise that the state is being announced, and neither of
+          // them had a state channel. Both are pre-existing, both were
+          // found by `stateAgreement.test.tsx`, and the polarity matches
+          // the pin toggle on the Memory row.
+          aria-pressed={session.is_pinned}
           aria-label={session.is_pinned ? "Unpin" : "Pin"}
           onClick={(e) => { e.stopPropagation(); onPin(); }}
           className="text-text-subtle hover:text-accent p-0.5"
@@ -446,6 +627,7 @@ function SessionRow({
         </button>
         <button
           type="button"
+          aria-pressed={session.is_archived}
           aria-label={session.is_archived ? "Unarchive" : "Archive"}
           onClick={(e) => { e.stopPropagation(); onArchive(); }}
           className="text-text-subtle hover:text-text p-0.5"

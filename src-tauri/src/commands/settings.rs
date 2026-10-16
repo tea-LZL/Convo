@@ -216,6 +216,7 @@ pub async fn get_diagnostics(pool: State<'_, Arc<DbPool>>) -> Result<Diagnostics
             "compare_runs",
             "slash_commands",
             "session_overrides",
+            "session_memory_scope",
         ];
         let mut tables: Vec<(String, i64)> = Vec::new();
         for t in table_names {

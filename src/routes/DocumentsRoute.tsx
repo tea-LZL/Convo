@@ -1,6 +1,49 @@
 /**
- * Documents route — multi-tab editor with AI edit assist, Tauri file open/save,
+ * Documents — multi-tab editor with AI edit assist, Tauri file open/save,
  * Insert into chat.
+ *
+ * ── The compact rhythm, and the list it governs ─────────────────────────
+ * One of the two pages that take the *compact* rhythm, with Tasks. The
+ * split is deliberate and is not a toggle: a page is dense because its
+ * content is a pile to scan, and a document workspace is the purest case
+ * of that in the app. How many documents do I have open, which one is
+ * dirty, and which did I just touch — three questions the tab strip
+ * answers, and it answers them at a glance only if it is short.
+ *
+ * The strip is therefore the page's compact list: a 4px step between
+ * tabs, which is `gap-1`, and 8px inside one, which is `px-2`. That is
+ * the same pair of numbers the Memory page's rows use, reached the same
+ * way — the test compiles this file's own classes through the project
+ * Tailwind and reads the declarations out, and resolves the standard
+ * rhythm the same way so it can show the measurement tells the two
+ * apart. A test that asserted `class="gap-1"` would assert a string; one
+ * that reads the gutter asserts the number, and a retune of the scale
+ * moves both sides of the comparison.
+ *
+ * The strip was a 40px row with 12px of horizontal padding, and is now a
+ * 32px row with 8px. The editor canvas keeps its 24px of padding: it is
+ * a page of prose, not a list row, and the compact rhythm is about how
+ * many rows fit rather than about shrinking everything.
+ *
+ * ── What is deliberately not here ───────────────────────────────────────
+ * No shadow. A card in this design is a surface and a 1px border, and
+ * the only `box-shadow` in this file belongs to things that genuinely
+ * float — the two modals and the dropdown menu. Focus rings are the
+ * exception to flatness and every one is behind a state: Tailwind builds
+ * `ring-*` out of `box-shadow`, so an unscoped ring would paint a shadow
+ * on every control at rest while the flatness check called the page
+ * clean.
+ *
+ * ── The one hardcoded radius in the app's own code ──────────────────────
+ * `MarkdownPreview` passes `customStyle` to the syntax highlighter, and
+ * that object carried a bare `borderRadius` of `10` — a number no theme
+ * can reach, on the only card in the app whose radius is not a
+ * `var(--radius-*)`. It is
+ * now `var(--radius-lg)`, the radius the spec's card row names, which is
+ * a variable rather than a smaller hardcoded number. The guard is a
+ * source sweep rather than a DOM walk because a code block only exists
+ * once a document with a fence is being previewed, and a guard that only
+ * runs in one of three states is a guard that mostly does not.
  */
 import { useEffect, useState, useCallback, useRef } from "react";
 import Markdown from "react-markdown";
@@ -16,6 +59,7 @@ import { Modal } from "../components/ui/Modal";
 import { TextArea, TextInput } from "../components/ui/Form";
 import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { RouteShell } from "../components/ui/RouteShell";
+import { ROW_ACTION } from "../components/ui/rowAction";
 import { diffLines, diffStats } from "../lib/diff";
 import { escapeThinkTags } from "../components/chat/MessageRow";
 import { toast } from "../stores/toasts";
@@ -379,11 +423,14 @@ export function DocumentsRoute() {
           {error && (
             <div role="alert" className="mb-4 rounded-md border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
               {error}
-              <button type="button" className="ml-2 underline" onClick={() => void refresh()}>Retry</button>
+              <button type="button" className="ml-2 underline rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg" onClick={() => void refresh()}>Retry</button>
             </div>
           )}
           <EmptyState
-            icon={<FileText size={32} />}
+            // `RouteShell` owns this page's h1, so the title underneath
+            // it is an h2 — an h3 here would be a skipped level.
+            headingLevel={2}
+            icon={<FileText size={28} />}
             title="No document open"
             description="Create a new document or open one from disk."
           />
@@ -411,9 +458,12 @@ export function DocumentsRoute() {
     >
     <div className="flex flex-col h-full min-h-0">
       {/* Tab bar */}
-      <div role="tablist" aria-label="Open documents" className="flex items-center gap-1 px-2 h-10 border-b border-border bg-surface-1 overflow-x-auto">
+      {/* The page's compact list, and the one the density decision governs:
+          a 4px step between tabs and 8px inside one. Asserted as resolved
+          pixels in the test, not as the class names used here. */}
+      <div role="tablist" aria-label="Open documents" className="flex items-center gap-1 px-2 h-8 border-b border-border bg-surface-1 overflow-x-auto">
         {tabs.map((t) => (
-          <div key={t.id} className="flex items-center gap-1 rounded-t-md shrink-0">
+          <div key={t.id} className="flex items-center gap-1 rounded-t-lg shrink-0">
             <button
               id={`document-tab-${t.id}`}
               type="button"
@@ -428,7 +478,7 @@ export function DocumentsRoute() {
                   setActiveId(t.id);
                 }
               }}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs border-b-2 transition-colors ${
+              className={`flex items-center gap-1.5 px-2 py-1 text-xs border-b-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-text ${
                 t.id === activeId
                   ? "bg-surface-2 text-text border-b-accent"
                   : "text-text-muted border-b-transparent hover:bg-surface-2 hover:text-text"
@@ -441,10 +491,11 @@ export function DocumentsRoute() {
             <button
               type="button"
               onClick={() => void remove(t.id)}
-              className="text-text-subtle hover:text-error px-0.5 rounded"
+              className={`${ROW_ACTION} text-text-subtle hover:text-error`}
               aria-label={`Close ${t.title || "Untitled"}`}
+              title={`Close ${t.title || "Untitled"}`}
             >
-              ×
+              <X size={12} aria-hidden="true" />
             </button>
           </div>
         ))}
@@ -452,13 +503,13 @@ export function DocumentsRoute() {
       </div>
       {active && (
         <div id={`document-panel-${active.id}`} role="tabpanel" aria-labelledby={`document-tab-${active.id}`} className="flex-1 flex flex-col min-h-0">
-          <div className="flex items-center gap-2 px-4 h-10 border-b border-border bg-surface-1">
+          <div className="flex items-center gap-2 px-4 h-9 border-b border-border bg-surface-1">
             <input
               aria-label="Document title"
               value={active.title}
               onChange={(e) => updateActive({ title: e.target.value, savedToDb: false })}
               placeholder="Title"
-              className="bg-transparent text-sm font-medium text-text placeholder:text-text-subtle focus:outline-none flex-1 min-w-0"
+              className="bg-transparent text-sm font-medium text-text placeholder:text-text-subtle focus:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg rounded flex-1 min-w-0"
             />
             {active.diskPath && (
               <span className="text-[10px] text-text-subtle font-mono truncate max-w-[280px]">{active.diskPath}</span>
@@ -469,14 +520,21 @@ export function DocumentsRoute() {
               {active.content.length} chars · {active.content.split(/\s+/).filter(Boolean).length} words
             </span>
             <span className="hidden sm:flex items-center gap-1.5 text-[10px] text-text-subtle">
-              <kbd className="bg-surface-2 border border-border rounded px-1 py-0.5 text-[9px]">Ctrl+S</kbd> save
-              <kbd className="bg-surface-2 border border-border rounded px-1 py-0.5 text-[9px] ml-1">Ctrl+P</kbd> preview
+              <kbd className="bg-surface-2 border border-border rounded-sm px-1 py-0.5 text-[9px]">Ctrl+S</kbd> save
+              <kbd className="bg-surface-2 border border-border rounded-sm px-1 py-0.5 text-[9px] ml-1">Ctrl+P</kbd> preview
             </span>
             <Button
               size="xs"
               variant={showPreview ? "primary" : "ghost"}
               icon={showPreview ? <Edit3 size={11} /> : <Eye size={11} />}
               onClick={() => setShowPreview((p) => !p)}
+              // The label names the mode the control switches *to*, so
+              // without a state channel a screen reader read "Edit,
+              // button" with no way to learn whether the document was
+              // currently editable — and whether typing does anything is
+              // the whole question. Found by `stateAgreement.test.tsx`;
+              // pre-existing.
+              aria-pressed={showPreview}
             >
               {showPreview ? "Edit" : "Preview"}
             </Button>
@@ -484,7 +542,11 @@ export function DocumentsRoute() {
               align="right"
               menuClassName="w-48"
               trigger={
-                <button type="button" aria-label="More document actions" className="text-text-subtle hover:text-text p-1.5 rounded-md hover:bg-surface-2">
+                <button
+                  type="button"
+                  aria-label="More document actions"
+                  className="text-text-subtle hover:text-text p-1.5 rounded-md hover:bg-surface-2 shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
+                >
                   <MoreHorizontal size={14} />
                 </button>
               }
@@ -539,19 +601,28 @@ export function DocumentsRoute() {
           {error && (
             <div role="alert" className="px-4 py-1.5 border-b border-error/30 bg-error/10 text-xs text-error flex items-center justify-between gap-2">
               <span className="whitespace-pre-wrap">{error}</span>
-              <button type="button" className="underline shrink-0" onClick={() => void refresh()}>Retry</button>
+              <button type="button" className="underline shrink-0 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg" onClick={() => void refresh()}>Retry</button>
             </div>
           )}
           {externalChange?.id === active.id && (
             <div role="alert" className="px-4 py-1.5 border-b border-warn/30 bg-warn/10 text-xs text-warn flex items-center justify-between gap-2">
               <span>The disk file changed while you had unsaved edits.</span>
               <span className="flex gap-2 shrink-0">
-                <button type="button" className="underline" onClick={() => { updateActive({ content: externalChange.content, savedToDb: true, dirty: false }); setExternalChange(null); }}>Reload disk</button>
-                <button type="button" className="underline" onClick={() => setExternalChange(null)}>Keep edits</button>
+                <button type="button" className="underline rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg" onClick={() => { updateActive({ content: externalChange.content, savedToDb: true, dirty: false }); setExternalChange(null); }}>Reload disk</button>
+                <button type="button" className="underline rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg" onClick={() => setExternalChange(null)}>Keep edits</button>
               </span>
             </div>
           )}
           {showPreview ? (
+            // `p-6`, and deliberately not the 16px page inset every
+            // `RouteShell` page now uses. This is not a page inset: the
+            // page's content region is a pane flush to the scroll region
+            // (which is why this page's title bar has nothing under it to
+            // line up with), and what carries the 24px is the *reading*
+            // column inside it — 48rem of prose wants more air than a
+            // 12px card does, and a line of Markdown that starts 16px
+            // from the pane edge reads as a list rather than a page.
+            // Recorded here so the next sweep does not "fix" it.
             <div className="flex-1 overflow-y-auto p-6 prose prose-invert prose-sm max-w-3xl mx-auto w-full">
               <MarkdownPreview content={active.content} />
             </div>
@@ -570,7 +641,7 @@ export function DocumentsRoute() {
           {selection && (
             <div className="px-4 py-1.5 bg-accent/10 border-t border-accent/30 text-[11px] text-accent flex items-center justify-between">
               <span>{selection.length} chars selected</span>
-              <button type="button" onClick={() => { setSelection(""); window.getSelection()?.removeAllRanges(); }} className="hover:text-text">Clear</button>
+              <button type="button" onClick={() => { setSelection(""); window.getSelection()?.removeAllRanges(); }} className="hover:text-text rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg">Clear</button>
             </div>
           )}
         </div>
@@ -643,7 +714,7 @@ export function DiffPreview({ original, proposed }: { original: string; proposed
         <span className="text-success">+{stats.added} added</span>
         <span className="text-error">−{stats.removed} removed</span>
       </div>
-      <div className="bg-surface-1 border border-border rounded-md overflow-hidden text-xs font-mono leading-relaxed max-h-[50vh] overflow-y-auto">
+      <div className="bg-surface-1 border border-border rounded-lg overflow-hidden text-xs font-mono leading-relaxed max-h-[50vh] overflow-y-auto">
         {ops.length === 0 ? (
           <div className="p-3 text-text-muted">No changes</div>
         ) : (
@@ -694,7 +765,7 @@ function MarkdownPreview({ content }: { content: string }) {
           const codeStr = String(children).replace(/\n$/, "");
           const inline = !match && !String(children).includes("\n");
           if (inline) {
-            return <code className="bg-surface-2 rounded px-1 py-0.5 text-xs" {...props}>{children}</code>;
+            return <code className="bg-surface-2 rounded-sm px-1 py-0.5 text-xs" {...props}>{children}</code>;
           }
           return (
             <div className="code-block-wrap my-2">
@@ -709,7 +780,12 @@ function MarkdownPreview({ content }: { content: string }) {
                 style={oneDark}
                 language={match ? match[1] : "text"}
                 PreTag="div"
-                customStyle={{ margin: 0, borderRadius: 10, border: "1px solid var(--color-border)", background: "var(--color-surface-1)" }}
+                // `var(--radius-lg)`, not `10`. This is the only card in the
+                // app whose radius was a bare number, and a theme that
+                // reshapes every other surface could not reach it. A
+                // variable rather than a smaller hardcoded value, so a theme
+                // with a different shape still wins.
+                customStyle={{ margin: 0, borderRadius: "var(--radius-lg)", border: "1px solid var(--color-border)", background: "var(--color-surface-1)" }}
               >
                 {codeStr}
               </SyntaxHighlighter>

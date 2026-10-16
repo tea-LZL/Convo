@@ -3,10 +3,16 @@
 ## Verification trio
 ```bash
 npm run typecheck   # tsc --noEmit
-npm run test:run    # vitest run (107 tests, must be 0 failures)
+npm run test:run    # vitest run (372 tests, must be 0 failures — floor; never drops)
 npm run build       # tsc + vite build
 ```
 Rust: `cargo check --manifest-path src-tauri/Cargo.toml` (long first compile; warm cache afterwards).
+
+```bash
+cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+cargo test --manifest-path src-tauri/Cargo.toml   # 105 tests, must be 0 failures
+```
 
 ## Theming
 All colors come from CSS custom properties defined in `src/styles/globals.css` and exposed as Tailwind aliases in `tailwind.config.js`. **Never hardcode hex colors.** Always use `bg-surface-2`, `text-muted`, `border-border`, `text-accent`, etc. The theme system depends on this — user themes override the CSS vars, and hardcoded colors would ignore them.

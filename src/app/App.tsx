@@ -4,9 +4,10 @@
 import { ReactNode, useEffect, useState } from "react";
 import { HashRouter, Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { Sidebar } from "../components/sidebar/Sidebar";
+import { TitleBar } from "../components/chrome/TitleBar";
 import { CommandPalette } from "../components/CommandPalette";
 import { SessionSearch } from "../components/SessionSearch";
-import { ToastViewport } from "../stores/toasts";
+import { ToastViewport, toast } from "../stores/toasts";
 import { ErrorBoundary } from "../components/ui/ErrorBoundary";
 import { useGlobalKeyHandler } from "../hooks/useGlobalKeyHandler";
 import { useMediaQuery } from "../hooks/useMediaQuery";
@@ -14,6 +15,7 @@ import { useThemeStore } from "../stores/theme";
 import { useShortcutsStore } from "../stores/shortcuts";
 import { usePaletteStore } from "../stores/palette";
 import { useMemoryStore } from "../stores/memory";
+import { useSessionsStore } from "../stores/sessions";
 import { ChatRoute } from "../routes/ChatRoute";
 import { CompareRoute } from "../routes/CompareRoute";
 import { DocumentsRoute } from "../routes/DocumentsRoute";
@@ -65,7 +67,20 @@ function AppShell() {
   useEffect(() => {
     registerMany([
       { id: "palette", combo: "ctrl+k", action: () => togglePalette(), description: "Open command palette" },
-      { id: "new-chat", combo: "ctrl+n", action: () => window.dispatchEvent(new CustomEvent("convo:new-chat")), description: "New chat" },
+      { id: "new-chat", combo: "ctrl+n", description: "New chat", action: () => {
+        // Create and navigate here rather than dispatching an event: the
+        // event had no listener, so Ctrl+N did nothing. Routing through the
+        // same store calls the sidebar's New chat uses keeps the two in step.
+        void (async () => {
+          try {
+            const session = await useSessionsStore.getState().create();
+            useSessionsStore.getState().setActive(session.id);
+            navigate(`/chat/${session.id}`);
+          } catch (error) {
+            toast.error(String(error), "Chat could not be created");
+          }
+        })();
+      } },
       { id: "toggle-sidebar", combo: "ctrl+b", action: () => {
         if (isNarrow) setNarrowOverride((v) => !v);
         else setUserCollapsed((c) => !c);
@@ -83,44 +98,50 @@ function AppShell() {
   }, [initTheme]);
 
   return (
-    <div
-      className="h-full flex bg-bg text-text relative overflow-hidden"
-      data-sidebar-collapsed={sidebarCollapsed ? "true" : "false"}
-    >
-      <Sidebar
-        collapsed={sidebarCollapsed}
-        onToggle={() => {
-          if (isNarrow) setNarrowOverride((v) => !v);
-          else setUserCollapsed((c) => !c);
-        }}
-      />
-      <main
-        role="main"
-        data-route={location.pathname}
-        className="flex-1 min-w-0 h-full flex flex-col relative animate-fade-in"
+    <div className="h-full flex flex-col bg-bg text-text overflow-hidden">
+      {/* The window's own chrome. The app draws it because the window is
+          created with `decorations: false`; it sits above the sidebar and
+          the content so it spans the full width, the way a title bar does. */}
+      <TitleBar />
+      <div
+        className="flex-1 min-h-0 flex bg-bg text-text relative overflow-hidden"
+        data-sidebar-collapsed={sidebarCollapsed ? "true" : "false"}
       >
-        <RouteErrorBoundary>
-          <Routes>
-            <Route path="/" element={<Navigate to="/chat" replace />} />
-            <Route path="/chat" element={<ChatRoute />} />
-            <Route path="/chat/:sessionId" element={<ChatRoute />} />
-            <Route path="/compare" element={<CompareRoute />} />
-            <Route path="/documents" element={<DocumentsRoute />} />
-            <Route path="/notes" element={<NotesRoute />} />
-            <Route path="/tasks" element={<TasksRoute />} />
-            <Route path="/memory" element={<MemoryRoute />} />
-            <Route path="/hardware" element={<HardwareRoute />} />
-            <Route path="/diagnostics" element={<DiagnosticsRoute />} />
-            <Route path="/settings/*" element={<SettingsRoute />} />
-            <Route path="/about" element={<AboutRoute />} />
-            <Route path="*" element={<Navigate to="/chat" replace />} />
-          </Routes>
-        </RouteErrorBoundary>
-      </main>
-      <CommandPalette />
-      <SessionSearch />
-      <ToastViewport />
-      <TourOverlay />
+        <Sidebar
+          collapsed={sidebarCollapsed}
+          onToggle={() => {
+            if (isNarrow) setNarrowOverride((v) => !v);
+            else setUserCollapsed((c) => !c);
+          }}
+        />
+        <main
+          role="main"
+          data-route={location.pathname}
+          className="flex-1 min-w-0 h-full flex flex-col relative animate-fade-in"
+        >
+          <RouteErrorBoundary>
+            <Routes>
+              <Route path="/" element={<Navigate to="/chat" replace />} />
+              <Route path="/chat" element={<ChatRoute />} />
+              <Route path="/chat/:sessionId" element={<ChatRoute />} />
+              <Route path="/compare" element={<CompareRoute />} />
+              <Route path="/documents" element={<DocumentsRoute />} />
+              <Route path="/notes" element={<NotesRoute />} />
+              <Route path="/tasks" element={<TasksRoute />} />
+              <Route path="/memory" element={<MemoryRoute />} />
+              <Route path="/hardware" element={<HardwareRoute />} />
+              <Route path="/diagnostics" element={<DiagnosticsRoute />} />
+              <Route path="/settings/*" element={<SettingsRoute />} />
+              <Route path="/about" element={<AboutRoute />} />
+              <Route path="*" element={<Navigate to="/chat" replace />} />
+            </Routes>
+          </RouteErrorBoundary>
+        </main>
+        <CommandPalette />
+        <SessionSearch />
+        <ToastViewport />
+        <TourOverlay />
+      </div>
     </div>
   );
 }

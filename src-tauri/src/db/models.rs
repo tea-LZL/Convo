@@ -79,6 +79,44 @@ pub struct Note {
     pub source_message_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    pub pinned: bool,
+}
+
+/// A note's id and title, plus the memories it produced, and nothing else.
+///
+/// The read-side counterpart to [`Note`] for a caller that wants to label
+/// memories with the note they came from. A body is a free-text textarea, so
+/// a pasted document makes one note megabytes; the whole library of those
+/// crossing the IPC boundary on every refresh is a cost no label needs.
+/// `memory_ids` is the reverse of the `source_note_id` the memory already
+/// carries, so the caller can build the mapping in one pass without asking
+/// for anything it does not know yet.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct NoteTitle {
+    pub id: String,
+    pub title: Option<String>,
+    pub memory_ids: Vec<String>,
+}
+
+/// A memory a note produced, as the note sees it. Superseded rows are
+/// included: the note produced them and the correction history is the
+/// point. `source_note_id` is the only record of the link, so this is a
+/// query result rather than a stored list.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct NoteLink {
+    pub id: String,
+    pub title: Option<String>,
+    pub content: String,
+    pub is_enabled: bool,
+    pub superseded_by: Option<String>,
+}
+
+/// A note with the memories it produced. Provenance is derived, so the
+/// links cannot outlive a deleted memory the way a stored id list would.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct NoteWithLinks {
+    pub note: Note,
+    pub linked_memories: Vec<NoteLink>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -103,6 +141,10 @@ pub struct MemoryItem {
     pub is_enabled: bool,
     pub created_at: String,
     pub updated_at: String,
+    /// Set by `commands::memory::set_pinned`, never by `upsert_memory`. A
+    /// pinned memory is injected on every send, budget permitting.
+    pub pinned: bool,
+    pub superseded_by: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
