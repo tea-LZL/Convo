@@ -570,7 +570,7 @@ export function MemoryRoute() {
                       // `whitespace-pre-wrap`: an unbroken run — a pasted
                       // URL, a base64 blob — has no break opportunity, and
                       // it is those, not sentences, that break a row.
-                      className="text-xs text-text-muted leading-relaxed mt-1 break-words"
+                      className={`text-xs text-text-muted leading-relaxed mt-1 break-words ${replaced ? "line-through" : ""}`}
                       dangerouslySetInnerHTML={{
                         __html: entry.snippet
                           .replace(/<mark>/g, '<mark class="bg-warn/30 text-text px-0.5">')

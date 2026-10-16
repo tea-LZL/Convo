@@ -40,7 +40,7 @@ export function SessionMemoryModal({ open, onClose, sessionId }: SessionMemoryMo
     // opposite of what they just asked for. So the empty list is sent as a
     // scope, and the database can tell the two apart.
     const enabledIds = items
-      .filter((i) => i.is_enabled)
+      .filter((i) => i.is_enabled && !i.superseded_by)
       .map((i) => i.id);
     const configured = next.size > 0;
     const included = configured ? enabledIds.filter((eid) => !next.has(eid)) : [];
@@ -72,7 +72,7 @@ export function SessionMemoryModal({ open, onClose, sessionId }: SessionMemoryMo
         setExcludedIds(
           new Set(
             all
-              .filter((i) => i.is_enabled && !admitted.has(i.id))
+              .filter((i) => i.is_enabled && !i.superseded_by && !admitted.has(i.id))
               .map((i) => i.id)
           ),
         );
@@ -90,7 +90,7 @@ export function SessionMemoryModal({ open, onClose, sessionId }: SessionMemoryMo
     load();
   }, [open, sessionId]);
 
-  const enabled = items.filter((i) => i.is_enabled);
+  const enabled = items.filter((i) => i.is_enabled && !i.superseded_by);
   const nothingEligible = enabled.length > 0 && enabled.every((i) => excludedIds.has(i.id));
 
   return (

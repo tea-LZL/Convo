@@ -1579,6 +1579,40 @@ describe("MemoryRoute recall and index status", () => {
     fireEvent.click(reachReplacement);
     expect(await screen.findByRole("dialog", { name: "Edit memory" })).toBeInTheDocument();
   });
+
+  it("strikes through a superseded row's snippet when searching", async () => {
+    const oldRow = listed("old-1", {
+      title: "Deploy window",
+      content: "Ships land any time on Fridays.",
+      superseded_by: "new-1",
+    });
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "list_memory") return [oldRow];
+      if (command === "search_memory") {
+        return [{ item: oldRow, snippet: "Ships land <mark>any time</mark> on Fridays." }];
+      }
+      if (command === "list_note_titles") return [];
+      if (command === "list_memory_reviews") return [];
+      return null;
+    });
+
+    const { container } = renderMemory();
+    await memoryList(container);
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Search memory" }), {
+      target: { value: "any time" },
+    });
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("search_memory", expect.objectContaining({ query: "any time" })),
+    );
+
+    const mark = await waitFor(() => {
+      const m = container.querySelector("mark");
+      expect(m).toBeTruthy();
+      return m!;
+    });
+    expect(mark.parentElement).toHaveClass("line-through");
+  });
 });
 
 

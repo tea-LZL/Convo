@@ -7,6 +7,7 @@ import {
   SLASH_COMMANDS,
 } from "../slashCommands";
 import { api } from "../api";
+import { useMemoryStore } from "../../stores/memory";
 import { toast } from "../../stores/toasts";
 
 vi.mock("../api", () => ({
@@ -153,7 +154,7 @@ describe("runCommand", () => {
   });
 
   it("runs /remember through memoryExtractAndRevise and reports with reportRevisions", async () => {
-    mockedApi.memoryExtractAndRevise.mockResolvedValueOnce([
+    const extractSpy = vi.spyOn(useMemoryStore.getState(), "extractAndRevise").mockResolvedValueOnce([
       { effect: "added", id: "m-1" },
       { effect: "superseded", newId: "m-2", oldId: "m-0" },
       { effect: "sentToReview", reviewId: "r-1" },
@@ -164,12 +165,13 @@ describe("runCommand", () => {
       { sessionId: "session-42", currentModel: "llama3", currentProviderId: "ollama-local" },
     );
 
-    expect(mockedApi.memoryExtractAndRevise).toHaveBeenCalledWith(
+    expect(extractSpy).toHaveBeenCalledWith(
       "session-42",
       "llama3",
       "ollama-local",
     );
     expect(mockedToast.info).toHaveBeenCalledWith("2 remembered, 1 needs review", "Memory");
     expect(result.clear).toBe(true);
+    extractSpy.mockRestore();
   });
 });

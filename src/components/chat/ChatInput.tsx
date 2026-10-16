@@ -10,22 +10,20 @@ import type { ChatStatus } from "../../stores/chatStream";
 
 let pendingChatDraft = "";
 
-export function consumePendingChatDraft(): string {
-  const next = pendingChatDraft;
+export function clearPendingChatDraft(): void {
   pendingChatDraft = "";
-  return next;
 }
 
 export function appendToChatDraft(text: string): void {
   if (!text.trim()) return;
+  pendingChatDraft = pendingChatDraft.trim() ? `${pendingChatDraft}\n\n${text}` : text;
   const ev = new CustomEvent<{ text: string }>("convo:add-to-chat", {
     detail: { text },
     cancelable: true,
   });
-  if (typeof window !== "undefined" && !window.dispatchEvent(ev)) {
-    return;
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(ev);
   }
-  pendingChatDraft = pendingChatDraft.trim() ? `${pendingChatDraft}\n\n${text}` : text;
 }
 
 type ChatInputAttachments = Pick<ReturnType<typeof useAttachments>, "attachments" | "addFiles">;
@@ -70,7 +68,7 @@ export function ChatInput({
   onInputChange: (text: string) => void;
   slashCtx: SlashCommandContext;
 }) {
-  const [input, setInput] = useState(() => consumePendingChatDraft());
+  const [input, setInput] = useState(() => pendingChatDraft);
   const enterToSend = useSettingsStore((s) => s.enterToSend);
   const ref = useRef<HTMLTextAreaElement>(null);
   const inputValueRef = useRef(input);
@@ -80,6 +78,13 @@ export function ChatInput({
   const isMac = typeof navigator !== "undefined" && /mac/i.test(navigator.platform);
   const hasAttachmentError = attachments.attachments.some((attachment) => attachment.status === "error");
   const attachmentsBlocked = attachments.attachments.some((attachment) => attachment.status !== "ready");
+
+  const updateDraft = (next: string) => {
+    pendingChatDraft = next;
+    inputValueRef.current = next;
+    setInput(next);
+    onInputChangeRef.current(next);
+  };
 
   useEffect(() => {
     if (inputValueRef.current) {
@@ -93,11 +98,7 @@ export function ChatInput({
       const incoming = detail?.text ?? "";
       if (!incoming.trim()) return;
       e.preventDefault();
-      const current = inputValueRef.current;
-      const next = current.trim() ? `${current}\n\n${incoming}` : incoming;
-      inputValueRef.current = next;
-      setInput(next);
-      onInputChangeRef.current(next);
+      updateDraft(pendingChatDraft);
       ref.current?.focus();
     };
     window.addEventListener("convo:add-to-chat", onAddToChat);
@@ -173,20 +174,17 @@ export function ChatInput({
       if (result.sent && result.text) {
         // Clear before the await, for the same reason as the plain path
         // below.
-        setInput("");
-        onInputChange("");
+        updateDraft("");
         await onSend(result.text);
         return;
       }
       if (result.text !== undefined) {
-        setInput(result.text);
-        onInputChange(result.text);
+        updateDraft(result.text);
         setTimeout(() => ref.current?.focus(), 0);
         return;
       }
       if (result.clear) {
-        setInput("");
-        onInputChange("");
+        updateDraft("");
         return;
       }
     }
@@ -194,8 +192,7 @@ export function ChatInput({
     // store synchronously, so an emptying composer is the signal that the
     // message was sent; clearing after `onSend` resolved meant the text sat
     // there until the provider answered, which read as "the send did nothing".
-    setInput("");
-    onInputChange("");
+    updateDraft("");
     await onSend(text);
   };
 
@@ -223,8 +220,7 @@ export function ChatInput({
         data-chat-input
         value={input}
         onChange={(e) => {
-          setInput(e.target.value);
-          onInputChange(e.target.value);
+          updateDraft(e.target.value);
         }}
         onKeyDown={handleKey}
         aria-label="Message"

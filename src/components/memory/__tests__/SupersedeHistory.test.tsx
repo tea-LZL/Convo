@@ -20,7 +20,7 @@ function item(id: string, overrides: Partial<MemoryItem> = {}): MemoryItem {
 }
 
 describe("SupersedeHistory", () => {
-  it("renders a superseded memory struck through, names its replacement, and makes the replacement reachable", () => {
+  it("names the replacement for a superseded row and makes the replacement reachable", () => {
     const oldMem = item("old-1", {
       title: "Deploy window",
       content: "Ships land any time on Fridays.",
@@ -35,29 +35,26 @@ describe("SupersedeHistory", () => {
 
     render(
       <SupersedeHistory
+        item={oldMem}
         items={[oldMem, newMem]}
         onSelectReplacement={onSelect}
       />,
     );
 
-    const oldTitle = screen.getByText("Deploy window");
-    expect(oldTitle).toHaveClass("line-through");
-    expect(screen.getByText("Ships land any time on Fridays.")).toHaveClass("line-through");
-
-    const reachBtn = screen.getByRole("button", { name: /Friday deploy window/i });
+    const reachBtn = screen.getByRole("button", { name: "Replaced by Friday deploy window" });
     expect(reachBtn).toBeInTheDocument();
     fireEvent.click(reachBtn);
     expect(onSelect).toHaveBeenCalledWith(newMem);
   });
 
-  it("renders nothing for live rows that have not been superseded", () => {
+  it("renders nothing for a live row that has not been superseded", () => {
     const liveMem = item("live-1", {
       title: "Friday deploy window",
       content: "Ships land after 2pm on Fridays.",
       superseded_by: null,
     });
 
-    const { container } = render(<SupersedeHistory items={[liveMem]} />);
+    const { container } = render(<SupersedeHistory item={liveMem} items={[liveMem]} />);
     expect(container.firstChild).toBeNull();
   });
 });

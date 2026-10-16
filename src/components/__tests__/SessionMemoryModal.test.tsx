@@ -211,4 +211,26 @@ describe("SessionMemoryModal", () => {
     expect(copy).toMatch(/removes.*notes from.*recall|notes.*removed from.*recall/i);
     expect(copy).toMatch(/memory ids only/i);
   });
+
+  it("excludes superseded memories from the session scoping list and allowlist", async () => {
+    const superseded = {
+      ...preferenceItem,
+      id: "superseded-1",
+      title: "Old tone",
+      content: "Write formal essays.",
+      is_enabled: true,
+      superseded_by: "mem-pref-1",
+    };
+    mockedInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "list_memory") return [superseded, preferenceItem];
+      if (cmd === "get_session_memory_overrides") return UNSCOPED;
+      return null;
+    });
+
+    render(<SessionMemoryModal open onClose={() => {}} sessionId="session-1" />);
+    await waitFor(() => expect(screen.getByText(/Keep responses concise/)).toBeInTheDocument());
+
+    expect(screen.queryByText("Old tone")).toBeNull();
+    expect(screen.getAllByRole("checkbox")).toHaveLength(1);
+  });
 });

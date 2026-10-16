@@ -9,6 +9,7 @@
  */
 import { api, SearchConfig, SearchResult } from "../lib/api";
 import { reportRevisions } from "../stores/chatStream";
+import { useMemoryStore } from "../stores/memory";
 import { toast } from "../stores/toasts";
 import { useSessionsStore } from "../stores/sessions";
 
@@ -188,11 +189,9 @@ export const SLASH_COMMANDS: Array<{
         return { clear: true };
       }
       try {
-        const applied = await api.memoryExtractAndRevise(
-          ctx.sessionId,
-          ctx.currentModel,
-          ctx.currentProviderId,
-        );
+        const applied = await useMemoryStore
+          .getState()
+          .extractAndRevise(ctx.sessionId, ctx.currentModel, ctx.currentProviderId);
         reportRevisions(applied);
       } catch (e) {
         toast.error(String(e));

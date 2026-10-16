@@ -1,12 +1,15 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ChatInput } from "../ChatInput";
+import { appendToChatDraft, ChatInput, clearPendingChatDraft } from "../ChatInput";
 
 const attachments = { attachments: [], addFiles: vi.fn() };
 
 describe("ChatInput — sending", () => {
-  afterEach(() => cleanup());
+  afterEach(() => {
+    clearPendingChatDraft();
+    cleanup();
+  });
 
   /**
    * The composer must empty the moment the message is handed off, not when
@@ -48,5 +51,45 @@ describe("ChatInput — sending", () => {
     expect(onInputChange).toHaveBeenCalledWith("");
 
     resolveSend?.();
+  });
+
+  it("preserves a draft added from Notes across ChatRoute unmount and remount until sent", async () => {
+    appendToChatDraft("Note body from /notes");
+
+    const first = render(
+      <ChatInput
+        disabled={false}
+        streaming={false}
+        attachments={attachments}
+        onSend={vi.fn()}
+        onStop={vi.fn()}
+        onInputChange={vi.fn()}
+        slashCtx={{ sessionId: "s-1" }}
+      />,
+    );
+    expect(screen.getByLabelText("Message")).toHaveValue("Note body from /notes");
+
+    // Simulate ChatRoute unmounting ChatViewNew for ChatSkeleton during URL sync
+    // from /chat to /chat/s-1, then remounting ChatInput.
+    first.unmount();
+
+    const onSend = vi.fn();
+    render(
+      <ChatInput
+        disabled={false}
+        streaming={false}
+        attachments={attachments}
+        onSend={onSend}
+        onStop={vi.fn()}
+        onInputChange={vi.fn()}
+        slashCtx={{ sessionId: "s-1" }}
+      />,
+    );
+    const textarea = screen.getByLabelText("Message");
+    expect(textarea).toHaveValue("Note body from /notes");
+
+    fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: true });
+    expect(onSend).toHaveBeenCalledWith("Note body from /notes");
+    expect(textarea).toHaveValue("");
   });
 });
