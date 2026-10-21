@@ -47,7 +47,7 @@
  * A 30px field in a 240px pane is the right height, so the coupling is
  * paid deliberately rather than by accident.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { Plus, Trash2, Save, Search, StickyNote, Tag, MessageSquare, Pin, PinOff, Unlink } from "lucide-react";
 import { api, Note, NoteLink } from "../lib/api";
@@ -80,9 +80,35 @@ type NoteRow = { note: Note; links: NoteLink[] | null };
  */
 const TAG_CHIP = "inline-flex items-center rounded-sm border border-border bg-surface-1 text-text-subtle text-[10px] leading-none px-1 py-0.5";
 
+/**
+ * One spelling of a note's tags.
+ *
+ * The filter splits on commas and compares case-insensitively, so
+ * `release, Release` is two chips that filter as one tag. Trimming,
+ * de-duplicating and joining with `", "` at the write keeps the stored
+ * value and the filter's reading of it the same fact.
+ */
+function normalizeTags(raw: string): string {
+  const seen = new Set<string>();
+  const tags: string[] = [];
+  for (const part of raw.split(",")) {
+    const tag = part.trim();
+    if (!tag) continue;
+    const key = tag.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    tags.push(tag);
+  }
+  return tags.join(", ");
+}
+
 export function NotesRoute() {
   const [rows, setRows] = useState<NoteRow[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
+  // The open note itself, not only its id. A search result list may not
+  // contain the note being edited, and the editor must not disappear just
+  // because the list that navigates to it has been narrowed.
+  const [activeNote, setActiveNote] = useState<Note | null>(null);
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [tags, setTags] = useState("");
@@ -91,51 +117,140 @@ export function NotesRoute() {
   const [tagFilter, setTagFilter] = useState("");
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [hasLoaded, setHasLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = async () => {
+  // Refs for the event handlers that outlive a render: the keyboard
+  // shortcut and the unload guard must read the current draft, not the one
+  // that was on screen when their listener was attached.
+  const activeIdRef = useRef<string | null>(null);
+  const dirtyRef = useRef(false);
+  const savingRef = useRef(false);
+  const queryRef = useRef("");
+  const requestRef = useRef(0);
+  const saveRef = useRef<() => Promise<boolean>>(async () => false);
+  const titleInputRef = useRef<HTMLInputElement>(null);
+
+  queryRef.current = query;
+  dirtyRef.current = dirty;
+
+  const openNote = (note: Note) => {
+    activeIdRef.current = note.id;
+    setActiveId(note.id);
+    setActiveNote(note);
+    setTitle(note.title ?? "");
+    setBody(note.body);
+    setTags(note.tags ?? "");
+    setDirty(false);
+  };
+
+  const closeNote = () => {
+    activeIdRef.current = null;
+    setActiveId(null);
+    setActiveNote(null);
+    setTitle("");
+    setBody("");
+    setTags("");
+    setDirty(false);
+  };
+
+  const fetchRows = async (): Promise<NoteRow[]> => {
+    const q = queryRef.current.trim();
+    // list_notes returns each note with the memories it produced; search
+    // returns plain notes. The list is what the editor works on, so the
+    // links ride along here rather than through every read — a second
+    // fetch per open note would be a query per row for data this call
+    // already delivered.
+    if (q) return (await api.searchNotes(q)).map((note) => ({ note, links: null }));
+    return (await api.listNotes()).map((linked) => ({
+      note: linked.note,
+      links: linked.linked_memories,
+    }));
+  };
+
+  /**
+   * Load the list, and let only the newest request land.
+   *
+   * Search fires on every settled keystroke, and a pin or a save also
+   * refreshes. Without a sequence number a slow response to an older query
+   * can arrive last and put the list back to what the user already
+   * replaced — including its note selection.
+   */
+  const refresh = async (): Promise<NoteRow[]> => {
+    const request = ++requestRef.current;
     setLoading(true);
     setError(null);
     try {
-      // list_notes returns each note with the memories it produced; search
-      // returns plain notes. The list is what the editor works on, so the
-      // links ride along here rather than through every read — a second
-      // fetch per open note would be a query per row for data this call
-      // already delivered.
-      const n: NoteRow[] = query.trim()
-        ? (await api.searchNotes(query)).map((note) => ({ note, links: null }))
-        : (await api.listNotes()).map((linked) => ({ note: linked.note, links: linked.linked_memories }));
-      setRows(n);
-      const notes = n.map((r) => r.note);
-      const next = notes.find((note) => note.id === activeId) ?? notes[0];
-      if (next && !activeId) {
-        setActiveId(next.id);
-        setTitle(next.title ?? "");
-        setBody(next.body);
-        setTags(next.tags ?? "");
+      const next = await fetchRows();
+      if (request !== requestRef.current) return [];
+      setRows(next);
+      setHasLoaded(true);
+      const currentId = activeIdRef.current;
+      if (currentId) {
+        // The open note is not always in this list (a search can exclude
+        // it), but when it is, the row is the newer copy: pin state, title
+        // and links all follow the backend.
+        const found = next.find((row) => row.note.id === currentId)?.note;
+        if (found) setActiveNote(found);
+      } else if (next.length > 0) {
+        openNote(next[0].note);
       }
+      return next;
     } catch (e) {
+      if (request !== requestRef.current) return [];
       setError(String(e));
       toast.error(String(e), "Notes could not be loaded");
+      return [];
     } finally {
-      setLoading(false);
+      if (request === requestRef.current) setLoading(false);
     }
   };
 
-  useEffect(() => { void refresh(); }, [query]);
+  // Debounced: a search field should not fire a query per keystroke, and
+  // the list should not flash "Loading…" between every two letters. The
+  // first (empty-query) load is immediate.
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void refresh(); }, query.trim() ? 200 : 0);
+    return () => window.clearTimeout(timer);
+    // The latest query is read through `queryRef`; re-running on every
+    // render would restart the timer and never settle.
+  }, [query]);
 
   const createNew = async () => {
+    if (creating || savingRef.current) return;
+    // A new note must not be the way an unsaved draft disappears. Save it
+    // first, and if that fails, leave the editor exactly where it was.
+    if (dirtyRef.current && !(await saveRef.current())) return;
     setCreating(true);
     try {
+      queryRef.current = "";
+      setQuery("");
+      setTagFilter("");
       const id = await api.upsertNote({ body: "" });
-      await refresh();
-      setActiveId(id);
-      setTitle("");
-      setBody("");
-      setTags("");
-      setDirty(false);
+      const next = await refresh();
+      const created = next.find((row) => row.note.id === id)?.note;
+      if (created) {
+        openNote(created);
+      } else {
+        // A query cleared a moment ago may still have been in flight when
+        // this note was created. The record is known-good even when the
+        // list has not caught up, so open it rather than showing nothing.
+        const ts = new Date().toISOString();
+        openNote({
+          id,
+          title: null,
+          body: "",
+          tags: null,
+          source_session_id: null,
+          source_message_id: null,
+          created_at: ts,
+          updated_at: ts,
+          pinned: false,
+        });
+      }
+      requestAnimationFrame(() => titleInputRef.current?.focus());
     } catch (e) {
       setError(String(e));
       toast.error(String(e), "Note could not be created");
@@ -144,36 +259,48 @@ export function NotesRoute() {
     }
   };
 
-  const save = async () => {
-    if (!activeId) return;
+  const save = async (): Promise<boolean> => {
+    if (!activeIdRef.current || savingRef.current) return false;
+    const noteId = activeIdRef.current;
+    savingRef.current = true;
     setSaving(true);
     try {
+      const normalizedTags = normalizeTags(tags);
       await api.upsertNote({
-        id: activeId,
+        id: noteId,
         title: title || null,
         body,
-        tags: tags || null,
+        tags: normalizedTags || null,
+        // The editor owns the text, not the provenance. Omitting these
+        // mapped to `null` in `api.upsertNote` and the UPDATE wrote both
+        // columns away, so saving a note created from a message quietly
+        // erased its "from chat" link.
+        source_session_id: activeNote?.source_session_id ?? null,
+        source_message_id: activeNote?.source_message_id ?? null,
       });
+      if (normalizedTags !== tags) setTags(normalizedTags);
       setDirty(false);
+      dirtyRef.current = false;
       await refresh();
+      return true;
     } catch (e) {
       setError(String(e));
       toast.error(String(e), "Note could not be saved");
+      return false;
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
 
+  saveRef.current = save;
+
   const remove = async (id: string) => {
     try {
       await api.deleteNote(id);
-      if (activeId === id) {
-        setActiveId(null);
-        setTitle("");
-        setBody("");
-        setTags("");
-        setDirty(false);
-      }
+      // Closing first lets `refresh` open the next note, the same way it
+      // opens the first one on an empty editor.
+      if (activeIdRef.current === id) closeNote();
       await refresh();
       return true;
     } catch (e) {
@@ -190,6 +317,13 @@ export function NotesRoute() {
   const setPinned = async (note: Note, pinned: boolean) => {
     try {
       await api.setNotePinned(note.id, pinned);
+      // Show the accepted state even when the note is not in the current
+      // search results and `refresh` therefore cannot return a newer copy
+      // of it.
+      setActiveNote((current) => (current && current.id === note.id ? { ...current, pinned } : current));
+      setRows((current) =>
+        current.map((row) => (row.note.id === note.id ? { ...row, note: { ...row.note, pinned } } : row)),
+      );
       await refresh();
     } catch (e) {
       setError(String(e));
@@ -213,10 +347,35 @@ export function NotesRoute() {
     toast.info("Added to chat draft");
   };
 
+  // Ctrl/Cmd+S, and the browser's own close prompt. The listener is bound
+  // once: `saveRef` and `dirtyRef` carry the current editor into it.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "s") return;
+      event.preventDefault();
+      if (dirtyRef.current && activeIdRef.current) void saveRef.current();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  useEffect(() => {
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!dirtyRef.current) return;
+      event.preventDefault();
+      // Required by older webviews; Chromium shows its own prompt.
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, []);
+
   const notes = rows.map((r) => r.note);
   const activeRow = rows.find((r) => r.note.id === activeId);
-  const active = activeRow?.note;
-  // One lookup while rendering, not a scan per linked row.
+  const active = activeRow?.note ?? activeNote;
+  // One lookup while rendering, not a scan per linked row. `null` means
+  // "this read did not carry links" (a search result) and renders nothing;
+  // the retained note above is only for the editor itself.
   const activeLinks = activeRow?.links ?? null;
   const visibleNotes = notes.filter((note) => {
     if (!tagFilter.trim()) return true;
@@ -282,7 +441,7 @@ export function NotesRoute() {
           </div>
         )}
         <div className="flex-1 overflow-y-auto py-1">
-          {loading ? (
+          {loading && !hasLoaded ? (
             <div className="p-4 text-xs text-text-muted text-center">Loading notes…</div>
           ) : visibleNotes.length === 0 ? (
             <div className="p-4 text-xs text-text-muted text-center">{query || tagFilter ? "No matches" : "No notes"}</div>
@@ -295,15 +454,20 @@ export function NotesRoute() {
                   <li key={n.id}>
                     <button
                       onClick={async () => {
-                        if (dirty) {
-                          await save();
-                          if (dirty) return;
+                        // `dirty` here is the render-time value, so it stays
+                        // true after a successful save and `if (dirty) return`
+                        // would abort every first switch. The save's own
+                        // result is the thing to branch on.
+                        if (savingRef.current) return;
+                        if (n.id === activeIdRef.current) {
+                          if (dirty) await save();
+                          return;
                         }
-                        setActiveId(n.id);
-                        setTitle(n.title ?? "");
-                        setBody(n.body);
-                        setTags(n.tags ?? "");
-                        setDirty(false);
+                        if (dirty && !(await save())) return;
+                        // Saving the open note cannot change the text of
+                        // the note being opened, so the row's snapshot is
+                        // still the right content to populate from.
+                        openNote(n);
                       }}
                       // `aria-pressed` rather than a colour alone: the rows
                       // are a one-of-a-many selection, and this is the same
@@ -341,17 +505,23 @@ export function NotesRoute() {
         </div>
       </aside>
       <div className="flex-1 flex flex-col min-w-0 min-h-0">
-        {activeId && active ? (
+        {active ? (
           <>
              <div className="flex items-center gap-2 px-4 h-11 border-b border-border bg-surface-1">
               <input
+                ref={titleInputRef}
                 aria-label="Note title"
                 value={title}
                 onChange={(e) => { setTitle(e.target.value); setDirty(true); }}
                 placeholder="Title"
                 className="bg-transparent text-sm font-medium text-text placeholder:text-text-subtle focus:outline-none focus-visible:ring-2 focus-visible:ring-text focus-visible:ring-offset-2 focus-visible:ring-offset-bg rounded flex-1 min-w-0"
               />
-              {dirty && <span className="text-[10px] text-warn" title="Unsaved changes" aria-label="Unsaved changes">●</span>}
+              {dirty && (
+                <span role="status" className="text-[10px] text-warn" title="Unsaved changes">
+                  <span aria-hidden="true">●</span>
+                  <span className="sr-only">Unsaved changes</span>
+                </span>
+              )}
               <button
                 type="button"
                 onClick={() => void setPinned(active, !active.pinned)}
@@ -455,7 +625,7 @@ export function NotesRoute() {
             headingLevel={2}
             icon={<StickyNote size={28} />}
             title="No note open"
-            description="Create a new note to capture ideas. Use ⌘K → 'Search sessions' or 'Extract facts' to bring in content from your chats."
+            description="Create a note to capture ideas. Pin one to include it in every chat, or add it to the composer when it belongs in the conversation."
             action={<Button onClick={createNew} variant="primary" icon={<Plus size={14} />}>New note</Button>}
           />
         )}

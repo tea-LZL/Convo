@@ -420,6 +420,238 @@ describe("NotesRoute pinning and provenance", () => {
   });
 });
 
+describe("NotesRoute draft safety", () => {
+  beforeEach(() => serveLinked([note, secondNote]));
+
+  it("saves an edited note and opens the clicked one on the first click", async () => {
+    const { container } = renderNotes();
+    const editor = await screen.findByDisplayValue("Provider setup");
+    fireEvent.change(editor, { target: { value: "Edited draft" } });
+    fireEvent.click(await noteRow(container, "Roadmap"));
+
+    await waitFor(() => expect(api.upsertNote).toHaveBeenCalledTimes(1));
+    const saved = vi.mocked(api.upsertNote).mock.calls[0][0] as Record<string, unknown>;
+    expect(saved).toMatchObject({ id: "note-1", body: "Edited draft" });
+    // The switch is not deferred to a second click. `dirty` in the click
+    // handler is the render-time value, and the old `if (dirty) return`
+    // aborted here even though the save had succeeded.
+    expect(await screen.findByDisplayValue("What is next")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("Roadmap")).toBeInTheDocument();
+  });
+
+  it("clicking the open note does not revert the text the save just wrote", async () => {
+    const { container } = renderNotes();
+    fireEvent.change(await screen.findByDisplayValue("Provider setup"), {
+      target: { value: "Kept after save" },
+    });
+    fireEvent.click(await noteRow(container, "Release notes"));
+
+    await waitFor(() => expect(api.upsertNote).toHaveBeenCalledTimes(1));
+    // The row is a snapshot from before the save; repopulating from it put
+    // the old body back on screen while the database held the new one.
+    expect(screen.getByDisplayValue("Kept after save")).toBeInTheDocument();
+  });
+
+  it("saves the draft before creating a note", async () => {
+    let created = false;
+    vi.mocked(api.upsertNote).mockImplementation(async (input) => {
+      if (input.body === "") {
+        created = true;
+        return "note-3";
+      }
+      return "note-1";
+    });
+
+    renderNotes();
+    fireEvent.change(await screen.findByDisplayValue("Provider setup"), {
+      target: { value: "Draft before New" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "New" }));
+
+    await waitFor(() => expect(created).toBe(true));
+    const calls = vi.mocked(api.upsertNote).mock.calls;
+    expect(calls).toHaveLength(2);
+    // The draft is written first, to the note it belongs to. Creating an
+    // empty note and clearing the editor was how `New` used to lose it.
+    expect(calls[0][0]).toMatchObject({ id: "note-1", body: "Draft before New" });
+    expect(calls[1][0]).toMatchObject({ body: "" });
+    expect(screen.getByRole("textbox", { name: "Note body" })).toHaveValue("");
+  });
+
+  it("does not create a note when the draft it must save first fails", async () => {
+    vi.mocked(api.upsertNote).mockRejectedValue(new Error("disk full"));
+
+    renderNotes();
+    fireEvent.change(await screen.findByDisplayValue("Provider setup"), {
+      target: { value: "Draft that stays" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "New" }));
+
+    await waitFor(() => expect(api.upsertNote).toHaveBeenCalledTimes(1));
+    expect(screen.getByDisplayValue("Draft that stays")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("disk full");
+  });
+
+  it("keeps the source chat when the note is saved", async () => {
+    serveLinked([{ ...note, source_session_id: "session-1", source_message_id: "message-1" }]);
+    renderNotes();
+    fireEvent.change(await screen.findByDisplayValue("Provider setup"), {
+      target: { value: "Provenance kept" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(api.upsertNote).toHaveBeenCalledTimes(1));
+    const saved = vi.mocked(api.upsertNote).mock.calls[0][0] as Record<string, unknown>;
+    // `api.upsertNote` maps an omitted field to `null`, and the UPDATE
+    // writes both columns. A save used to erase the "from chat" link.
+    expect(saved).toMatchObject({
+      id: "note-1",
+      source_session_id: "session-1",
+      source_message_id: "message-1",
+    });
+  });
+
+  it("writes tags in one spelling, so the filter and the chip agree", async () => {
+    renderNotes();
+    fireEvent.change(await screen.findByRole("textbox", { name: "Note tags" }), {
+      target: { value: " release, Deploy ,release " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(api.upsertNote).toHaveBeenCalledTimes(1));
+    const saved = vi.mocked(api.upsertNote).mock.calls[0][0] as Record<string, unknown>;
+    expect(saved.tags).toBe("release, Deploy");
+    expect(screen.getByRole("textbox", { name: "Note tags" })).toHaveValue("release, Deploy");
+  });
+
+  it("opens the next note after deleting the open one", async () => {
+    let current = [note, secondNote];
+    vi.mocked(api.listNotes).mockImplementation(async () =>
+      current.map((n) => ({ note: n, linked_memories: [] })),
+    );
+    vi.mocked(api.deleteNote).mockImplementation(async (id) => {
+      current = current.filter((n) => n.id !== id);
+    });
+
+    renderNotes();
+    expect(await screen.findByDisplayValue("Provider setup")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+    expect(await screen.findByDisplayValue("What is next")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("Roadmap")).toBeInTheDocument();
+  });
+
+  it("exposes the unsaved state as a status, not a coloured dot", async () => {
+    renderNotes();
+    fireEvent.change(await screen.findByDisplayValue("Provider setup"), {
+      target: { value: "Dirty draft" },
+    });
+    expect(screen.getByRole("status")).toHaveTextContent("Unsaved changes");
+  });
+
+  it("saves from Ctrl+S and Meta+S, and only when dirty", async () => {
+    renderNotes();
+    await screen.findByDisplayValue("Provider setup");
+
+    fireEvent.keyDown(window, { key: "s", ctrlKey: true });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(api.upsertNote).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Note body" }), {
+      target: { value: "Keyboard saved" },
+    });
+    fireEvent.keyDown(window, { key: "s", metaKey: true });
+    await waitFor(() => expect(api.upsertNote).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.upsertNote).mock.calls[0][0]).toMatchObject({ body: "Keyboard saved" });
+  });
+
+  it("keeps the empty state honest about shortcuts that do not exist", async () => {
+    serveLinked([]);
+    renderNotes();
+    await screen.findByText("No note open");
+    expect(document.body.textContent).not.toContain("⌘K");
+    expect(document.body.textContent).not.toContain("Extract facts");
+    expect(document.body.textContent).toContain("Pin one to include it in every chat");
+  });
+});
+
+describe("NotesRoute search behaviour", () => {
+  beforeEach(() => serveLinked([note, secondNote]));
+
+  it("keeps the open note in the editor when a search excludes it", async () => {
+    vi.mocked(api.searchNotes).mockResolvedValue([secondNote]);
+    const { container } = renderNotes();
+    await screen.findByDisplayValue("Provider setup");
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Search notes" }), {
+      target: { value: "road" },
+    });
+
+    await waitFor(() => expect(api.searchNotes).toHaveBeenCalledWith("road"));
+    // The list navigates to the editor; narrowing it must not close the
+    // note being edited, and a search result carries no provenance so the
+    // produced-memories claim is absent rather than stale.
+    expect(screen.getByDisplayValue("Provider setup")).toBeInTheDocument();
+    expect(screen.queryByText("No note open")).not.toBeInTheDocument();
+    expect(queryProduced(container)).toBe(false);
+  });
+
+  it("debounces the field instead of querying every keystroke", async () => {
+    renderNotes();
+    await screen.findByDisplayValue("Provider setup");
+    const search = screen.getByRole("textbox", { name: "Search notes" });
+
+    fireEvent.change(search, { target: { value: "r" } });
+    fireEvent.change(search, { target: { value: "re" } });
+    fireEvent.change(search, { target: { value: "rel" } });
+
+    await waitFor(() => expect(api.searchNotes).toHaveBeenCalledTimes(1), { timeout: 1500 });
+    expect(api.searchNotes).toHaveBeenCalledWith("rel");
+  });
+
+  it("drops a slow response when a newer search has already landed", async () => {
+    let resolveOld!: (rows: Note[]) => void;
+    let resolveNew!: (rows: Note[]) => void;
+    vi.mocked(api.searchNotes)
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve; }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveNew = resolve; }));
+
+    const { container } = renderNotes();
+    await screen.findByDisplayValue("Provider setup");
+    const search = screen.getByRole("textbox", { name: "Search notes" });
+
+    fireEvent.change(search, { target: { value: "old" } });
+    await waitFor(() => expect(api.searchNotes).toHaveBeenCalledTimes(1), { timeout: 1500 });
+    fireEvent.change(search, { target: { value: "new" } });
+    await waitFor(() => expect(api.searchNotes).toHaveBeenCalledTimes(2), { timeout: 1500 });
+
+    resolveNew([secondNote]);
+    await waitFor(() => expect(noteRow(container, "Roadmap")).toBeTruthy());
+    resolveOld([note]);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    // The old query's answer arrived last; the list still shows the new
+    // one, and the open note was never replaced.
+    expect(await noteRow(container, "Roadmap")).toBeTruthy();
+    expect(within(container.querySelector("aside ul") as HTMLElement).queryByText("Release notes")).not.toBeInTheDocument();
+    expect(screen.getByDisplayValue("Provider setup")).toBeInTheDocument();
+  });
+});
+
+/**
+ * Whether this render carries the produced-memories section at all.
+ *
+ * Read structurally rather than by the count, because a search result is
+ * allowed to omit the section but not to replace it with "0 memories".
+ */
+function queryProduced(container: HTMLElement): boolean {
+  return Array.from(container.querySelectorAll("div")).some((d) =>
+    /^Produced \d+ memor/.test(d.textContent ?? ""),
+  );
+}
+
 /* ═══════════════════════════════════════════════════════════════════════
  * The restyle's guards.
  *
