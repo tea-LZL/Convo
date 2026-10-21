@@ -51,6 +51,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { Plus, Trash2, Save, Search, StickyNote, Tag, MessageSquare, Pin, PinOff, Unlink } from "lucide-react";
 import { api, Note, NoteLink } from "../lib/api";
+import { clearNoteDraft, NoteDraft, readNoteDrafts, writeNoteDraft } from "../lib/notesDraft";
 import { Button } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
 import { ConfirmDialog } from "../components/ui/ConfirmDialog";
@@ -102,6 +103,12 @@ function normalizeTags(raw: string): string {
   return tags.join(", ");
 }
 
+/** The banner's timestamp. A malformed value is still a draft worth offering. */
+function formatDraftTime(savedAt: string): string {
+  const when = new Date(savedAt);
+  return Number.isNaN(when.getTime()) ? "earlier" : when.toLocaleString();
+}
+
 export function NotesRoute() {
   const [rows, setRows] = useState<NoteRow[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -121,39 +128,78 @@ export function NotesRoute() {
   const [saving, setSaving] = useState(false);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Whatever the last unmount or unload put away for this note. Seeded
+  // synchronously so the recovery banner can be shown without a flash of
+  // the server text first.
+  const [drafts, setDrafts] = useState<NoteDraft[]>(() => readNoteDrafts());
 
   // Refs for the event handlers that outlive a render: the keyboard
   // shortcut and the unload guard must read the current draft, not the one
   // that was on screen when their listener was attached.
   const activeIdRef = useRef<string | null>(null);
+  const activeNoteRef = useRef<Note | null>(activeNote);
   const dirtyRef = useRef(false);
   const savingRef = useRef(false);
   const queryRef = useRef("");
   const requestRef = useRef(0);
   const saveRef = useRef<() => Promise<boolean>>(async () => false);
   const titleInputRef = useRef<HTMLInputElement>(null);
+  const draftsRef = useRef<NoteDraft[]>(drafts);
+  const draftTextRef = useRef({ title, body, tags });
+  const hasLoadedRef = useRef(false);
 
   queryRef.current = query;
   dirtyRef.current = dirty;
+  draftsRef.current = drafts;
+  draftTextRef.current = { title, body, tags };
+  activeNoteRef.current = activeNote;
 
   const openNote = (note: Note) => {
     activeIdRef.current = note.id;
+    activeNoteRef.current = note;
+    draftTextRef.current = { title: note.title ?? "", body: note.body, tags: note.tags ?? "" };
     setActiveId(note.id);
     setActiveNote(note);
     setTitle(note.title ?? "");
     setBody(note.body);
     setTags(note.tags ?? "");
     setDirty(false);
+    dirtyRef.current = false;
   };
 
   const closeNote = () => {
     activeIdRef.current = null;
+    activeNoteRef.current = null;
+    draftTextRef.current = { title: "", body: "", tags: "" };
     setActiveId(null);
     setActiveNote(null);
     setTitle("");
     setBody("");
     setTags("");
     setDirty(false);
+    dirtyRef.current = false;
+  };
+
+  /**
+   * Put the live draft away, for the route change or window close that is
+   * about to unmount the editor.
+   *
+   * Ref-only on purpose: both callers run after the last render, from a
+   * listener or a cleanup that captured the first render's closure. Reading
+   * state here would save the text the editor had when the listener was
+   * attached, not the text on screen.
+   */
+  const persistDraft = () => {
+    if (!dirtyRef.current) return;
+    const note = activeNoteRef.current;
+    if (!note) return;
+    writeNoteDraft({
+      noteId: note.id,
+      title: draftTextRef.current.title,
+      body: draftTextRef.current.body,
+      tags: draftTextRef.current.tags,
+      savedAt: new Date().toISOString(),
+    });
   };
 
   const fetchRows = async (): Promise<NoteRow[]> => {
@@ -185,8 +231,25 @@ export function NotesRoute() {
     try {
       const next = await fetchRows();
       if (request !== requestRef.current) return [];
+      const firstLoad = !hasLoadedRef.current;
+      hasLoadedRef.current = true;
       setRows(next);
       setHasLoaded(true);
+
+      // A note deleted in another window leaves a draft that can never be
+      // opened again. Prune only against a full list: a search result set
+      // is a view of the library, not the library, and must not delete the
+      // drafts of notes it happens not to match.
+      if (!queryRef.current.trim()) {
+        const known = new Set(next.map((row) => row.note.id));
+        const stale = draftsRef.current.filter((draft) => !known.has(draft.noteId));
+        if (stale.length > 0) {
+          for (const draft of stale) clearNoteDraft(draft.noteId);
+          draftsRef.current = draftsRef.current.filter((draft) => known.has(draft.noteId));
+          setDrafts(draftsRef.current);
+        }
+      }
+
       const currentId = activeIdRef.current;
       if (currentId) {
         // The open note is not always in this list (a search can exclude
@@ -195,7 +258,13 @@ export function NotesRoute() {
         const found = next.find((row) => row.note.id === currentId)?.note;
         if (found) setActiveNote(found);
       } else if (next.length > 0) {
-        openNote(next[0].note);
+        // Coming back to the page, prefer the note that has something to
+        // recover, so the banner is visible instead of waiting behind a row
+        // the user may not open.
+        const preferred = firstLoad
+          ? next.find((row) => row.note.id === draftsRef.current[0]?.noteId)
+          : undefined;
+        openNote((preferred ?? next[0]).note);
       }
       return next;
     } catch (e) {
@@ -278,6 +347,10 @@ export function NotesRoute() {
         source_session_id: activeNote?.source_session_id ?? null,
         source_message_id: activeNote?.source_message_id ?? null,
       });
+      // The server now has this text, so the recovery copy is stale. This is
+      // the note's own key only; a pending draft for another note stays.
+      clearNoteDraft(noteId);
+      setDrafts((current) => current.filter((draft) => draft.noteId !== noteId));
       if (normalizedTags !== tags) setTags(normalizedTags);
       setDirty(false);
       dirtyRef.current = false;
@@ -298,6 +371,8 @@ export function NotesRoute() {
   const remove = async (id: string) => {
     try {
       await api.deleteNote(id);
+      clearNoteDraft(id);
+      setDrafts((current) => current.filter((draft) => draft.noteId !== id));
       // Closing first lets `refresh` open the next note, the same way it
       // opens the first one on an empty editor.
       if (activeIdRef.current === id) closeNote();
@@ -308,6 +383,29 @@ export function NotesRoute() {
       toast.error(String(e), "Note could not be deleted");
       return false;
     }
+  };
+
+  /**
+   * Put the stored text back in the editor.
+   *
+   * The entry is cleared as it is restored: from here on the draft is the
+   * editor's, and a second route change re-persists whatever is still
+   * unsaved. The editor is marked dirty so the existing Save/status path
+   * owns the write.
+   */
+  const restoreDraft = (draft: NoteDraft) => {
+    setTitle(draft.title);
+    setBody(draft.body);
+    setTags(draft.tags);
+    setDirty(true);
+    dirtyRef.current = true;
+    clearNoteDraft(draft.noteId);
+    setDrafts((current) => current.filter((item) => item.noteId !== draft.noteId));
+  };
+
+  const discardDraft = (noteId: string) => {
+    clearNoteDraft(noteId);
+    setDrafts((current) => current.filter((draft) => draft.noteId !== noteId));
   };
 
   // Deliberate path, not the editor's save: `upsert_note` ignores `pinned`
@@ -362,12 +460,20 @@ export function NotesRoute() {
   useEffect(() => {
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
       if (!dirtyRef.current) return;
+      // Store first: the user may accept the browser's prompt, and the
+      // next launch should still have the text.
+      persistDraft();
       event.preventDefault();
       // Required by older webviews; Chromium shows its own prompt.
       event.returnValue = "";
     };
     window.addEventListener("beforeunload", onBeforeUnload);
-    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+    return () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      // Route navigation unmounts the route without a browser prompt. The
+      // draft is written synchronously here, before the editor is gone.
+      persistDraft();
+    };
   }, []);
 
   const notes = rows.map((r) => r.note);
@@ -377,6 +483,8 @@ export function NotesRoute() {
   // "this read did not carry links" (a search result) and renders nothing;
   // the retained note above is only for the editor itself.
   const activeLinks = activeRow?.links ?? null;
+  const draftIds = new Set(drafts.map((draft) => draft.noteId));
+  const activeDraft = active ? drafts.find((draft) => draft.noteId === active.id) ?? null : null;
   const visibleNotes = notes.filter((note) => {
     if (!tagFilter.trim()) return true;
     return (note.tags ?? "").split(",").map((tag) => tag.trim().toLowerCase()).includes(tagFilter.trim().toLowerCase());
@@ -450,6 +558,7 @@ export function NotesRoute() {
               {visibleNotes.map((n) => {
                 const nt = (n.tags ?? "").split(",").map((t) => t.trim()).filter(Boolean);
                 const isActive = n.id === activeId;
+                const hasDraft = draftIds.has(n.id);
                 return (
                   <li key={n.id}>
                     <button
@@ -488,12 +597,20 @@ export function NotesRoute() {
                         <span className={`font-medium truncate ${isActive ? "text-accent" : "text-text"}`}>{n.title || "Untitled"}</span>
                       </span>
                       <span className="text-text-subtle text-[10px] truncate">{n.body.slice(0, 60) || "(empty)"}</span>
-                      {(nt.length > 0 || n.source_session_id) && (
+                      {(nt.length > 0 || n.source_session_id || hasDraft) && (
                         <span className="flex flex-wrap items-center gap-1 mt-1">
                           {n.source_session_id && <MessageSquare size={9} aria-hidden="true" className="text-text-subtle" />}
                           {nt.slice(0, 3).map((t, j) => (
                             <span key={j} className={TAG_CHIP}>{t}</span>
                           ))}
+                          {hasDraft && (
+                            <span
+                              className="text-[10px] leading-none text-warn"
+                              title="This note has an unsaved draft to recover"
+                            >
+                              unsaved draft
+                            </span>
+                          )}
                         </span>
                       )}
                     </button>
@@ -538,6 +655,18 @@ export function NotesRoute() {
               <Button size="sm" variant="ghost" onClick={() => setDeleteTargetId(activeId)} icon={<Trash2 size={12} />}>Delete</Button>
               <Button size="sm" variant="primary" onClick={save} loading={saving} disabled={!dirty} icon={<Save size={12} />}>Save</Button>
             </div>
+            {activeDraft && (
+              <div
+                role="status"
+                className="flex items-center gap-2 px-4 py-2 border-b border-border bg-warn/10 text-[11px] text-warn"
+              >
+                <span className="min-w-0 flex-1 break-words">
+                  Unsaved draft from {formatDraftTime(activeDraft.savedAt)}.
+                </span>
+                <Button size="sm" variant="secondary" onClick={() => restoreDraft(activeDraft)}>Restore</Button>
+                <Button size="sm" variant="ghost" onClick={() => discardDraft(activeDraft.noteId)}>Discard</Button>
+              </div>
+            )}
             <div className="px-4 py-2 border-b border-border bg-surface-1/40 flex items-center gap-2">
               <Tag size={12} aria-hidden="true" className="text-text-subtle shrink-0" />
               <input

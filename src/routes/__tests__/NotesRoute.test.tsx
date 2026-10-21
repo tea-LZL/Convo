@@ -8,6 +8,7 @@ import postcss from "postcss";
 import tailwindcss from "tailwindcss";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api, Note, NoteWithLinks } from "../../lib/api";
+import { NoteDraft, notesDraftKey } from "../../lib/notesDraft";
 import { ChatInput } from "../../components/chat/ChatInput";
 import { NotesRoute } from "../NotesRoute";
 import repoTailwind from "../../../tailwind.config";
@@ -637,6 +638,128 @@ describe("NotesRoute search behaviour", () => {
     expect(await noteRow(container, "Roadmap")).toBeTruthy();
     expect(within(container.querySelector("aside ul") as HTMLElement).queryByText("Release notes")).not.toBeInTheDocument();
     expect(screen.getByDisplayValue("Provider setup")).toBeInTheDocument();
+  });
+});
+
+describe("NotesRoute draft recovery", () => {
+  beforeEach(() => serveLinked([note, secondNote]));
+
+  const keepDraft = (over: Partial<NoteDraft> = {}): NoteDraft => {
+    const draft: NoteDraft = {
+      noteId: "note-1",
+      title: "Release notes",
+      body: "Recovered body",
+      tags: "release",
+      savedAt: "2026-10-21T10:00:00.000Z",
+      ...over,
+    };
+    localStorage.setItem(notesDraftKey(draft.noteId), JSON.stringify(draft));
+    return draft;
+  };
+
+  const asideList = (container: HTMLElement) =>
+    container.querySelector("aside ul") as HTMLElement;
+
+  it("writes a dirty draft when the route unmounts, and nothing when clean", async () => {
+    const clean = renderNotes();
+    await screen.findByDisplayValue("Provider setup");
+    clean.unmount();
+    expect(localStorage.getItem(notesDraftKey("note-1"))).toBeNull();
+
+    const dirty = renderNotes();
+    fireEvent.change(await screen.findByDisplayValue("Provider setup"), {
+      target: { value: "Leaves with me" },
+    });
+    dirty.unmount();
+
+    const raw = localStorage.getItem(notesDraftKey("note-1"));
+    expect(raw, "unmount must put the draft away").toBeTruthy();
+    expect(JSON.parse(raw!)).toMatchObject({
+      noteId: "note-1",
+      title: "Release notes",
+      body: "Leaves with me",
+      tags: "release",
+    });
+  });
+
+  it("opens the note that has a draft, and restores it on request", async () => {
+    keepDraft({ noteId: "note-2", title: "Roadmap", body: "Recovered roadmap", tags: "plan" });
+    const { container } = renderNotes();
+
+    // The draft's note wins the initial selection, so the recovery banner is
+    // in front of the user rather than hidden behind another row.
+    expect(await screen.findByDisplayValue("Roadmap")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Unsaved draft");
+    expect(within(asideList(container)).getByText("unsaved draft")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+
+    expect(screen.getByRole("textbox", { name: "Note body" })).toHaveValue("Recovered roadmap");
+    // Restored text is an unsaved edit, not a second save path.
+    expect(screen.getByRole("status")).toHaveTextContent("Unsaved changes");
+    expect(localStorage.getItem(notesDraftKey("note-2"))).toBeNull();
+    expect(within(asideList(container)).queryByText("unsaved draft")).not.toBeInTheDocument();
+  });
+
+  it("discards a draft without touching the server text", async () => {
+    keepDraft({ noteId: "note-2", title: "Roadmap", body: "Recovered roadmap" });
+    renderNotes();
+    await screen.findByDisplayValue("Roadmap");
+
+    fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+
+    expect(screen.getByRole("textbox", { name: "Note body" })).toHaveValue("What is next");
+    expect(localStorage.getItem(notesDraftKey("note-2"))).toBeNull();
+    expect(screen.queryByText("unsaved draft")).not.toBeInTheDocument();
+  });
+
+  it("clears the stored draft when the text reaches the server", async () => {
+    keepDraft();
+    renderNotes();
+    await screen.findByDisplayValue("Release notes");
+
+    fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(api.upsertNote).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.upsertNote).mock.calls[0][0]).toMatchObject({ body: "Recovered body" });
+    expect(localStorage.getItem(notesDraftKey("note-1"))).toBeNull();
+  });
+
+  it("prunes a draft whose note is gone, but not one a search excludes", async () => {
+    keepDraft({ noteId: "ghost", title: "Gone", body: "orphan" });
+    keepDraft({ noteId: "note-2", title: "Roadmap", body: "still here" });
+    renderNotes();
+    // The surviving draft's note wins the initial selection after the dead
+    // one is pruned.
+    await screen.findByDisplayValue("Roadmap");
+
+    await waitFor(() => expect(localStorage.getItem(notesDraftKey("ghost"))).toBeNull());
+    expect(localStorage.getItem(notesDraftKey("note-2"))).toBeTruthy();
+
+    // A search is a narrowed view of the library, not the library. It must
+    // not be treated as proof the other notes, and their drafts, are gone.
+    vi.mocked(api.searchNotes).mockResolvedValue([note]);
+    fireEvent.change(screen.getByRole("textbox", { name: "Search notes" }), {
+      target: { value: "release" },
+    });
+    await waitFor(() => expect(api.searchNotes).toHaveBeenCalledWith("release"));
+    expect(localStorage.getItem(notesDraftKey("note-2"))).toBeTruthy();
+  });
+
+  it("stores the draft on beforeunload as well as on unmount", async () => {
+    renderNotes();
+    fireEvent.change(await screen.findByDisplayValue("Provider setup"), {
+      target: { value: "Closed the window" },
+    });
+
+    const event = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(event);
+
+    const raw = localStorage.getItem(notesDraftKey("note-1"));
+    expect(raw, "the next launch must be able to recover it").toBeTruthy();
+    expect(JSON.parse(raw!)).toMatchObject({ noteId: "note-1", body: "Closed the window" });
+    expect(event.defaultPrevented).toBe(true);
   });
 });
 
