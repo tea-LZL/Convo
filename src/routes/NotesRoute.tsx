@@ -49,7 +49,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { Plus, Trash2, Save, Search, StickyNote, Tag, MessageSquare, Pin, PinOff, Unlink } from "lucide-react";
+import { Plus, Trash2, Save, Search, StickyNote, Tag, MessageSquare, Pin, PinOff, Unlink, Eye, Pencil } from "lucide-react";
 import { api, Note, NoteLink, NoteSummary } from "../lib/api";
 import { clearNoteDraft, NoteDraft, readNoteDrafts, writeNoteDraft } from "../lib/notesDraft";
 import { Button } from "../components/ui/Button";
@@ -58,6 +58,7 @@ import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { RouteShell } from "../components/ui/RouteShell";
 import { ROW_ACTION } from "../components/ui/rowAction";
 import { Badge } from "../components/ui/Form";
+import { MarkdownRenderer } from "../components/chat/MarkdownRenderer";
 import { appendToChatDraft } from "../components/chat/ChatInput";
 import { toast } from "../stores/toasts";
 
@@ -120,6 +121,7 @@ export function NotesRoute() {
   const [body, setBody] = useState("");
   const [tags, setTags] = useState("");
   const [dirty, setDirty] = useState(false);
+  const [preview, setPreview] = useState(false);
   const [query, setQuery] = useState("");
   const [tagFilter, setTagFilter] = useState("");
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
@@ -168,6 +170,9 @@ export function NotesRoute() {
     setTags(note.tags ?? "");
     setDirty(false);
     dirtyRef.current = false;
+    // A note opens in the editor. Preview is a reading mode for the note in
+    // front of you, not a setting for the next one.
+    setPreview(false);
   };
 
   const closeNote = () => {
@@ -182,6 +187,7 @@ export function NotesRoute() {
     setTags("");
     setDirty(false);
     dirtyRef.current = false;
+    setPreview(false);
   };
 
   /**
@@ -608,6 +614,30 @@ export function NotesRoute() {
                       // are a one-of-a-many selection, and this is the same
                       // vocabulary the Tasks filter uses for the same shape.
                       aria-pressed={isActive}
+                      // Arrow keys move between rows without opening them.
+                      // Opening a note is a body fetch and a possible save,
+                      // so moving focus is the safe half of listbox
+                      // navigation; Enter/Space still activates the button.
+                      onKeyDown={(event) => {
+                        if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+                        const rows = Array.from(
+                          event.currentTarget.closest("ul")?.querySelectorAll<HTMLButtonElement>("button") ?? [],
+                        );
+                        const index = rows.indexOf(event.currentTarget);
+                        if (index < 0) return;
+                        const next =
+                          event.key === "ArrowDown"
+                            ? Math.min(rows.length - 1, index + 1)
+                            : event.key === "ArrowUp"
+                              ? Math.max(0, index - 1)
+                              : event.key === "Home"
+                                ? 0
+                                : rows.length - 1;
+                        if (next !== index) {
+                          event.preventDefault();
+                          rows[next]?.focus();
+                        }
+                      }}
                       // The selected note is a 2px accent rule plus a faint
                       // accent wash, not a second surface: the row sits on
                       // `surface-1` and `bg-surface-2` alone read as "a
@@ -711,6 +741,16 @@ export function NotesRoute() {
                   <MessageSquare size={10} aria-hidden="true" /> from chat
                 </Link>
               )}
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setPreview((current) => !current)}
+                aria-pressed={preview}
+                icon={preview ? <Pencil size={12} aria-hidden="true" /> : <Eye size={12} aria-hidden="true" />}
+                title={preview ? "Back to editing this note" : "Preview this note as Markdown"}
+              >
+                {preview ? "Edit" : "Preview"}
+              </Button>
             </div>
             {activeLinks !== null && activeLinks.length > 0 && (
               <div className="border-b border-border bg-surface-1/40 px-4 py-3 shrink-0 max-h-48 overflow-y-auto">
@@ -765,13 +805,29 @@ export function NotesRoute() {
                 </ul>
               </div>
             )}
-            <textarea
-              aria-label="Note body"
-              value={body}
-              onChange={(e) => { setBody(e.target.value); setDirty(true); }}
-              placeholder="Write something…"
-              className="flex-1 min-h-0 bg-bg text-sm text-text placeholder:text-text-subtle p-6 focus:outline-none resize-none"
-            />
+            {preview ? (
+              <div
+                role="region"
+                aria-label="Note preview"
+                className="flex-1 min-h-0 overflow-y-auto bg-bg px-6 py-4"
+              >
+                {body.trim() ? (
+                  <div className="prose prose-invert prose-sm leading-relaxed max-w-none break-words">
+                    <MarkdownRenderer content={body} />
+                  </div>
+                ) : (
+                  <p className="text-sm text-text-subtle">Nothing to preview yet.</p>
+                )}
+              </div>
+            ) : (
+              <textarea
+                aria-label="Note body"
+                value={body}
+                onChange={(e) => { setBody(e.target.value); setDirty(true); }}
+                placeholder="Write something…"
+                className="flex-1 min-h-0 bg-bg text-sm text-text placeholder:text-text-subtle p-6 focus:outline-none resize-none"
+              />
+            )}
           </>
         ) : (
           <EmptyState

@@ -848,6 +848,72 @@ describe("NotesRoute lazy bodies", () => {
   });
 });
 
+describe("NotesRoute editor view", () => {
+  beforeEach(() => serveLinked([note, secondNote]));
+
+  it("previews Markdown without losing the editor text", async () => {
+    renderNotes();
+    const body = await screen.findByRole("textbox", { name: "Note body" });
+    fireEvent.change(body, { target: { value: "# Release plan\n\n**ship it**" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+
+    const region = screen.getByRole("region", { name: "Note preview" });
+    expect(within(region).getByRole("heading", { level: 1, name: "Release plan" })).toBeInTheDocument();
+    expect(within(region).getByText("ship it")).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Note body" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+
+    expect(screen.getByRole("textbox", { name: "Note body" })).toHaveValue("# Release plan\n\n**ship it**");
+    // Preview is a view, not a second save path: the markdown was never
+    // written, and the editor still owns the unsaved draft.
+    expect(screen.getByRole("status")).toHaveTextContent("Unsaved changes");
+    expect(api.upsertNote).not.toHaveBeenCalled();
+  });
+
+  it("opens the next note in the editor rather than carrying preview over", async () => {
+    const { container } = renderNotes();
+    await screen.findByRole("textbox", { name: "Note body" });
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    expect(screen.getByRole("region", { name: "Note preview" })).toBeInTheDocument();
+
+    fireEvent.click(await noteRow(container, "Roadmap"));
+
+    expect(await screen.findByRole("textbox", { name: "Note body" })).toHaveValue("What is next");
+    expect(screen.queryByRole("region", { name: "Note preview" })).not.toBeInTheDocument();
+  });
+
+  it("says there is nothing to preview for an empty note", async () => {
+    serveLinked([{ ...note, body: "" }]);
+    renderNotes();
+    await screen.findByDisplayValue("Release notes");
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+
+    expect(screen.getByRole("region", { name: "Note preview" })).toHaveTextContent("Nothing to preview yet.");
+  });
+
+  it("moves focus through the note list with arrow, Home and End", async () => {
+    const { container } = renderNotes();
+    const first = await noteRow(container, "Release notes");
+    const second = await noteRow(container, "Roadmap");
+
+    first.focus();
+    fireEvent.keyDown(first, { key: "ArrowDown" });
+    expect(second).toHaveFocus();
+
+    fireEvent.keyDown(second, { key: "ArrowUp" });
+    expect(first).toHaveFocus();
+
+    fireEvent.keyDown(first, { key: "End" });
+    expect(second).toHaveFocus();
+
+    fireEvent.keyDown(second, { key: "Home" });
+    expect(first).toHaveFocus();
+  });
+});
+
 /**
  * Whether this render carries the produced-memories section at all.
  *
