@@ -1,5 +1,5 @@
-use crate::db::models::{Note, NoteLink, NoteTitle, NoteWithLinks};
-use rusqlite::{params, Connection};
+use crate::db::models::{Note, NoteLink, NoteSummary, NoteSummaryWithLinks, NoteTitle};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::State;
@@ -16,47 +16,157 @@ fn now() -> String {
 }
 
 #[tauri::command]
-pub fn list_notes(pool: State<'_, Arc<DbPool>>) -> Result<Vec<NoteWithLinks>, String> {
+pub fn list_notes(pool: State<'_, Arc<DbPool>>) -> Result<Vec<NoteSummaryWithLinks>, String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
-    let notes = all_notes(&conn)?;
-    let mut with_links = Vec::with_capacity(notes.len());
-    for note in notes {
-        let linked_memories = memories_for_note(&conn, &note.id)?;
-        with_links.push(NoteWithLinks {
-            note,
-            linked_memories,
-        });
-    }
-    Ok(with_links)
+    all_notes_with_links(&conn)
 }
 
-/// Every note, newest first, without provenance. The note rows are the same
-/// for `list_notes` and `search_notes`; only the former attaches links.
+/// The list read: summaries plus their memories, in two queries.
 ///
-/// `pub` so a test can pin the positional `row.get` chain: a column dropped
-/// from the SELECT keeps indices 0-7 valid and a reordered one reads the
-/// wrong field silently, so the read path needs coverage, not just the
-/// writes.
-pub fn all_notes(conn: &Connection) -> Result<Vec<Note>, String> {
+/// The previous shape asked for the memories once per note. That was an
+/// N+1 on the same connection, and it carried every body across the IPC
+/// boundary for a list that renders one line per note. The body now lives
+/// only behind `get_note`; this projection carries `preview`.
+pub fn all_notes_with_links(conn: &Connection) -> Result<Vec<NoteSummaryWithLinks>, String> {
+    let notes = all_note_summaries(conn)?;
+    let mut links = all_note_links(conn)?;
+    Ok(notes
+        .into_iter()
+        .map(|note| NoteSummaryWithLinks {
+            linked_memories: links.remove(&note.id).unwrap_or_default(),
+            note,
+        })
+        .collect())
+}
+
+/// Every note's list row, newest first.
+///
+/// `pub` so a test can pin the projection: a column dropped from the SELECT
+/// keeps indices 0-8 valid and a reordered one reads the wrong field
+/// silently, so the read path needs coverage, not just the writes.
+pub fn all_note_summaries(conn: &Connection) -> Result<Vec<NoteSummary>, String> {
     let mut stmt = conn
-        .prepare("SELECT id, title, body, tags, source_session_id, source_message_id, created_at, updated_at, pinned FROM notes ORDER BY updated_at DESC")
+        .prepare(
+            "SELECT id, title, substr(body, 1, 160), tags, source_session_id, source_message_id, created_at, updated_at, pinned
+             FROM notes ORDER BY updated_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], summary_from_row)
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
+}
+
+/// Every note's produced memories, grouped by note, newest first.
+///
+/// One query for the whole list rather than one per note. A note with no
+/// memories simply has no key; `all_notes_with_links` turns that into an
+/// empty vector.
+fn all_note_links(conn: &Connection) -> Result<HashMap<String, Vec<NoteLink>>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT source_note_id, id, title, content, is_enabled, superseded_by
+             FROM memory_items
+             WHERE source_note_id IS NOT NULL
+             ORDER BY updated_at DESC",
+        )
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| {
-            Ok(Note {
+            Ok((
+                row.get::<_, String>(0)?,
+                NoteLink {
+                    id: row.get(1)?,
+                    title: row.get(2)?,
+                    content: row.get(3)?,
+                    is_enabled: row.get::<_, i64>(4)? != 0,
+                    superseded_by: row.get(5)?,
+                },
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut by_note: HashMap<String, Vec<NoteLink>> = HashMap::new();
+    for row in rows {
+        let (note_id, link) = row.map_err(|e| e.to_string())?;
+        by_note.entry(note_id).or_default().push(link);
+    }
+    Ok(by_note)
+}
+
+fn summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<NoteSummary> {
+    Ok(NoteSummary {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        preview: row.get(2)?,
+        tags: row.get(3)?,
+        source_session_id: row.get(4)?,
+        source_message_id: row.get(5)?,
+        created_at: row.get(6)?,
+        updated_at: row.get(7)?,
+        pinned: row.get::<_, i64>(8)? != 0,
+    })
+}
+
+/// The memories a note produced, newest first.
+///
+/// The list reads all notes' links in one grouped query; this stays for the
+/// notes and memory tests that pin the single-note projection.
+#[cfg(test)]
+pub fn memories_for_note(conn: &Connection, note_id: &str) -> Result<Vec<NoteLink>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, title, content, is_enabled, superseded_by
+             FROM memory_items
+             WHERE source_note_id = ?1
+             ORDER BY updated_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![note_id], |row| {
+            Ok(NoteLink {
                 id: row.get(0)?,
                 title: row.get(1)?,
-                body: row.get(2)?,
-                tags: row.get(3)?,
-                source_session_id: row.get(4)?,
-                source_message_id: row.get(5)?,
-                created_at: row.get(6)?,
-                updated_at: row.get(7)?,
-                pinned: row.get::<_, i64>(8)? != 0,
+                content: row.get(2)?,
+                is_enabled: row.get::<_, i64>(3)? != 0,
+                superseded_by: row.get(4)?,
             })
         })
         .map_err(|e| e.to_string())?;
-    rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_note(pool: State<'_, Arc<DbPool>>, id: String) -> Result<Note, String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    note_by_id(&conn, &id)
+}
+
+/// The editor's read: one note with its full body.
+pub fn note_by_id(conn: &Connection, id: &str) -> Result<Note, String> {
+    conn.query_row(
+        "SELECT id, title, body, tags, source_session_id, source_message_id, created_at, updated_at, pinned
+         FROM notes WHERE id = ?1",
+        params![id],
+        note_from_row,
+    )
+    .optional()
+    .map_err(|e| e.to_string())?
+    .ok_or_else(|| format!("no note with id {id}"))
+}
+
+fn note_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
+    Ok(Note {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        body: row.get(2)?,
+        tags: row.get(3)?,
+        source_session_id: row.get(4)?,
+        source_message_id: row.get(5)?,
+        created_at: row.get(6)?,
+        updated_at: row.get(7)?,
+        pinned: row.get::<_, i64>(8)? != 0,
+    })
 }
 
 #[tauri::command]
@@ -184,36 +294,6 @@ pub fn set_pinned(conn: &Connection, id: &str, pinned: bool) -> Result<(), Strin
     Ok(())
 }
 
-/// The memories a note produced, newest first.
-///
-/// Derived from `memory_items.source_note_id` rather than a denormalised
-/// list on the note, so deleting a memory cannot leave a dangling id on
-/// the note that claims it. Superseded rows are included: the note
-/// produced them and the correction history stays readable.
-pub fn memories_for_note(conn: &Connection, note_id: &str) -> Result<Vec<NoteLink>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, title, content, is_enabled, superseded_by
-             FROM memory_items
-             WHERE source_note_id = ?1
-             ORDER BY updated_at DESC",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map(params![note_id], |row| {
-            Ok(NoteLink {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                content: row.get(2)?,
-                is_enabled: row.get::<_, i64>(3)? != 0,
-                superseded_by: row.get(4)?,
-            })
-        })
-        .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())
-}
-
 /// Clear a memory's source note. The note side needs no update because it
 /// never stored a list. The memory survives: unlinking is a claim about
 /// origin, not a delete.
@@ -308,11 +388,14 @@ pub fn delete(conn: &Connection, id: &str) -> Result<(), String> {
     tx.commit().map_err(|e| e.to_string())
 }
 
-/// Search returns plain notes, not `NoteWithLinks`: a search result list is
-/// for finding the note, and the links arrive with `list_notes` once one is
-/// open. The empty query still means "everything", as it did before.
+/// Search returns summaries, not full notes: a search result list is for
+/// finding the note, and the body arrives from `get_note` once one is open.
+/// The empty query still means "everything", as it did before.
 #[tauri::command]
-pub fn search_notes(pool: State<'_, Arc<DbPool>>, query: String) -> Result<Vec<Note>, String> {
+pub fn search_notes(
+    pool: State<'_, Arc<DbPool>>,
+    query: String,
+) -> Result<Vec<NoteSummary>, String> {
     let conn = pool.get().map_err(|e| e.to_string())?;
     search(&conn, &query)
 }
@@ -325,10 +408,10 @@ pub fn search_notes(pool: State<'_, Arc<DbPool>>, query: String) -> Result<Vec<N
 /// two cases the token index cannot answer — a query with no token of two or
 /// more characters, and a substring that is not a word prefix ("ider" inside
 /// "provider"). Both paths are case-insensitive and both cap at 100 rows.
-pub fn search(conn: &Connection, query: &str) -> Result<Vec<Note>, String> {
+pub fn search(conn: &Connection, query: &str) -> Result<Vec<NoteSummary>, String> {
     let query = query.trim();
     if query.is_empty() {
-        return all_notes(conn);
+        return all_note_summaries(conn);
     }
     if let Some(expression) = fts_expression(query) {
         if let Ok(rows) = search_index(conn, &expression) {
@@ -368,10 +451,10 @@ fn fts_expression(query: &str) -> Option<String> {
     )
 }
 
-fn search_index(conn: &Connection, expression: &str) -> Result<Vec<Note>, String> {
+fn search_index(conn: &Connection, expression: &str) -> Result<Vec<NoteSummary>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT n.id, n.title, n.body, n.tags, n.source_session_id, n.source_message_id, n.created_at, n.updated_at, n.pinned
+            "SELECT n.id, n.title, substr(n.body, 1, 160), n.tags, n.source_session_id, n.source_message_id, n.created_at, n.updated_at, n.pinned
              FROM notes_fts
              JOIN notes n ON n.rowid = notes_fts.rowid
              WHERE notes_fts MATCH ?1
@@ -380,19 +463,7 @@ fn search_index(conn: &Connection, expression: &str) -> Result<Vec<Note>, String
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map(params![expression], |row| {
-            Ok(Note {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                body: row.get(2)?,
-                tags: row.get(3)?,
-                source_session_id: row.get(4)?,
-                source_message_id: row.get(5)?,
-                created_at: row.get(6)?,
-                updated_at: row.get(7)?,
-                pinned: row.get::<_, i64>(8)? != 0,
-            })
-        })
+        .query_map(params![expression], summary_from_row)
         .map_err(|e| e.to_string())?;
     rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
 }
@@ -400,11 +471,11 @@ fn search_index(conn: &Connection, expression: &str) -> Result<Vec<Note>, String
 /// Substring search with `%` and `_` treated as the characters the user
 /// typed, not as wildcards. Without `ESCAPE`, a query of `%` matches every
 /// note in the library and a search for `100%` matches things it should not.
-fn search_contains(conn: &Connection, query: &str) -> Result<Vec<Note>, String> {
+fn search_contains(conn: &Connection, query: &str) -> Result<Vec<NoteSummary>, String> {
     let q = format!("%{}%", escape_like(&query.to_lowercase()));
     let mut stmt = conn
         .prepare(
-            "SELECT id, title, body, tags, source_session_id, source_message_id, created_at, updated_at, pinned
+            "SELECT id, title, substr(body, 1, 160), tags, source_session_id, source_message_id, created_at, updated_at, pinned
              FROM notes
              WHERE LOWER(IFNULL(title, '')) LIKE ?1 ESCAPE '\\'
                 OR LOWER(body) LIKE ?1 ESCAPE '\\'
@@ -414,19 +485,7 @@ fn search_contains(conn: &Connection, query: &str) -> Result<Vec<Note>, String> 
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map(params![q], |row| {
-            Ok(Note {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                body: row.get(2)?,
-                tags: row.get(3)?,
-                source_session_id: row.get(4)?,
-                source_message_id: row.get(5)?,
-                created_at: row.get(6)?,
-                updated_at: row.get(7)?,
-                pinned: row.get::<_, i64>(8)? != 0,
-            })
-        })
+        .query_map(params![q], summary_from_row)
         .map_err(|e| e.to_string())?;
     rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
 }
@@ -457,7 +516,8 @@ pub struct NoteInput {
 #[cfg(test)]
 mod tests {
     use super::{
-        all_note_titles, delete, now, search, set_pinned, upsert, validate_note, NoteInput,
+        all_note_summaries, all_note_titles, all_notes_with_links, delete, note_by_id, now, search,
+        set_pinned, upsert, validate_note, NoteInput,
     };
     use rusqlite::{params, Connection};
 
@@ -479,6 +539,10 @@ mod tests {
              );
              CREATE TABLE memory_items (
                id TEXT PRIMARY KEY,
+               title TEXT,
+               content TEXT NOT NULL DEFAULT '',
+               is_enabled INTEGER NOT NULL DEFAULT 1,
+               superseded_by TEXT,
                source_note_id TEXT,
                updated_at TEXT NOT NULL
              );
@@ -861,6 +925,119 @@ mod tests {
         assert!(ts.ends_with('Z'), "not a Zulu timestamp: {ts}");
         assert_eq!(ts.len(), 24, "not millisecond precision: {ts}");
         assert_eq!(ts.as_bytes()[19], b'.', "no fractional part: {ts}");
+    }
+
+    /// The list's whole reason for a separate projection: a pasted document
+    /// must stay in the database, and the row must still have enough to
+    /// render. The marker sits past the preview window, so the preview
+    /// cannot be mistaken for the leak.
+    #[test]
+    fn the_list_projection_carries_a_preview_not_the_body() {
+        let conn = db();
+        let body = format!("{}{}", "x".repeat(200), "BODY-MARKER".repeat(190_000));
+        assert!(body.len() > 2_000_000);
+        conn.execute(
+            "INSERT INTO notes (id, title, body, tags, pinned, updated_at)
+             VALUES ('n1', 'Runbook', ?1, 'ops, release', 1, '2026-01-01T00:00:00.000Z')",
+            params![&body],
+        )
+        .unwrap();
+
+        let summaries = all_note_summaries(&conn).unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].preview.chars().count(), 160);
+        assert_eq!(summaries[0].tags.as_deref(), Some("ops, release"));
+        assert!(summaries[0].pinned);
+
+        let payload = serde_json::to_string(&summaries).unwrap();
+        assert!(
+            !payload.contains("BODY-MARKER"),
+            "a 2MB body crossed the list projection: {} bytes",
+            payload.len()
+        );
+        assert!(
+            !payload.contains("\"body\""),
+            "the projection grew a body field: {payload}"
+        );
+        assert!(
+            payload.len() < 1024,
+            "the projection is {} bytes for a 2MB body",
+            payload.len()
+        );
+        let stored: i64 = conn
+            .query_row(
+                "SELECT LENGTH(body) FROM notes WHERE id = 'n1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            stored as usize,
+            body.len(),
+            "the body is still in the database; the projection only left it there"
+        );
+    }
+
+    /// Links are grouped by note in one pass. A note with no memories is
+    /// still listed, and one note's memories never cross into another's.
+    #[test]
+    fn the_list_read_keeps_each_notes_links_to_itself() {
+        let conn = db();
+        add_note(&conn, "n1", Some("One"), "2026-01-03T00:00:00.000Z");
+        add_note(&conn, "n2", Some("Two"), "2026-01-02T00:00:00.000Z");
+        add_note(&conn, "n3", Some("None"), "2026-01-01T00:00:00.000Z");
+        link(&conn, "m-1", "n1", "2026-01-01T00:00:01.000Z");
+        link(&conn, "m-2", "n2", "2026-01-01T00:00:02.000Z");
+        link(&conn, "m-3", "n2", "2026-01-01T00:00:03.000Z");
+
+        let rows = all_notes_with_links(&conn).unwrap();
+        let ids: Vec<&str> = rows.iter().map(|row| row.note.id.as_str()).collect();
+        assert_eq!(ids, ["n1", "n2", "n3"]);
+        assert_eq!(rows[0].linked_memories.len(), 1);
+        assert_eq!(rows[1].linked_memories.len(), 2);
+        assert_eq!(
+            rows[1].linked_memories[0].id, "m-3",
+            "newest first, as before"
+        );
+        assert!(
+            rows[2].linked_memories.is_empty(),
+            "a note with no memories still lists"
+        );
+    }
+
+    /// The editor's read is the only one that carries the body.
+    #[test]
+    fn get_note_returns_the_full_body_and_errors_for_a_missing_id() {
+        let conn = db();
+        add_full(
+            &conn,
+            "n1",
+            "Runbook",
+            "the whole body, not a preview",
+            Some("ops"),
+            "2026-01-01T00:00:00.000Z",
+        );
+
+        let note = note_by_id(&conn, "n1").unwrap();
+        assert_eq!(note.body, "the whole body, not a preview");
+        assert_eq!(note.title.as_deref(), Some("Runbook"));
+
+        let err = note_by_id(&conn, "ghost").unwrap_err();
+        assert!(
+            err.contains("ghost"),
+            "the error must name the id, got: {err}"
+        );
+    }
+
+    /// Search must stay a search: body terms still match, but the row it
+    /// returns is a summary.
+    #[test]
+    fn search_returns_summaries_with_a_preview() {
+        let conn = search_fixture();
+        let rows = search(&conn, "milk").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "n2");
+        assert_eq!(rows[0].preview, "milk and eggs");
     }
 
     fn search_fixture() -> Connection {

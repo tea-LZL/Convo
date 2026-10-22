@@ -164,6 +164,23 @@ export interface Note {
 }
 
 /**
+ * A note as the navigation list sees it: enough to render one row, without
+ * the body. The list can hold megabyte-sized notes, so the full text is a
+ * `getNote` away when the editor opens one.
+ */
+export interface NoteSummary {
+  id: string;
+  title: string | null;
+  preview: string;
+  tags: string | null;
+  source_session_id: string | null;
+  source_message_id: string | null;
+  created_at: string;
+  updated_at: string;
+  pinned: boolean;
+}
+
+/**
  * A memory a note produced. `source_note_id` on the memory is the only
  * record of the link, so this list is a query result: a deleted memory
  * disappears from it rather than leaving a dangling id. Superseded rows
@@ -177,8 +194,8 @@ export interface NoteLink {
   superseded_by: string | null;
 }
 
-export interface NoteWithLinks {
-  note: Note;
+export interface NoteSummaryWithLinks {
+  note: NoteSummary;
   linked_memories: NoteLink[];
 }
 
@@ -558,11 +575,14 @@ export const api = {
   deleteTheme: (id: string) => invoke<void>("delete_theme", { id }),
 
   // Notes
-  listNotes: () => invoke<NoteWithLinks[]>("list_notes"),
-  // Ids and titles, not notes. `list_notes` sends every body in the library,
-  // which is megabytes of pasted text for a caller that reads two short
-  // strings per row.
+  // Summaries, not notes: a body is free text, so the list carries a
+  // `preview` and the editor fetches the full note with `getNote` when one
+  // is opened.
+  listNotes: () => invoke<NoteSummaryWithLinks[]>("list_notes"),  // Ids and titles, not summaries. The Memory tab only labels the memories a
+  // note produced; it needs neither previews nor links, and this predates
+  // the list's preview projection.
   listNoteTitles: () => invoke<NoteTitle[]>("list_note_titles"),
+  getNote: (id: string) => invoke<Note>("get_note", { id }),
   upsertNote: (note: Partial<Note> & { body: string }) => invoke<string>("upsert_note", {
     note: {
       id: note.id ?? null,
@@ -578,7 +598,7 @@ export const api = {
     },
   }),
   deleteNote: (id: string) => invoke<void>("delete_note", { id }),
-  searchNotes: (query: string) => invoke<Note[]>("search_notes", { query }),
+  searchNotes: (query: string) => invoke<NoteSummary[]>("search_notes", { query }),
   setNotePinned: (id: string, pinned: boolean) => invoke<void>("set_note_pinned", { id, pinned }),
   unlinkMemoryFromNote: (noteId: string, memoryId: string) =>
     invoke<void>("unlink_memory_from_note", { noteId, memoryId }),

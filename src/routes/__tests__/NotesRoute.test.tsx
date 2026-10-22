@@ -7,7 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 import postcss from "postcss";
 import tailwindcss from "tailwindcss";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { api, Note, NoteWithLinks } from "../../lib/api";
+import { api, Note, NoteSummary, NoteSummaryWithLinks } from "../../lib/api";
 import { NoteDraft, notesDraftKey } from "../../lib/notesDraft";
 import { ChatInput } from "../../components/chat/ChatInput";
 import { NotesRoute } from "../NotesRoute";
@@ -252,12 +252,25 @@ const note: Note = {
 
 // list_notes answers with the note plus the memories it produced; the route
 // unwraps the note out of that envelope.
-const linked = (n: Note): NoteWithLinks => ({ note: n, linked_memories: [] });
+const summaryOf = (n: Note): NoteSummary => ({
+  id: n.id,
+  title: n.title,
+  preview: n.body.slice(0, 160),
+  tags: n.tags,
+  source_session_id: n.source_session_id,
+  source_message_id: n.source_message_id,
+  created_at: n.created_at,
+  updated_at: n.updated_at,
+  pinned: n.pinned,
+});
+
+const linked = (n: Note): NoteSummaryWithLinks => ({ note: summaryOf(n), linked_memories: [] });
 
 describe("NotesRoute command contract", () => {
   beforeEach(() => {
     vi.spyOn(api, "listNotes").mockResolvedValue([]);
-    vi.spyOn(api, "searchNotes").mockResolvedValue([note]);
+    vi.spyOn(api, "searchNotes").mockResolvedValue([summaryOf(note)]);
+    vi.spyOn(api, "getNote").mockResolvedValue(note);
   });
 
   it("uses the registered search_notes command for note search", async () => {
@@ -307,6 +320,7 @@ describe("NotesRoute pinning and provenance", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.spyOn(api, "searchNotes").mockResolvedValue([]);
+    vi.spyOn(api, "getNote").mockResolvedValue(note);
     vi.spyOn(api, "upsertNote").mockResolvedValue("note-1");
     vi.spyOn(api, "setNotePinned").mockResolvedValue(undefined);
     vi.spyOn(api, "unlinkMemoryFromNote").mockResolvedValue(undefined);
@@ -315,7 +329,7 @@ describe("NotesRoute pinning and provenance", () => {
   it("pins through set_note_pinned and shows the new state", async () => {
     let pinned = false;
     vi.spyOn(api, "listNotes").mockImplementation(async () => [
-      { note: { ...note, pinned }, linked_memories: [] },
+      { note: summaryOf({ ...note, pinned }), linked_memories: [] },
     ]);
     vi.spyOn(api, "setNotePinned").mockImplementation(async (_id, next) => { pinned = next; });
 
@@ -355,7 +369,7 @@ describe("NotesRoute pinning and provenance", () => {
       { id: "m-2", title: "Deploy window", content: "Ships land any time on Fridays.", is_enabled: true, superseded_by: "m-1" },
       { id: "m-3", title: "Release checklist", content: "Tag, changelog, announce.", is_enabled: false, superseded_by: null },
     ];
-    vi.spyOn(api, "listNotes").mockResolvedValue([{ note, linked_memories: links }]);
+    vi.spyOn(api, "listNotes").mockResolvedValue([{ note: summaryOf(note), linked_memories: links }]);
 
     render(
       <MemoryRouter>
@@ -376,7 +390,7 @@ describe("NotesRoute pinning and provenance", () => {
   });
 
   it("claims nothing about provenance when the row came from search", async () => {
-    vi.spyOn(api, "searchNotes").mockResolvedValue([note]);
+    vi.spyOn(api, "searchNotes").mockResolvedValue([summaryOf(note)]);
     vi.spyOn(api, "listNotes").mockResolvedValue([]);
 
     render(
@@ -454,10 +468,19 @@ describe("NotesRoute draft safety", () => {
   });
 
   it("saves the draft before creating a note", async () => {
-    let created = false;
+    let didCreate = false;
+    const created: Note = { ...note, id: "note-3", title: null, body: "", tags: null };
+    vi.mocked(api.listNotes).mockImplementation(async () =>
+      [linked(note), linked(secondNote), linked(created)],
+    );
+    vi.mocked(api.getNote).mockImplementation(async (id) => {
+      if (id === "note-3") return created;
+      if (id === "note-2") return secondNote;
+      return note;
+    });
     vi.mocked(api.upsertNote).mockImplementation(async (input) => {
       if (input.body === "") {
-        created = true;
+        didCreate = true;
         return "note-3";
       }
       return "note-1";
@@ -469,7 +492,7 @@ describe("NotesRoute draft safety", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "New" }));
 
-    await waitFor(() => expect(created).toBe(true));
+    await waitFor(() => expect(didCreate).toBe(true));
     const calls = vi.mocked(api.upsertNote).mock.calls;
     expect(calls).toHaveLength(2);
     // The draft is written first, to the note it belongs to. Creating an
@@ -528,8 +551,13 @@ describe("NotesRoute draft safety", () => {
   it("opens the next note after deleting the open one", async () => {
     let current = [note, secondNote];
     vi.mocked(api.listNotes).mockImplementation(async () =>
-      current.map((n) => ({ note: n, linked_memories: [] })),
+      current.map((n) => ({ note: summaryOf(n), linked_memories: [] })),
     );
+    vi.mocked(api.getNote).mockImplementation(async (id) => {
+      const found = current.find((n) => n.id === id);
+      if (!found) throw new Error(`no note with id ${id}`);
+      return found;
+    });
     vi.mocked(api.deleteNote).mockImplementation(async (id) => {
       current = current.filter((n) => n.id !== id);
     });
@@ -582,7 +610,7 @@ describe("NotesRoute search behaviour", () => {
   beforeEach(() => serveLinked([note, secondNote]));
 
   it("keeps the open note in the editor when a search excludes it", async () => {
-    vi.mocked(api.searchNotes).mockResolvedValue([secondNote]);
+    vi.mocked(api.searchNotes).mockResolvedValue([summaryOf(secondNote)]);
     const { container } = renderNotes();
     await screen.findByDisplayValue("Provider setup");
 
@@ -613,8 +641,8 @@ describe("NotesRoute search behaviour", () => {
   });
 
   it("drops a slow response when a newer search has already landed", async () => {
-    let resolveOld!: (rows: Note[]) => void;
-    let resolveNew!: (rows: Note[]) => void;
+    let resolveOld!: (rows: NoteSummary[]) => void;
+    let resolveNew!: (rows: NoteSummary[]) => void;
     vi.mocked(api.searchNotes)
       .mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve; }))
       .mockImplementationOnce(() => new Promise((resolve) => { resolveNew = resolve; }));
@@ -628,9 +656,9 @@ describe("NotesRoute search behaviour", () => {
     fireEvent.change(search, { target: { value: "new" } });
     await waitFor(() => expect(api.searchNotes).toHaveBeenCalledTimes(2), { timeout: 1500 });
 
-    resolveNew([secondNote]);
+    resolveNew([summaryOf(secondNote)]);
     await waitFor(() => expect(noteRow(container, "Roadmap")).toBeTruthy());
-    resolveOld([note]);
+    resolveOld([summaryOf(note)]);
     await new Promise((resolve) => setTimeout(resolve, 30));
 
     // The old query's answer arrived last; the list still shows the new
@@ -739,7 +767,7 @@ describe("NotesRoute draft recovery", () => {
 
     // A search is a narrowed view of the library, not the library. It must
     // not be treated as proof the other notes, and their drafts, are gone.
-    vi.mocked(api.searchNotes).mockResolvedValue([note]);
+    vi.mocked(api.searchNotes).mockResolvedValue([summaryOf(note)]);
     fireEvent.change(screen.getByRole("textbox", { name: "Search notes" }), {
       target: { value: "release" },
     });
@@ -760,6 +788,63 @@ describe("NotesRoute draft recovery", () => {
     expect(raw, "the next launch must be able to recover it").toBeTruthy();
     expect(JSON.parse(raw!)).toMatchObject({ noteId: "note-1", body: "Closed the window" });
     expect(event.defaultPrevented).toBe(true);
+  });
+});
+
+describe("NotesRoute lazy bodies", () => {
+  beforeEach(() => serveLinked([note, secondNote]));
+
+  it("renders the list from previews and fetches only the open note's body", async () => {
+    const { container } = renderNotes();
+    expect(await screen.findByDisplayValue("Provider setup")).toBeInTheDocument();
+
+    const list = container.querySelector("aside ul") as HTMLElement;
+    expect(within(list).getByText("Provider setup")).toBeInTheDocument();
+    // One note open, one body fetched. A list refresh must not read every
+    // body again.
+    expect(api.getNote).toHaveBeenCalledTimes(1);
+    expect(api.getNote).toHaveBeenCalledWith("note-1");
+  });
+
+  it("fetches the body when a search result is opened", async () => {
+    vi.mocked(api.searchNotes).mockResolvedValue([summaryOf(secondNote)]);
+    const { container } = renderNotes();
+    await screen.findByDisplayValue("Provider setup");
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Search notes" }), {
+      target: { value: "road" },
+    });
+    await waitFor(() => expect(api.searchNotes).toHaveBeenCalledWith("road"));
+    fireEvent.click(await noteRow(container, "Roadmap"));
+
+    expect(await screen.findByDisplayValue("What is next")).toBeInTheDocument();
+    expect(api.getNote).toHaveBeenCalledWith("note-2");
+  });
+
+  it("ignores a slow open when a newer row was clicked", async () => {
+    const third: Note = { ...note, id: "note-3", title: "Third", body: "Third body" };
+    const all = [note, secondNote, third];
+    serveLinked(all);
+    let release!: (n: Note) => void;
+    vi.mocked(api.getNote).mockImplementation((id) => {
+      if (id === "note-2") return new Promise((resolve) => { release = resolve; });
+      return Promise.resolve(all.find((n) => n.id === id)!);
+    });
+
+    const { container } = renderNotes();
+    await screen.findByDisplayValue("Provider setup");
+
+    fireEvent.click(await noteRow(container, "Roadmap"));
+    fireEvent.click(await noteRow(container, "Third"));
+    expect(await screen.findByDisplayValue("Third body")).toBeInTheDocument();
+
+    release(secondNote);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // The first click's body arrived last; the newer selection owns the
+    // editor and the old fetch must not paint over it.
+    expect(screen.getByDisplayValue("Third body")).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("What is next")).not.toBeInTheDocument();
   });
 });
 
@@ -813,8 +898,13 @@ const defaultLinks = [
 
 function serveLinked(notes: Note[], links = defaultLinks) {
   vi.spyOn(api, "listNotes").mockImplementation(async () =>
-    notes.map((n) => ({ note: n, linked_memories: n.id === notes[0]?.id ? links : [] })),
+    notes.map((n) => ({ note: summaryOf(n), linked_memories: n.id === notes[0]?.id ? links : [] })),
   );
+  vi.spyOn(api, "getNote").mockImplementation(async (id) => {
+    const found = notes.find((n) => n.id === id);
+    if (!found) throw new Error(`no note with id ${id}`);
+    return found;
+  });
   vi.spyOn(api, "searchNotes").mockResolvedValue([]);
   vi.spyOn(api, "upsertNote").mockResolvedValue("note-1");
   vi.spyOn(api, "setNotePinned").mockResolvedValue(undefined);

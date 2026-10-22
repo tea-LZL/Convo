@@ -3275,7 +3275,7 @@ fn a_pinned_note_reads_back_pinned_from_both_readers() {
     .unwrap();
     notes::set_pinned(&conn, "n1", true).unwrap();
 
-    let listed = notes::all_notes(&conn).unwrap();
+    let listed = notes::all_note_summaries(&conn).unwrap();
     assert_eq!(listed.len(), 1);
     assert!(listed[0].pinned);
 
@@ -3296,13 +3296,17 @@ fn a_note_without_a_title_still_reads_its_body() {
     )
     .unwrap();
 
-    let listed = notes::all_notes(&conn).unwrap();
+    let listed = notes::all_note_summaries(&conn).unwrap();
     assert_eq!(listed[0].title, None);
-    assert_eq!(listed[0].body, "untitled body");
+    assert_eq!(listed[0].preview, "untitled body");
+    assert_eq!(
+        notes::note_by_id(&conn, "n1").unwrap().body,
+        "untitled body"
+    );
 
     let found = notes::search(&conn, "untitled").unwrap();
     assert_eq!(found[0].title, None);
-    assert_eq!(found[0].body, "untitled body");
+    assert_eq!(found[0].preview, "untitled body");
 }
 
 /// `created_at` and `updated_at` are adjacent in the SELECT and both are
@@ -3324,14 +3328,19 @@ fn an_edited_note_reads_two_distinct_timestamps_in_order() {
     .unwrap();
 
     for read in [
-        notes::all_notes(&conn).unwrap(),
+        notes::all_note_summaries(&conn).unwrap(),
         notes::search(&conn, "draft").unwrap(),
     ] {
         assert_eq!(read[0].created_at, "2024-01-01T00:00:00.000Z");
         assert_eq!(read[0].updated_at, "2024-06-01T00:00:00.000Z");
         assert!(read[0].created_at < read[0].updated_at);
-        assert_eq!(read[0].body, "second draft");
+        assert_eq!(read[0].preview, "second draft");
     }
+    assert_eq!(
+        notes::note_by_id(&conn, "n1").unwrap().body,
+        "second draft",
+        "the full body still comes from the one reader that carries it"
+    );
 }
 
 /// `UPDATE` reports zero rows for an id that is not there. Reporting that as
@@ -3376,8 +3385,21 @@ fn unlinking_a_memory_through_the_wrong_note_changes_nothing() {
     .unwrap();
 
     notes::unlink(&conn, "n2", "m1").unwrap_err();
-    assert_eq!(notes::memories_for_note(&conn, "n1").unwrap().len(), 1);
-    assert!(notes::memories_for_note(&conn, "n2").unwrap().is_empty());
+    let rows = notes::all_notes_with_links(&conn).unwrap();
+    assert_eq!(
+        rows.iter()
+            .find(|row| row.note.id == "n1")
+            .unwrap()
+            .linked_memories
+            .len(),
+        1
+    );
+    assert!(rows
+        .iter()
+        .find(|row| row.note.id == "n2")
+        .unwrap()
+        .linked_memories
+        .is_empty());
 }
 
 /// A memory search with no kind filter is the shape the Memory tab uses, and

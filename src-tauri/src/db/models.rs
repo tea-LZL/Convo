@@ -111,11 +111,32 @@ pub struct NoteLink {
     pub superseded_by: Option<String>,
 }
 
-/// A note with the memories it produced. Provenance is derived, so the
-/// links cannot outlive a deleted memory the way a stored id list would.
+/// A note as the navigation list sees it.
+///
+/// The list exists to choose a note, not to read it, so the expensive
+/// column stays in the database: `preview` is the first 160 characters,
+/// enough for the row's one-line summary. The full body arrives from
+/// `get_note` when the editor opens that note. Keeping `body` out of the
+/// struct rather than empty means a future list read cannot start carrying
+/// megabytes again by accident.
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct NoteWithLinks {
-    pub note: Note,
+pub struct NoteSummary {
+    pub id: String,
+    pub title: Option<String>,
+    pub preview: String,
+    pub tags: Option<String>,
+    pub source_session_id: Option<String>,
+    pub source_message_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub pinned: bool,
+}
+
+/// A summary with the memories the note produced. Provenance is derived, so
+/// the links cannot outlive a deleted memory the way a stored id list would.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct NoteSummaryWithLinks {
+    pub note: NoteSummary,
     pub linked_memories: Vec<NoteLink>,
 }
 

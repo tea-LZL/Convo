@@ -50,7 +50,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { Plus, Trash2, Save, Search, StickyNote, Tag, MessageSquare, Pin, PinOff, Unlink } from "lucide-react";
-import { api, Note, NoteLink } from "../lib/api";
+import { api, Note, NoteLink, NoteSummary } from "../lib/api";
 import { clearNoteDraft, NoteDraft, readNoteDrafts, writeNoteDraft } from "../lib/notesDraft";
 import { Button } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
@@ -67,7 +67,7 @@ import { toast } from "../stores/toasts";
  * notes. `null` means "not loaded" and renders nothing; an empty array means
  * "loaded, and this note produced nothing", and those are different claims.
  */
-type NoteRow = { note: Note; links: NoteLink[] | null };
+type NoteRow = { note: NoteSummary; links: NoteLink[] | null };
 
 
 /**
@@ -147,6 +147,9 @@ export function NotesRoute() {
   const draftsRef = useRef<NoteDraft[]>(drafts);
   const draftTextRef = useRef({ title, body, tags });
   const hasLoadedRef = useRef(false);
+  // Opening a note is a fetch now, so two quick clicks can resolve out of
+  // order. Only the newest open may fill the editor.
+  const openRef = useRef(0);
 
   queryRef.current = query;
   dirtyRef.current = dirty;
@@ -168,6 +171,7 @@ export function NotesRoute() {
   };
 
   const closeNote = () => {
+    openRef.current += 1;
     activeIdRef.current = null;
     activeNoteRef.current = null;
     draftTextRef.current = { title: "", body: "", tags: "" };
@@ -178,6 +182,29 @@ export function NotesRoute() {
     setTags("");
     setDirty(false);
     dirtyRef.current = false;
+  };
+
+  /**
+   * Open a note by id, through the one read that carries its body.
+   *
+   * The list ships summaries, so every route into the editor — a row click,
+   * the first note after load, a recovered draft, the note after a delete —
+   * comes through here. The sequence drops a slow fetch if the user has
+   * clicked somewhere else since.
+   */
+  const openNoteById = async (id: string): Promise<boolean> => {
+    const request = ++openRef.current;
+    try {
+      const note = await api.getNote(id);
+      if (request !== openRef.current) return false;
+      openNote(note);
+      return true;
+    } catch (e) {
+      if (request !== openRef.current) return false;
+      setError(String(e));
+      toast.error(String(e), "Note could not be opened");
+      return false;
+    }
   };
 
   /**
@@ -252,11 +279,15 @@ export function NotesRoute() {
 
       const currentId = activeIdRef.current;
       if (currentId) {
-        // The open note is not always in this list (a search can exclude
-        // it), but when it is, the row is the newer copy: pin state, title
-        // and links all follow the backend.
+        // The list carries the newer metadata, not the body. Sync the pin
+        // so a pin set elsewhere is visible, but never overwrite the
+        // editor's text from a summary.
         const found = next.find((row) => row.note.id === currentId)?.note;
-        if (found) setActiveNote(found);
+        if (found) {
+          setActiveNote((current) =>
+            current && current.id === found.id ? { ...current, pinned: found.pinned } : current,
+          );
+        }
       } else if (next.length > 0) {
         // Coming back to the page, prefer the note that has something to
         // recover, so the banner is visible instead of waiting behind a row
@@ -264,7 +295,7 @@ export function NotesRoute() {
         const preferred = firstLoad
           ? next.find((row) => row.note.id === draftsRef.current[0]?.noteId)
           : undefined;
-        openNote((preferred ?? next[0]).note);
+        await openNoteById((preferred ?? next[0]).note.id);
       }
       return next;
     } catch (e) {
@@ -298,27 +329,14 @@ export function NotesRoute() {
       setQuery("");
       setTagFilter("");
       const id = await api.upsertNote({ body: "" });
-      const next = await refresh();
-      const created = next.find((row) => row.note.id === id)?.note;
-      if (created) {
-        openNote(created);
-      } else {
-        // A query cleared a moment ago may still have been in flight when
-        // this note was created. The record is known-good even when the
-        // list has not caught up, so open it rather than showing nothing.
-        const ts = new Date().toISOString();
-        openNote({
-          id,
-          title: null,
-          body: "",
-          tags: null,
-          source_session_id: null,
-          source_message_id: null,
-          created_at: ts,
-          updated_at: ts,
-          pinned: false,
-        });
-      }
+      // Clear the old editor and set the id provisionally, so the refresh
+      // does not auto-open some other note between the insert and this
+      // one's fetch. If the fetch fails, the editor is empty rather than
+      // showing a note the list no longer has selected.
+      closeNote();
+      activeIdRef.current = id;
+      await refresh();
+      await openNoteById(id);
       requestAnimationFrame(() => titleInputRef.current?.focus());
     } catch (e) {
       setError(String(e));
@@ -351,6 +369,13 @@ export function NotesRoute() {
       // the note's own key only; a pending draft for another note stays.
       clearNoteDraft(noteId);
       setDrafts((current) => current.filter((draft) => draft.noteId !== noteId));
+      // The editor's text is now the server's text. Keep the full note in
+      // hand for provenance; the refresh below only carries summaries.
+      setActiveNote((current) =>
+        current && current.id === noteId
+          ? { ...current, title: title || null, body, tags: normalizedTags || null }
+          : current,
+      );
       if (normalizedTags !== tags) setTags(normalizedTags);
       setDirty(false);
       dirtyRef.current = false;
@@ -478,7 +503,9 @@ export function NotesRoute() {
 
   const notes = rows.map((r) => r.note);
   const activeRow = rows.find((r) => r.note.id === activeId);
-  const active = activeRow?.note ?? activeNote;
+  // The editor is the full note fetched by `openNoteById`; a row is only a
+  // summary and may not even be in the current search results.
+  const active = activeNote;
   // One lookup while rendering, not a scan per linked row. `null` means
   // "this read did not carry links" (a search result) and renders nothing;
   // the retained note above is only for the editor itself.
@@ -573,10 +600,9 @@ export function NotesRoute() {
                           return;
                         }
                         if (dirty && !(await save())) return;
-                        // Saving the open note cannot change the text of
-                        // the note being opened, so the row's snapshot is
-                        // still the right content to populate from.
-                        openNote(n);
+                        // The list row is a summary; the editor needs the
+                        // body from the one read that carries it.
+                        await openNoteById(n.id);
                       }}
                       // `aria-pressed` rather than a colour alone: the rows
                       // are a one-of-a-many selection, and this is the same
@@ -596,7 +622,7 @@ export function NotesRoute() {
                         {n.pinned && <Pin size={9} aria-hidden="true" className="text-accent shrink-0" />}
                         <span className={`font-medium truncate ${isActive ? "text-accent" : "text-text"}`}>{n.title || "Untitled"}</span>
                       </span>
-                      <span className="text-text-subtle text-[10px] truncate">{n.body.slice(0, 60) || "(empty)"}</span>
+                      <span className="text-text-subtle text-[10px] truncate">{n.preview.slice(0, 60) || "(empty)"}</span>
                       {(nt.length > 0 || n.source_session_id || hasDraft) && (
                         <span className="flex flex-wrap items-center gap-1 mt-1">
                           {n.source_session_id && <MessageSquare size={9} aria-hidden="true" className="text-text-subtle" />}
