@@ -12,6 +12,7 @@ fn row(owner_type: &str, owner_id: &str, label: &str, text: &str) -> ContextRow 
         owner_type: owner_type.into(),
         owner_id: owner_id.into(),
         label: label.into(),
+        title: Some(format!("{owner_id} title")),
         text: text.into(),
         reason: Some(format!("keyword match on {owner_id}")),
     }
@@ -947,8 +948,14 @@ async fn no_embedding_route_at_all_still_injects_pinned_and_recalled_rows() {
     assert_eq!(note.owner_type, "note");
     assert_eq!(note.owner_id, "n1");
     assert_eq!(note.reason, None, "a pinned row has no retrieval reason");
+    assert_eq!(
+        note.title.as_deref(),
+        Some("Runbook"),
+        "the label names the kind, so the title is the only thing that names the row"
+    );
     let memory = plan.used.last().expect("the retrieved memory comes second");
     assert_eq!(memory.owner_id, "m1");
+    assert_eq!(memory.title.as_deref(), Some("Database"));
     assert!(
         memory
             .reason
@@ -956,6 +963,68 @@ async fn no_embedding_route_at_all_still_injects_pinned_and_recalled_rows() {
             .is_some_and(|r| r.contains("keyword")),
         "the retrieved row must say why it was recalled: {:?}",
         memory.reason
+    );
+}
+
+/// The recall scope is a setting, and it has to reach the send path. Without
+/// this, `memory.recall_kinds` would be a control that writes a row nothing
+/// reads — the exact defect the Knowledge section exists to stop.
+#[tokio::test]
+async fn the_recall_kind_scope_decides_what_the_send_can_inject() {
+    let seed = |pool: &std::sync::Arc<crate::db::DbPool>, scope: Option<&str>| {
+        let conn = pool.get().unwrap();
+        conn.execute("INSERT INTO sessions (id, title) VALUES ('s1','S')", [])
+            .unwrap();
+        add_memory(
+            &conn,
+            "pref",
+            "user_pref",
+            "Editor",
+            "the user edits in Neovim",
+        );
+        add_memory(&conn, "fact", "skill", "Deploy", "ship on Friday morning");
+        if let Some(scope) = scope {
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES ('memory.recall_kinds', ?1)",
+                rusqlite::params![scope],
+            )
+            .unwrap();
+        }
+    };
+
+    let unrestricted = migrated_pool();
+    seed(&unrestricted, None);
+    let plan = plan_send(
+        &unrestricted,
+        "s1",
+        "what do I edit in and when do I ship",
+        "m",
+        None,
+    )
+    .await;
+    let kinds: Vec<&str> = plan.used.iter().map(|row| row.label.as_str()).collect();
+    assert!(
+        plan.used.iter().any(|row| row.owner_id == "fact"),
+        "no scope means every kind: {kinds:?}"
+    );
+
+    let scoped = migrated_pool();
+    seed(&scoped, Some(r#"["user_pref"]"#));
+    let plan = plan_send(
+        &scoped,
+        "s1",
+        "what do I edit in and when do I ship",
+        "m",
+        None,
+    )
+    .await;
+    assert!(
+        plan.used.iter().all(|row| row.owner_id != "fact"),
+        "a skill reached a send scoped to user preferences"
+    );
+    assert!(
+        plan.used.iter().any(|row| row.owner_id == "pref"),
+        "the scope excluded the kind it admitted"
     );
 }
 

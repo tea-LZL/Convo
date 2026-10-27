@@ -30,8 +30,9 @@ A memory-first chat client for Ollama — local and cloud — wrapped in a self-
 
 ### Memory & skills
 - **Categorized memory items** (user preferences, project facts, skills) with two independent switches: *enabled* means eligible for retrieval, *pinned* means injected on every send regardless of retrieval.
-- **Hybrid recall** — BM25 and embedding routes over memory and notes, fused by reciprocal rank, trimmed to a token budget, all in Rust. Recall never fails a send: no embedder, no vectors, or a dimension mismatch degrades to keyword-only.
-- **Why recalled** — every injected item reports the route that found it and the terms that matched, and each answer carries the list of what it used: `messages.memory_used` holds a provenance snapshot (id, label, reason) so the disclosure survives a reload without duplicating memory bodies into the transcript.
+- **Hybrid recall** — BM25 and embedding routes over memory and notes, each contributing a fixed candidate depth, fused by reciprocal rank, trimmed to a token budget, all in Rust. Recall never fails a send: no embedder, no vectors, or a dimension mismatch degrades to keyword-only.
+- **Recall scope** — which kinds of memory a send may pull in is a setting (`memory.recall_kinds`), consumed on the send path. Pinned items are injected whatever the scope says, and an empty or unreadable scope means every kind rather than none.
+- **Why recalled** — every injected item reports the route that found it and the terms that matched, and each answer carries the list of what it used: `messages.memory_used` holds a provenance snapshot (id, label, title, reason) so the disclosure survives a reload — and still names a memory that has since been deleted — without duplicating memory bodies into the transcript.
 - **Extraction and revision** — facts are pulled from settled turns on a watermark, judged against what is already stored, and merged, reinforced, or superseded. Confident revisions apply themselves; genuine ambiguities land in the review inbox.
 - **FTS5 search** with snippet highlighting across memory and messages.
 - Tags per item, and bidirectional links between a memory and the note that came from it.

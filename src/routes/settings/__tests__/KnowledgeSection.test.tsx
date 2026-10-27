@@ -6,6 +6,7 @@ import {
   effectiveAutoExtract,
   effectiveBudgetFraction,
   effectiveExtractEvery,
+  effectiveRecallKinds,
   effectiveRecencyHalfLife,
   effectiveTopK,
   parseRoutingRow,
@@ -91,6 +92,24 @@ describe("KnowledgeSection — the fallbacks are the backend's, not the UI's", (
     expect(effectiveExtractEvery("10")).toBe(10);
   });
 
+  it("reads the recall scope exactly where the Rust reader does", () => {
+    const all = ["user_pref", "project_fact", "decision", "constraint", "skill", "entity"];
+    // Absent, empty, unparseable, and "nothing recognised" all mean every
+    // kind: an empty scope honoured literally would disable recall.
+    expect(effectiveRecallKinds(null)).toEqual(all);
+    expect(effectiveRecallKinds("[]")).toEqual(all);
+    expect(effectiveRecallKinds("not json")).toEqual(all);
+    expect(effectiveRecallKinds('{"kind":"skill"}')).toEqual(all);
+    expect(effectiveRecallKinds('["nonsense"]')).toEqual(all);
+    expect(effectiveRecallKinds('["skill"]')).toEqual(["skill"]);
+    // One unknown kind costs that kind, not the filter, and the order is the
+    // list's, so two reads of the same row produce the same string.
+    expect(effectiveRecallKinds('["skill","nonsense","user_pref"]')).toEqual([
+      "user_pref",
+      "skill",
+    ]);
+  });
+
   it("treats anything but the literal false as auto-extract on", () => {
     expect(effectiveAutoExtract(null)).toBe(true);
     expect(effectiveAutoExtract("")).toBe(true);
@@ -171,6 +190,7 @@ describe("KnowledgeSection — rendering", () => {
       "memory.context_budget_fraction",
       "memory.embed_all_notes",
       "memory.extract_every_n_exchanges",
+      "memory.recall_kinds",
       "memory.recency_half_life_days",
       "memory.routing",
       "memory.top_k",
@@ -269,6 +289,38 @@ describe("KnowledgeSection — writing", () => {
     await waitFor(() =>
       expect(api.setSetting).toHaveBeenCalledWith("memory.recency_half_life_days", "7"),
     );
+  });
+
+  it("writes the recall scope as a JSON array, and refuses to store an empty one", async () => {
+    stubReads({ "memory.recall_kinds": '["user_pref","project_fact","skill"]' });
+    vi.spyOn(api, "listProviders").mockResolvedValue(PROVIDERS);
+    setSetting();
+
+    render(<KnowledgeSection />);
+
+    const skills = await screen.findByRole("switch", { name: "Skills" });
+    expect(skills).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("switch", { name: "Decisions" })).toHaveAttribute(
+      "aria-checked",
+      "false",
+    );
+
+    fireEvent.click(skills);
+    await waitFor(() =>
+      expect(api.setSetting).toHaveBeenCalledWith(
+        "memory.recall_kinds",
+        '["user_pref","project_fact"]',
+      ),
+    );
+
+    // Clearing the last kind would store `[]`, which the reader treats as
+    // "every kind" — the opposite of what the user just asked for.
+    fireEvent.click(screen.getByRole("switch", { name: "Preferences" }));
+    await waitFor(() => expect(api.setSetting).toHaveBeenCalledTimes(2));
+    vi.mocked(api.setSetting).mockClear();
+    fireEvent.click(screen.getByRole("switch", { name: "Project facts" }));
+    expect(api.setSetting).not.toHaveBeenCalled();
+    expect(screen.getByText(/at least one kind/i)).toBeInTheDocument();
   });
 
   it("toggles auto-extract straight through, in both directions", async () => {

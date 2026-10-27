@@ -59,12 +59,14 @@ const SNAPSHOT = JSON.stringify([
     ownerType: "note",
     ownerId: "n1",
     label: "Pinned note",
+    title: "Release runbook",
     reason: null,
   },
   {
     ownerType: "memory",
     ownerId: "m1",
     label: "Project facts",
+    title: "Database",
     reason: "keyword match on postgres",
   },
 ]);
@@ -72,11 +74,12 @@ const SNAPSHOT = JSON.stringify([
 describe("parseMemoryUsed", () => {
   it("reads what Rust wrote, and calls a missing reason what it is", () => {
     expect(parseMemoryUsed(SNAPSHOT)).toEqual([
-      { ownerType: "note", ownerId: "n1", label: "Pinned note", reason: null },
+      { ownerType: "note", ownerId: "n1", label: "Pinned note", title: "Release runbook", reason: null },
       {
         ownerType: "memory",
         ownerId: "m1",
         label: "Project facts",
+        title: "Database",
         reason: "keyword match on postgres",
       },
     ]);
@@ -93,7 +96,7 @@ describe("parseMemoryUsed", () => {
     expect(parseMemoryUsed("[null, 3, {\"ownerType\":\"memory\"}]")).toEqual([]);
     expect(
       parseMemoryUsed('[{"ownerType":"memory","ownerId":"m1","label":"L","reason":7}]'),
-    ).toEqual([{ ownerType: "memory", ownerId: "m1", label: "L", reason: null }]);
+    ).toEqual([{ ownerType: "memory", ownerId: "m1", label: "L", title: null, reason: null }]);
   });
 });
 
@@ -107,8 +110,11 @@ describe("a message shows what it was sent with", () => {
     renderList();
 
     expect(screen.getByText("2 memories used")).toBeInTheDocument();
-    expect(screen.getByText("Pinned note")).toBeInTheDocument();
-    expect(screen.getByText("Project facts")).toBeInTheDocument();
+    // The row's name, not its kind group: "Project facts" names six memories
+    // and none of them, which is the difference between a list a user can
+    // audit and a list they have to take on faith.
+    expect(screen.getByText("Release runbook")).toBeInTheDocument();
+    expect(screen.getByText("Database")).toBeInTheDocument();
     // A pinned row was not retrieved, so it must not claim a reason.
     expect(screen.getByText("— pinned")).toBeInTheDocument();
     expect(screen.getByText("— keyword match on postgres")).toBeInTheDocument();

@@ -361,7 +361,7 @@ Every phase ends with `npm run typecheck`, `npm run test:run` (≥ 252 + new), `
 - [x] Create `realignment` branch from `main`; leave `main` untouched
 - [x] Write this spec + generated todos to `docs/superpowers/specs/`
 - [x] Mark the 2026-08-30 hermes plan superseded; archive, do not delete
-- [x] Reconcile the test count in `AGENTS.md` (107 → 252) and `README.md` roadmap claims (re-reconciled 2026-10-28 at 869/312)
+- [x] Reconcile the test count in `AGENTS.md` (107 → 252) and `README.md` roadmap claims (re-reconciled 2026-10-28 at 871/318)
 - [x] Add `docs/GOALS.md` as the canonical product statement
 - [x] **Gate:** baseline suite green on the branch before any rewrite begins
 
@@ -500,13 +500,13 @@ separately because confusing the two fails silently.
 - [x] Chat: `/remember` slash command (sidebar `StatusCard` and Memory `IndexStatusBanner` carry the semantic-recall state)
 - [x] Chat: per-message "memory used" — `chat-recall` event + `messages.memory_used` (V013). Storage decision taken: provenance only (id, label, reason), because the body already lives in `memory_items`/`notes` and copying it into every transcript row multiplies private text and stales against the Memory tab.
 - [x] Settings: new Knowledge section (`memory.top_k`, `memory.context_budget_fraction`, `memory.auto_extract`, `memory.embed_all_notes`, `memory.routing`)
-- [x] Settings: `memory.extract_every_n_exchanges` and `memory.recency_half_life_days` (readers in `memory/config.rs`, controls in the Knowledge section), plus the Memory kind filter persisted as `memory.kind_filter`
+- [x] Settings: `memory.extract_every_n_exchanges`, `memory.recency_half_life_days`, and the recall scope `memory.recall_kinds` (readers in `memory/config.rs`, controls in the Knowledge section; the scope reaches `chat_stream`'s `RecallOptions.kinds`, which was hardcoded to `None`). The Memory tab's own filter is separately persisted as `memory.kind_filter` — a view preference, not the scope.
 - [x] Route + a11y tests for every changed surface
 - [x] **Gate:** route smoke tests, a11y sweeps, responsive pass
 
 ### Phase 9 — Release gates
-- [x] Full suite ≥ 252 + all new tests, 0 failures — 869 frontend (63 files), 0 failures; `typecheck` and `build` clean
-- [x] `cargo fmt`, `cargo clippy -D warnings`, `cargo test` — clean; 312 passing, 1 ignored (the release-only latency gate)
+- [x] Full suite ≥ 252 + all new tests, 0 failures — 871 frontend (63 files), 0 failures; `typecheck` and `build` clean
+- [x] `cargo fmt`, `cargo clippy -D warnings`, `cargo test` — clean; 318 passing, 1 ignored (the release-only latency gate)
 - [x] Performance: 60fps tail (`streamPerformance.test.tsx`); recall p95 at 5,000 items measured 27.1ms both-routes / 16.2ms vector-only / 9.5ms keyword-only against a 50ms budget (`recall_latency_p95_over_five_thousand_items`)
 - [ ] Fresh-install and upgrade smoke on a populated DB — **manual, no evidence yet.** The migration chain itself has been applied to a copy of a populated 44-session / 121-message database with no row loss, but that is not an install or an upgrade through the packaged app
 - [x] Update `docs/GOALS.md`, `README.md`, `AGENTS.md`, `docs/KNOWN_LIMITATIONS.md` to the new truth

@@ -4,7 +4,7 @@
 
 - Without a configured embedding model, embeddings for the corpus, or a vector whose dimension matches the stored one, recall silently degrades to keyword-only. The sidebar status card and the Memory index banner carry that state; the chat prompt does not announce it.
 - The review inbox lists pending and failed extraction rounds with the candidate facts; it does not yet render the proposed diff or the revision verdict side by side.
-- Recall latency is measured by an ignored release-mode test (`recall_latency_p95_over_five_thousand_items`): p95 at 5,000 items is 27.1ms for the both-routes arm, 16.2ms vector-only, 9.5ms keyword-only, against a 50ms budget. It is a `--ignored` test because an unoptimised build's timings say nothing; it is not part of the default suite.
+- Recall latency is measured by an ignored release-mode test (`recall_latency_p95_over_five_thousand_items`): p95 at 5,000 items is 27.0ms for the both-routes arm, 16.6ms vector-only, 11.6ms keyword-only, against a 50ms budget. It is a `--ignored` test because an unoptimised build's timings say nothing; it is not part of the default suite.
 
 ## Accessibility
 

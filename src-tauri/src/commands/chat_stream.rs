@@ -148,8 +148,12 @@ fn persist_assistant(pool: &DbPool, session_id: &str, turn: AssistantTurn<'_>) {
 pub struct UsedRow {
     pub owner_type: String,
     pub owner_id: String,
-    /// The heading the prompt grouped the row under.
+    /// The heading the prompt grouped the row under — the kind, not the row.
     pub label: String,
+    /// The row's own name. Without it the list says "Project facts" and
+    /// cannot say which fact, and a memory deleted since the send would be
+    /// unlabelable.
+    pub title: Option<String>,
     /// `None` for a pinned row or a session note: it is in the block because
     /// of what it is, not because it ranked.
     pub reason: Option<String>,
@@ -251,9 +255,9 @@ async fn recall_rows(
             session_id: Some(session_id),
             embedding_model: None,
             embedding_dim: None,
-            // `None` means every kind, which is what recall should do. An
-            // empty `Some` would filter everything out.
-            kinds: None,
+            // The user's recall scope. `None` — every kind — for an absent,
+            // empty, or unreadable row; see `config::recall_kinds`.
+            kinds: config::recall_kinds(&conn),
             // No floor of our own: `config::top_k` rejects anything below 1
             // already, and a second copy of that rule in a command file is
             // the same number in two places — one of which nobody will
@@ -296,6 +300,7 @@ async fn recall_rows(
             // is not a heading, and a label this build has never seen is
             // still a fact worth telling the model about.
             label: context::label_for_kind(&h.kind),
+            title: h.title.clone(),
             // Title and content together, the same shape
             // `index::embeddable_text` embeds. A row whose embedded form
             // carried the title should not reach the model without it.
@@ -422,6 +427,7 @@ pub async fn plan_send(
                 owner_type: row.owner_type.clone(),
                 owner_id: row.owner_id.clone(),
                 label: row.label.clone(),
+                title: row.title.clone(),
                 reason: row.reason.clone(),
             })
             .collect(),
@@ -778,7 +784,7 @@ pub fn cancel_chat_v2(
 
 #[cfg(test)]
 mod tests {
-    use super::{ChatChunkEvent, ChatDoneEvent};
+    use super::{ChatChunkEvent, ChatDoneEvent, UsedRow};
 
     #[test]
     fn stream_events_always_carry_generation_and_message_identity() {
@@ -803,5 +809,63 @@ mod tests {
         .unwrap();
         assert_eq!(done["conversation_id"], "session-1");
         assert!(done.get("stream_id").is_some());
+    }
+
+    /// The provenance row is a cross-boundary contract: Rust writes it into
+    /// the event and the message, and the frontend reads camelCase keys. A
+    /// rename here does not fail anything — `parseMemoryUsed` drops what it
+    /// cannot read and the feature simply disappears, with green suites.
+    #[test]
+    fn the_recall_snapshot_serialises_to_the_keys_the_frontend_reads() {
+        let value = serde_json::to_value(UsedRow {
+            owner_type: "memory".into(),
+            owner_id: "m1".into(),
+            label: "Project facts".into(),
+            title: Some("Database".into()),
+            reason: Some("keyword match on postgres".into()),
+        })
+        .unwrap();
+
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "ownerType": "memory",
+                "ownerId": "m1",
+                "label": "Project facts",
+                "title": "Database",
+                "reason": "keyword match on postgres",
+            })
+        );
+    }
+
+    /// The event name is a string in two languages with no compiler between
+    /// them. The frontend half is pinned behaviourally (its listener test
+    /// emits `chat-recall`); this pins the Rust half against that same
+    /// literal, because a rename would otherwise be silent in both suites.
+    #[test]
+    fn the_recall_event_name_matches_the_frontend_listener() {
+        let frontend = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/stores/chatStream.ts"
+        ))
+        .expect("the store that listens for chat-recall");
+
+        assert!(
+            frontend.contains(r#""chat-recall""#),
+            "the frontend no longer listens for chat-recall"
+        );
+        assert!(
+            frontend.contains("rows: unknown"),
+            "the frontend's chat-recall payload no longer carries rows"
+        );
+        assert!(
+            std::fs::read_to_string(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/commands/chat_stream.rs"
+            ))
+            .unwrap()
+            .contains(r#""chat-recall""#),
+            "Rust no longer emits chat-recall"
+        );
     }
 }

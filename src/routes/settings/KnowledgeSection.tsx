@@ -17,6 +17,7 @@ const ROUTING_KEY = "memory.routing";
 const EMBED_NOTES_KEY = "memory.embed_all_notes";
 const RECENCY_KEY = "memory.recency_half_life_days";
 const EXTRACT_EVERY_KEY = "memory.extract_every_n_exchanges";
+const RECALL_KINDS_KEY = "memory.recall_kinds";
 
 // `memory.embed_all_notes` is now wired: the Build-index action below passes
 // its value as `memory_index_fill`'s `embedNotes` argument, and
@@ -33,6 +34,21 @@ const BUDGET_DEFAULT = 0.15;
 const RECENCY_DEFAULT = 30;
 /** config::EXTRACT_EVERY_N_EXCHANGES */
 const EXTRACT_EVERY_DEFAULT = 1;
+
+/**
+ * `extract::KINDS`, with the names the Memory tab already uses. The list is
+ * duplicated here because the alternative is a Tauri command that exists
+ * only to return six short strings; the fallback tests and the reader's own
+ * filter are what keep the two lists agreeing.
+ */
+const RECALL_KINDS = [
+  { id: "user_pref", label: "Preferences" },
+  { id: "project_fact", label: "Project facts" },
+  { id: "decision", label: "Decisions" },
+  { id: "constraint", label: "Constraints" },
+  { id: "skill", label: "Skills" },
+  { id: "entity", label: "Entities" },
+] as const;
 
 const ROUTE = "/settings/knowledge";
 
@@ -138,6 +154,28 @@ function acceptsExtractEvery(raw: string): boolean {
   return INTEGER.test(raw) && effectiveExtractEvery(raw) === Number.parseInt(raw, 10);
 }
 
+/**
+ * Effective `memory.recall_kinds`: the kinds `config::recall_kinds` would
+ * admit.
+ *
+ * Every kind on an absent row, on an empty array, on a non-array, and when
+ * no recognised kind survives — the reader's contract, because an empty
+ * scope honoured literally would silently disable recall.
+ */
+export function effectiveRecallKinds(raw: string | null): string[] {
+  const all = RECALL_KINDS.map((kind) => kind.id);
+  if (!raw) return all;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return all;
+  }
+  if (!Array.isArray(parsed)) return all;
+  const known = all.filter((id) => parsed.includes(id));
+  return known.length > 0 ? known : all;
+}
+
 /** The raw `memory.routing` row, untyped, exactly as `load_routing` wants it. */
 export type RoutingRow = Record<string, unknown>;
 
@@ -195,6 +233,8 @@ export function KnowledgeSection() {
   const [autoExtract, setAutoExtract] = useState(true);
   const [recency, setRecency] = useState(String(RECENCY_DEFAULT));
   const [extractEvery, setExtractEvery] = useState(String(EXTRACT_EVERY_DEFAULT));
+  const [recallKinds, setRecallKinds] = useState<string[]>(RECALL_KINDS.map((kind) => kind.id));
+  const [recallKindsError, setRecallKindsError] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<Capability, Draft>>(emptyDrafts);
   const [topKError, setTopKError] = useState<string | null>(null);
   const [budgetError, setBudgetError] = useState<string | null>(null);
@@ -267,14 +307,16 @@ export function KnowledgeSection() {
       read(EMBED_NOTES_KEY),
       read(RECENCY_KEY),
       read(EXTRACT_EVERY_KEY),
+      read(RECALL_KINDS_KEY),
     ])
-      .then(([topKRaw, budgetRaw, autoExtractRaw, routingRaw, embedNotesRaw, recencyRaw, extractEveryRaw]) => {
+      .then(([topKRaw, budgetRaw, autoExtractRaw, routingRaw, embedNotesRaw, recencyRaw, extractEveryRaw, recallKindsRaw]) => {
         if (!active) return;
         const topKValue = String(effectiveTopK(topKRaw));
         const budgetValue = String(effectiveBudgetFraction(budgetRaw));
         const autoExtractValue = String(effectiveAutoExtract(autoExtractRaw));
         const recencyValue = String(effectiveRecencyHalfLife(recencyRaw));
         const extractEveryValue = String(effectiveExtractEvery(extractEveryRaw));
+        const recallKindsValue = effectiveRecallKinds(recallKindsRaw);
         seededRef.current = {
           [TOP_K_KEY]: topKValue,
           [BUDGET_KEY]: budgetValue,
@@ -283,6 +325,7 @@ export function KnowledgeSection() {
           [EMBED_NOTES_KEY]: String(effectiveEmbedNotes(embedNotesRaw)),
           [RECENCY_KEY]: recencyValue,
           [EXTRACT_EVERY_KEY]: extractEveryValue,
+          [RECALL_KINDS_KEY]: JSON.stringify(recallKindsValue),
         };
         setTopK(topKValue);
         setBudget(budgetValue);
@@ -290,6 +333,7 @@ export function KnowledgeSection() {
         setEmbedNotes(effectiveEmbedNotes(embedNotesRaw));
         setRecency(recencyValue);
         setExtractEvery(extractEveryValue);
+        setRecallKinds(recallKindsValue);
         const row = parseRoutingRow(routingRaw);
         rowRef.current = row;
         const parsed = emptyDrafts();
@@ -361,6 +405,32 @@ export function KnowledgeSection() {
     }
     setExtractEveryError(null);
     void write(EXTRACT_EVERY_KEY, extractEvery.trim(), "set_memory_extract_every", () => setExtractEvery(String(EXTRACT_EVERY_DEFAULT)));
+  };
+
+  const toggleRecallKind = (id: string, next: boolean) => {
+    // Turning one on is a union with the current scope; turning one off is a
+    // subtraction from it. One filter cannot do both — treating "off" as
+    // "everything except this" silently re-admits kinds the user had already
+    // excluded.
+    const wanted = next
+      ? RECALL_KINDS.map((kind) => kind.id).filter(
+          (other) => other === id || recallKinds.includes(other),
+        )
+      : recallKinds.filter((other) => other !== id);
+    // Empty means "every kind" downstream, so storing an empty list would
+    // silently invert the setting the user just cleared.
+    if (wanted.length === 0) {
+      setRecallKindsError(
+        "At least one kind has to stay recallable. To keep a single memory out, turn that memory off instead.",
+      );
+      return;
+    }
+    const previous = recallKinds;
+    setRecallKindsError(null);
+    setRecallKinds(wanted);
+    void write(RECALL_KINDS_KEY, JSON.stringify(wanted), "set_memory_recall_kinds", () =>
+      setRecallKinds(previous),
+    );
   };
 
   const toggleAutoExtract = (next: boolean) => {
@@ -524,6 +594,24 @@ export function KnowledgeSection() {
                 onKeyDown={(event) => { if (event.key === "Enter") commitExtractEvery(); }}
               />
             </Row>
+            <div className="py-3 border-t border-border">
+              <p className="text-sm text-text">Recall kinds</p>
+              <p className="text-xs text-text-muted mt-0.5">
+                Which kinds of memory a chat send may pull in. Pinned memories are injected
+                whatever this says.
+              </p>
+              {recallKindsError && <p className="text-xs text-error mt-1">{recallKindsError}</p>}
+              <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1">
+                {RECALL_KINDS.map((kind) => (
+                  <Switch
+                    key={kind.id}
+                    label={kind.label}
+                    checked={recallKinds.includes(kind.id)}
+                    onChange={(next) => toggleRecallKind(kind.id, next)}
+                  />
+                ))}
+              </div>
+            </div>
             <div className="py-3 border-t border-border">
               <Switch
                 label="Extract memories automatically"

@@ -25,7 +25,10 @@ const EMPTY_MESSAGES_LIST: ChatMessage[] = [];
 export interface MemoryUsedRow {
   ownerType: string;
   ownerId: string;
+  /** The kind heading — "Project facts", "Pinned note". A group, not a row. */
   label: string;
+  /** The row's own name. Without it the list cannot say *which* fact. */
+  title: string | null;
   /** `null` for a pinned row or a session note: it was not retrieved. */
   reason: string | null;
 }
@@ -49,11 +52,19 @@ export function parseMemoryUsed(raw: string | null): MemoryUsedRow[] {
   if (!Array.isArray(parsed)) return [];
   return parsed.flatMap((entry) => {
     if (typeof entry !== "object" || entry === null) return [];
-    const { ownerType, ownerId, label, reason } = entry as Record<string, unknown>;
+    const { ownerType, ownerId, label, title, reason } = entry as Record<string, unknown>;
     if (typeof ownerType !== "string" || typeof ownerId !== "string" || typeof label !== "string") {
       return [];
     }
-    return [{ ownerType, ownerId, label, reason: typeof reason === "string" ? reason : null }];
+    return [
+      {
+        ownerType,
+        ownerId,
+        label,
+        title: typeof title === "string" ? title : null,
+        reason: typeof reason === "string" ? reason : null,
+      },
+    ];
   });
 }
 
@@ -219,7 +230,11 @@ export const MessageRow = React.memo(function MessageRow({
                 <ul className="mt-1 space-y-0.5 pl-2 text-text-muted">
                   {memoryUsed.map((row) => (
                     <li key={`${row.ownerType}:${row.ownerId}`}>
-                      <span className="text-text">{row.label}</span>
+                      {/* The title names the row; the label only names its
+                          kind. A memory deleted since the send keeps the
+                          title here, which is what makes the list auditable
+                          after the fact. */}
+                      <span className="text-text">{row.title ?? row.label}</span>
                       {" — "}
                       {row.reason ?? "pinned"}
                     </li>

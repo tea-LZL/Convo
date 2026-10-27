@@ -158,6 +158,10 @@ export function MemoryRoute() {
    */
   const [provenance, setProvenance] = useState<Map<string, string>>(new Map());
   const [filter, setFilter] = useState<KindFilter>("all");
+  // The first list read waits for the stored filter. Refreshing with "all"
+  // first and the stored value a tick later shows the wrong rows and costs a
+  // second query for a value the user already chose.
+  const [filterLoaded, setFilterLoaded] = useState(false);
   const [query, setQuery] = useState("");
   const [searchHits, setSearchHits] = useState<MemorySearchHit[] | null>(null);
   const [editing, setEditing] = useState<MemoryItem | null>(null);
@@ -208,7 +212,10 @@ export function MemoryRoute() {
     setStatusTick((n) => n + 1);
   };
 
-  useEffect(() => { refresh(); }, [filter]);
+  useEffect(() => {
+    if (!filterLoaded) return;
+    refresh();
+  }, [filter, filterLoaded]);
 
   // The filter outlives the visit. Read once, and only ever adopt a value
   // this page can honour: an unknown kind would render an empty list with
@@ -227,6 +234,9 @@ export function MemoryRoute() {
           route: "memory",
           errorClass: errorClass(error),
         });
+      })
+      .finally(() => {
+        if (active) setFilterLoaded(true);
       });
     return () => { active = false; };
   }, []);

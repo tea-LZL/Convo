@@ -218,6 +218,41 @@ fn the_recency_half_life_setting_is_read_and_degenerate_values_fall_back() {
 }
 
 #[test]
+fn the_recall_kind_scope_reads_a_json_array_and_treats_empty_as_every_kind() {
+    // Absent and empty both mean every kind: a filter honoured literally on
+    // an empty array would disable recall and look like a broken feature.
+    assert_eq!(config::recall_kinds(&migrated_conn()), None);
+
+    let scoped = conn_with_settings(&[("memory.recall_kinds", r#"["user_pref","skill"]"#)]);
+    assert_eq!(
+        config::recall_kinds(&scoped),
+        Some(vec!["user_pref".to_string(), "skill".to_string()])
+    );
+
+    for empty in [
+        "[]",
+        "",
+        "not json",
+        r#"["nonsense"]"#,
+        r#"{"kind":"skill"}"#,
+    ] {
+        let conn = conn_with_settings(&[("memory.recall_kinds", empty)]);
+        assert_eq!(
+            config::recall_kinds(&conn),
+            None,
+            "{empty:?} was honoured as a scope"
+        );
+    }
+
+    // One unknown kind costs that kind, not the filter.
+    let mixed = conn_with_settings(&[("memory.recall_kinds", r#"["skill","nonsense"]"#)]);
+    assert_eq!(
+        config::recall_kinds(&mixed),
+        Some(vec!["skill".to_string()])
+    );
+}
+
+#[test]
 fn the_extraction_interval_setting_is_read_and_zero_falls_back() {
     // `0` would mean "never extract", which the user has an explicit switch
     // for; silently honouring it would look like extraction was broken.
@@ -1361,6 +1396,50 @@ fn recall_latency_p95_over_five_thousand_items() {
             "{arm} recall p95 {measured:?} exceeds the {BUDGET:?} budget"
         );
     }
+}
+
+/// `COSINE_LIMIT` is the vector route's candidate depth, and it has to be
+/// observable. With room for more rows than the depth allows, only the depth
+/// is returned: before this, the vector route fused every embedded row while
+/// the keyword route fused thirty, and the constant was asserted in a test
+/// without being read by anything.
+#[test]
+fn the_vector_route_fuses_only_its_candidate_depth() {
+    let conn = migrated_conn();
+    const DEPTH: usize = 40;
+    for i in 0..DEPTH {
+        let id = format!("sem-{i:02}");
+        add_memory_full(
+            &conn,
+            &id,
+            "project_fact",
+            "Filler",
+            "an unrelated durable fact about tooling",
+        );
+        // Descending cosine against STUB_VECTOR, every one above the floor.
+        let vector = [1.0f32, (i as f32) * 0.02, 0.0];
+        upsert_embedding(&conn, "memory", &id, STUB_MODEL, &vector).unwrap();
+    }
+
+    // Room for every row, so the only thing that can shorten the list is the
+    // route's own depth.
+    let mut opts = semantic_opts(None);
+    opts.top_k = DEPTH;
+    let hits = retrieve::recall_with_query_vector(&conn, &opts, STUB_VECTOR);
+
+    assert_eq!(
+        hits.len(),
+        config::COSINE_LIMIT,
+        "the vector route fused {} rows for a depth of {}",
+        hits.len(),
+        config::COSINE_LIMIT
+    );
+    let returned = ids(&hits);
+    assert_eq!(returned.first().copied(), Some("sem-00"), "order changed");
+    assert!(
+        !returned.contains(&"sem-39"),
+        "a row past the depth reached the fused list"
+    );
 }
 
 /// No session means no overrides were ever read, so no restriction. A
@@ -3948,6 +4027,7 @@ fn injecting_a_memory_bumps_its_access_count() {
         owner_type: "memory".into(),
         owner_id: "m1".into(),
         label: "User preferences".into(),
+        title: Some("Build".into()),
         text: "npm run build".into(),
         reason: None,
     };
@@ -3979,6 +4059,7 @@ fn injecting_a_note_logs_the_recall_without_touching_a_counter() {
         owner_type: "note".into(),
         owner_id: "n1".into(),
         label: "Notes".into(),
+        title: Some("Runbook".into()),
         text: "step".into(),
         reason: None,
     };

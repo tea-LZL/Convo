@@ -1316,9 +1316,12 @@ describe("MemoryRoute in the shared vocabulary", () => {
     renderMemory();
 
     // The re-read is the observable half: the page asked Rust for skills, not
-    // for everything, and it asked after the stored value arrived.
+    // for everything, and it asked after the stored value arrived. One call,
+    // not two: reading "all" first would flash the wrong rows and pay for a
+    // query the user did not ask for.
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("list_memory", { kind: "skill" }));
     expect(screen.getByRole("tab", { name: "Skills" })).toHaveAttribute("aria-selected", "true");
+    expect(calls.filter(([command]) => command === "list_memory")).toHaveLength(1);
     // Nothing was written back on open: a visit that only reads a preference
     // must not be a visit that overwrites it.
     expect(calls.filter(([command]) => command === "set_setting")).toEqual([]);

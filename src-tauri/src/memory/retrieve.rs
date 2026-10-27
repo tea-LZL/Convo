@@ -338,6 +338,17 @@ mod tests {
     }
 
     #[test]
+    fn select_order_keeps_insertion_order_for_equal_scores() {
+        // The sort is stable on purpose: equal scores are the one case where
+        // the caller's order survives, and the merge builds that order
+        // keyword-first. A sort that reordered ties would hand every tie to
+        // whichever route happened to be pushed first.
+        let scores = [0.5, 0.5, 0.5];
+        let vectors: [Option<Vec<f32>>; 3] = [None, None, None];
+        assert_eq!(select_order(&scores, &vectors, 0.7, 3), vec![0, 1, 2]);
+    }
+
+    #[test]
     fn select_order_respects_the_limit() {
         let scores: Vec<f64> = (0..20).map(|i| 1.0 - i as f64 * 0.01).collect();
         let vectors: Vec<Option<Vec<f32>>> = vec![None; 20];
@@ -714,6 +725,13 @@ fn cosine_route(
         }
     }
     scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    // `COSINE_LIMIT` is the vector route's candidate depth, exactly as
+    // `BM25_LIMIT` is the keyword route's. It was declared and asserted but
+    // never read, so the vector route fused the whole indexed corpus while
+    // the keyword route fused thirty rows — two routes of very different
+    // depth being compared by reciprocal rank. Truncating here makes the two
+    // symmetric and keeps ranks 1..30 identical.
+    scored.truncate(config::COSINE_LIMIT);
     scored
 }
 
@@ -1020,37 +1038,43 @@ pub fn recall_with_query_vector(
         terms: Vec<String>,
     }
 
+    // Keyword candidates first, then vector-only ones. The order is part of
+    // the result: `select_order` sorts stably, so insertion order is the
+    // tie-break, and this is the order the pre-rewrite merge produced. Taking
+    // the vector list first would silently hand every tie to the embedding
+    // route — a change no test would report as one.
     let mut candidates: Vec<Candidate> = Vec::with_capacity(semantic.len() + keyword.len());
     let mut seen: std::collections::HashMap<(String, String), usize> =
         std::collections::HashMap::with_capacity(semantic.len() + keyword.len());
-    for (index, (row, score, vector)) in semantic.into_iter().enumerate() {
-        let key = (row.owner_type.clone(), row.owner_id.clone());
-        seen.insert(key, candidates.len());
-        candidates.push(Candidate {
-            row,
-            vector: Some(vector),
-            bm25_rank: None,
-            cosine_rank: Some(index + 1),
-            cosine: Some(score),
-            terms: Vec::new(),
-        });
-    }
     for hit in keyword {
         let key = (hit.row.owner_type.clone(), hit.row.owner_id.clone());
+        seen.insert(key, candidates.len());
+        candidates.push(Candidate {
+            row: hit.row,
+            vector: None,
+            bm25_rank: Some(hit.rank),
+            cosine_rank: None,
+            cosine: None,
+            terms: hit.terms,
+        });
+    }
+    for (index, (row, score, vector)) in semantic.into_iter().enumerate() {
+        let key = (row.owner_type.clone(), row.owner_id.clone());
         match seen.get(&key) {
             Some(&at) => {
-                candidates[at].bm25_rank = Some(hit.rank);
-                candidates[at].terms = hit.terms;
+                candidates[at].cosine_rank = Some(index + 1);
+                candidates[at].cosine = Some(score);
+                candidates[at].vector = Some(vector);
             }
             None => {
                 seen.insert(key, candidates.len());
                 candidates.push(Candidate {
-                    row: hit.row,
-                    vector: None,
-                    bm25_rank: Some(hit.rank),
-                    cosine_rank: None,
-                    cosine: None,
-                    terms: hit.terms,
+                    row,
+                    vector: Some(vector),
+                    bm25_rank: None,
+                    cosine_rank: Some(index + 1),
+                    cosine: Some(score),
+                    terms: Vec::new(),
                 });
             }
         }

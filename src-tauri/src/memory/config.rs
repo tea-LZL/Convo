@@ -214,6 +214,34 @@ pub fn embed_all_notes(conn: &Connection) -> bool {
     }
 }
 
+/// Which memory kinds recall may return, or `None` for every kind.
+///
+/// `None` on an absent row, on an empty array, and on anything that is not a
+/// JSON array of strings. Empty has to mean "every kind": a filter honoured
+/// literally would silently disable recall, which looks like a broken
+/// feature rather than a setting. Unknown kinds are dropped rather than
+/// trusted, so one typo costs that kind's inclusion and not the whole
+/// filter.
+pub fn recall_kinds(conn: &Connection) -> Option<Vec<String>> {
+    let raw = setting(conn, "memory.recall_kinds")?;
+    let parsed: Vec<String> = match serde_json::from_str(&raw) {
+        Ok(kinds) => kinds,
+        Err(e) => {
+            tracing::warn!(
+                "memory.recall_kinds is not a JSON array of kinds, so recall is \
+                 unrestricted: {}",
+                e
+            );
+            return None;
+        }
+    };
+    let known: Vec<String> = parsed
+        .into_iter()
+        .filter(|kind| super::extract::KINDS.contains(&kind.as_str()))
+        .collect();
+    (!known.is_empty()).then_some(known)
+}
+
 /// Effective recency half-life, in days.
 ///
 /// A zero or negative value would make `0.5^(age / 0)` meaningless, so

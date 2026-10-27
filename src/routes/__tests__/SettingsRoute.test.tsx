@@ -835,7 +835,19 @@ describe("SettingsRoute in the shared vocabulary", () => {
    * The six switches of the general section, by the name a screen reader is
    * given. Read out of the DOM as the six `label` props the route passes.
    */
-  const SWITCH_LABELS = [
+  /** Every switch the Knowledge section renders, in reading order. */
+const KNOWLEDGE_SWITCH_LABELS = [
+  "Preferences",
+  "Project facts",
+  "Decisions",
+  "Constraints",
+  "Skills",
+  "Entities",
+  "Extract memories automatically",
+  "Index unpinned notes too",
+];
+
+const SWITCH_LABELS = [
     "Sound effects",
     "Desktop notifications",
     "Enter to send",
@@ -875,19 +887,30 @@ describe("SettingsRoute in the shared vocabulary", () => {
       "no switch may fall back to the primitive's unnamed label",
     ).not.toBeInTheDocument();
 
-    // The seventh and eighth switches on this page are the Knowledge
-    // section's, and both already passed `label` before this task. Named here
-    // so "every switch" means every switch rather than the six in one section.
+    // The rest of this page's switches are the Knowledge section's: two
+    // behaviour switches and the six-kind recall scope. Named here so "every
+    // switch" means every switch rather than the six in one section, and
+    // counted from the labels rather than pinned to a number that has to be
+    // edited whenever a kind is added.
     cleanup();
     const knowledge = renderSettings();
     await openSection(knowledge.container, "knowledge");
-    expect(screen.getAllByRole("switch"), "the knowledge section has two switches").toHaveLength(2);
+    const knowledgeSwitches = screen.getAllByRole("switch");
     expect(
-      screen.getByRole("switch", { name: "Extract memories automatically" }),
-    ).toBeInTheDocument();
+      knowledgeSwitches,
+      "the knowledge section lost a switch",
+    ).toHaveLength(KNOWLEDGE_SWITCH_LABELS.length);
+    for (const name of KNOWLEDGE_SWITCH_LABELS) {
+      expect(screen.getByRole("switch", { name })).toBeInTheDocument();
+    }
+    // Distinct names, checked the same way the six above are: an id per
+    // switch rather than a shared fallback label.
+    const labelledBy = knowledgeSwitches.map((el) => el.getAttribute("aria-labelledby") ?? "");
+    expect(labelledBy.every((id) => id !== ""), "every knowledge switch is labelled").toBe(true);
     expect(
-      screen.getByRole("switch", { name: "Index unpinned notes too" }),
-    ).toBeInTheDocument();
+      new Set(labelledBy).size,
+      "two knowledge switches share one label",
+    ).toBe(knowledgeSwitches.length);
   });
 
   it("still renders every section, and still says which one you are in", async () => {

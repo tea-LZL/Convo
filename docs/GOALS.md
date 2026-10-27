@@ -28,11 +28,11 @@ Not vibes. Gates, in this order of priority:
 | Gate | Threshold |
 |---|---|
 | Recall precision | ≥ 90% of known-relevant items in top-6 |
-| Recall latency | < 50ms p95 on a 5,000-item corpus. Enforced in `recall_latency_p95_over_five_thousand_items` (`cargo test --release -- --ignored recall_latency`); measured 27.1ms for the both-routes arm, 16.2ms vector-only, 9.5ms keyword-only |
+| Recall latency | < 50ms p95 on a 5,000-item corpus. Enforced in `recall_latency_p95_over_five_thousand_items` (`cargo test --release -- --ignored recall_latency`); measured 27.0ms for the both-routes arm, 16.6ms vector-only, 11.6ms keyword-only |
 | Recall honesty | Every recalled item explains why it was recalled |
 | Stream smoothness | One markdown parse per frozen block; a settled message list commits zero times during a stream. Enforced in `src/components/chat/__tests__/streamPerformance.test.tsx` |
 | Autonomy | Extraction + revision run without user action; only genuine ambiguities surface |
-| Test floor | Frontend suite never drops below **869** passing tests (measured 2026-10-28); Rust suite never below **312**. Counts only go up. |
+| Test floor | Frontend suite never drops below **871** passing tests (measured 2026-10-28); Rust suite never below **318**. Counts only go up. |
 
 ---
 

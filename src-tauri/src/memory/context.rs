@@ -89,7 +89,14 @@ const SESSION_NOTE_LABEL: &str = "Notes from this session";
 pub struct ContextRow {
     pub owner_type: String,
     pub owner_id: String,
+    /// The heading the prompt groups this row under — the *kind*, not the
+    /// row. `label_for_kind("user_pref")` is "User preferences", which names
+    /// a group of memories and would name none of them in a per-message list.
     pub label: String,
+    /// The row's own name, when it has one. This is what makes a provenance
+    /// entry say "Release branch policy" rather than "Project facts", and
+    /// what still identifies a memory after the memory itself is deleted.
+    pub title: Option<String>,
     pub text: String,
     /// Why retrieval surfaced this row, when retrieval surfaced it.
     ///
@@ -405,6 +412,7 @@ fn note_rows(
                 owner_type: "note".into(),
                 owner_id: id,
                 label: label.to_string(),
+                title: title.clone(),
                 text: with_title(title, body),
                 reason: None,
             })
@@ -433,6 +441,7 @@ fn pinned_memories(conn: &Connection) -> Result<Vec<ContextRow>, String> {
                 owner_type: "memory".into(),
                 owner_id: id,
                 label: PINNED_MEMORY_LABEL.to_string(),
+                title: title.clone(),
                 text: with_title(title, content),
                 reason: None,
             })

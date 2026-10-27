@@ -3,7 +3,7 @@
 ## Verification trio
 ```bash
 npm run typecheck   # tsc --noEmit
-npm run test:run    # vitest run (869 tests, must be 0 failures — floor; never drops)
+npm run test:run    # vitest run (871 tests, must be 0 failures — floor; never drops)
 npm run build       # tsc + vite build
 ```
 Rust: `cargo check --manifest-path src-tauri/Cargo.toml` (long first compile; warm cache afterwards).
@@ -11,7 +11,7 @@ Rust: `cargo check --manifest-path src-tauri/Cargo.toml` (long first compile; wa
 ```bash
 cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
-cargo test --manifest-path src-tauri/Cargo.toml   # 312 tests, must be 0 failures
+cargo test --manifest-path src-tauri/Cargo.toml   # 318 tests, must be 0 failures
 ```
 
 One gate is deliberately not in that list, because its numbers only mean
@@ -23,8 +23,8 @@ cargo test --release --manifest-path src-tauri/Cargo.toml -- \
 ```
 
 It asserts the `<50ms` p95 budget over a 5,000-item corpus with 5,000 stored
-vectors (keyword-only, both routes, vector-only). Last measured: 9.5ms /
-27.1ms / 16.2ms. Run it after touching `memory/retrieve.rs`, `memory/embed.rs`,
+vectors (keyword-only, both routes, vector-only). Last measured: 11.6ms /
+27.0ms / 16.6ms. Run it after touching `memory/retrieve.rs`, `memory/embed.rs`,
 or the fusion path.
 
 Two gates guard invariant drift rather than behaviour: `npm run check:version`

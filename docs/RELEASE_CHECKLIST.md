@@ -2,7 +2,7 @@
 
 > Automated gates recorded locally on 2026-08-09, re-run on 2026-10-28. Manual and installed-artifact checks remain intentionally unchecked.
 >
-> **Partly stale.** The gates were first recorded for the v0.7 workspace-shaped app. The product has since been realigned — see `docs/GOALS.md`, which is canonical. The 2026-10-28 re-run (869 frontend tests, 312 Rust tests, 1 ignored release-only latency gate) is current; the 252-test figure belongs to 2026-08-09 and is kept as point-in-time evidence. The manual sections below are the remaining release work.
+> **Partly stale.** The gates were first recorded for the v0.7 workspace-shaped app. The product has since been realigned — see `docs/GOALS.md`, which is canonical. The 2026-10-28 re-run (871 frontend tests, 318 Rust tests, 1 ignored release-only latency gate) is current; the 252-test figure belongs to 2026-08-09 and is kept as point-in-time evidence. The manual sections below are the remaining release work.
 
 ## Automated Gates
 
@@ -10,11 +10,11 @@
 - [x] `npm run check:version`
 - [x] `npm run check:commands`
 - [x] `npm run typecheck`
-- [x] `npm run test:run` (252 tests on 2026-08-09; 869 on 2026-10-28)
+- [x] `npm run test:run` (252 tests on 2026-08-09; 871 on 2026-10-28)
 - [x] `npm run build`
 - [x] `cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check`
 - [x] `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings`
-- [x] `cargo test --manifest-path src-tauri/Cargo.toml` (35 tests on 2026-08-09; 105 on 2026-09-27; 312 on 2026-10-28, plus the ignored release-mode recall latency gate)
+- [x] `cargo test --manifest-path src-tauri/Cargo.toml` (35 tests on 2026-08-09; 105 on 2026-09-27; 318 on 2026-10-28, plus the ignored release-mode recall latency gate)
 - [x] `npm run tauri build` (Debian + AppImage, with the pinned linuxdeploy path)
 
 ## Fresh Install
