@@ -13,6 +13,7 @@ fn row(owner_type: &str, owner_id: &str, label: &str, text: &str) -> ContextRow 
         owner_id: owner_id.into(),
         label: label.into(),
         text: text.into(),
+        reason: Some(format!("keyword match on {owner_id}")),
     }
 }
 
@@ -726,7 +727,8 @@ async fn a_failed_context_length_query_is_logged_and_still_sends() {
         plan.system
     );
     assert_eq!(
-        plan.recalled, 0,
+        plan.used.len(),
+        0,
         "the fallback window still bounds the rows, so an oversized memory is left out"
     );
     // The summary line fires in both cases — an absent model and a failed
@@ -753,7 +755,7 @@ async fn a_send_with_no_memories_plans_a_persona_only_prompt() {
     let pool = migrated_pool();
     let plan = plan_send(&pool, "s1", "hello", "m", None).await;
     assert!(!plan.system.is_empty());
-    assert_eq!(plan.recalled, 0);
+    assert_eq!(plan.used.len(), 0);
     assert!(!plan.system.contains("<memory-context>"));
 }
 
@@ -769,7 +771,7 @@ async fn a_send_with_an_empty_index_still_plans_a_prompt() {
     }
     let plan = plan_send(&pool, "s1", "hello", "m", None).await;
     assert!(plan.system.contains(PERSONA));
-    assert_eq!(plan.recalled, 0);
+    assert_eq!(plan.used.len(), 0);
 }
 
 /// A pinned note is injected without any retrieval at all — no embedding
@@ -789,7 +791,7 @@ async fn a_pinned_note_is_injected_without_an_embedding_model() {
     }
     let plan = plan_send(&pool, "s1", "unrelated question", "m", None).await;
     assert!(plan.system.contains("deploy steps live here"));
-    assert!(plan.recalled >= 1);
+    assert!(!plan.used.is_empty());
 }
 
 /// The session-memory modal's copy promises two things about a pin: that a
@@ -898,7 +900,7 @@ async fn a_failing_embed_route_still_produces_a_sendable_prompt() {
         "the keyword route must still reach the prompt: {}",
         plan.system
     );
-    assert_eq!(plan.recalled, 1);
+    assert_eq!(plan.used.len(), 1);
 }
 
 /// A route that cannot be resolved at all is the same degradation one step
@@ -937,7 +939,24 @@ async fn no_embedding_route_at_all_still_injects_pinned_and_recalled_rows() {
         "retrieval must still run without a query vector: {}",
         plan.system
     );
-    assert_eq!(plan.recalled, 2);
+    assert_eq!(plan.used.len(), 2);
+    // The snapshot names both rows, in emitted order, and distinguishes why
+    // each is there. A pinned row was not "recalled": it has no retrieval
+    // reason, and inventing one would be a lie the Memory tab repeats.
+    let note = plan.used.first().expect("the pinned note comes first");
+    assert_eq!(note.owner_type, "note");
+    assert_eq!(note.owner_id, "n1");
+    assert_eq!(note.reason, None, "a pinned row has no retrieval reason");
+    let memory = plan.used.last().expect("the retrieved memory comes second");
+    assert_eq!(memory.owner_id, "m1");
+    assert!(
+        memory
+            .reason
+            .as_deref()
+            .is_some_and(|r| r.contains("keyword")),
+        "the retrieved row must say why it was recalled: {:?}",
+        memory.reason
+    );
 }
 
 /// The send path is what makes reinforcement happen at all. Before this
@@ -969,7 +988,8 @@ async fn a_row_the_model_was_shown_is_reinforced_by_the_send() {
     assert_eq!(
         plan_send(&pool, "s1", "which database", "m", None)
             .await
-            .recalled,
+            .used
+            .len(),
         1
     );
 
@@ -1069,7 +1089,8 @@ async fn a_failed_pinned_row_query_still_sends_the_recalled_memory() {
         plan.system
     );
     assert_eq!(
-        plan.recalled, 1,
+        plan.used.len(),
+        1,
         "only the retrieved row, not a phantom note"
     );
     // And the reinforcement still happened for the row that was shown.
@@ -1156,7 +1177,7 @@ async fn a_memory_with_no_lexical_overlap_reaches_the_prompt_through_the_vector_
         "the vector route must reach the prompt: {}",
         plan.system
     );
-    assert_eq!(plan.recalled, 1);
+    assert_eq!(plan.used.len(), 1);
 
     // The control. If this ever returns a hit, the fixture no longer needs
     // vectors and the assertion above has stopped proving anything.
@@ -1261,7 +1282,8 @@ async fn a_memory_excluded_from_a_session_stays_out_of_it_through_the_vector_rou
         plan.system
     );
     assert_eq!(
-        plan.recalled, 0,
+        plan.used.len(),
+        0,
         "the session is scoped to one memory that does not answer this \
          question, so nothing should have been recalled at all"
     );
@@ -1330,7 +1352,8 @@ async fn a_block_may_exceed_its_row_budget_and_is_still_sent_in_full() {
     let plan = plan_send(&pool, "s1", "which editor", "small", None).await;
 
     assert_eq!(
-        plan.recalled, 1,
+        plan.used.len(),
+        1,
         "the row fits the budget, so it is counted as shown"
     );
     let block = plan
@@ -1396,7 +1419,7 @@ async fn an_unpinned_note_is_not_pulled_into_the_prompt_by_retrieval() {
         "an unpinned note crowded into the prompt: {}",
         plan.system
     );
-    assert_eq!(plan.recalled, 1, "only the memory, not the note");
+    assert_eq!(plan.used.len(), 1, "only the memory, not the note");
 }
 
 /// into the rendering, and it only shows up once a memory is actually
@@ -1460,7 +1483,8 @@ async fn an_unknown_context_length_falls_back_to_a_small_window() {
     // The model is not in `models`, so its window is unknown.
     let unknown = plan_send(&pool, "s1", "deploy runbook", "never-seen", None).await;
     assert_eq!(
-        unknown.recalled, 0,
+        unknown.used.len(),
+        0,
         "an unknown window must not admit memory that a 4096 window cannot hold"
     );
     assert!(
@@ -1482,7 +1506,8 @@ async fn an_unknown_context_length_falls_back_to_a_small_window() {
     }
     let known = plan_send(&pool, "s1", "deploy runbook", "big", None).await;
     assert_eq!(
-        known.recalled, 1,
+        known.used.len(),
+        1,
         "a known 8192-token window should admit what the 4096 fallback does not"
     );
     assert!(
@@ -1551,5 +1576,5 @@ async fn a_send_with_no_usable_connection_still_plans_a_persona_only_prompt() {
         plan.system, PERSONA,
         "nothing was readable, so the prompt is the persona and nothing else"
     );
-    assert_eq!(plan.recalled, 0);
+    assert_eq!(plan.used.len(), 0);
 }

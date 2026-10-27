@@ -195,3 +195,78 @@ describe("stream delta transport", () => {
     expect(state.streaming).toBe(false);
   });
 });
+
+describe("per-send memory provenance", () => {
+  // The snapshot is what the answer says it remembered. It arrives before
+  // the first token and the row it describes does not exist yet, so the
+  // store has to carry it across to the message it appends — and it must be
+  // the same value Rust persists, or a reload would quietly change the list.
+  const rows = [
+    { ownerType: "note", ownerId: "n1", label: "Pinned note", reason: null },
+    {
+      ownerType: "memory",
+      ownerId: "m1",
+      label: "Project facts",
+      reason: "keyword match on postgres",
+    },
+  ];
+
+  it("attaches the rows emitted for this stream to the assistant message", async () => {
+    const { streamId, assistantMessageId, state } = await startStream("recall-session");
+    callbacks["chat-recall"]({ payload: {
+      conversation_id: "recall-session",
+      stream_id: streamId,
+      assistant_message_id: assistantMessageId,
+      rows,
+    } });
+    callbacks["chat-chunk"]({ payload: {
+      conversation_id: "recall-session",
+      stream_id: streamId,
+      assistant_message_id: assistantMessageId,
+      delta: "answer",
+    } });
+    callbacks["chat-done"]({ payload: {
+      conversation_id: "recall-session",
+      stream_id: streamId,
+      assistant_message_id: assistantMessageId,
+      prompt_tokens: null,
+      output_tokens: null,
+      completed_at: "now",
+    } });
+
+    const assistant = state.messages.find((m) => m.id === assistantMessageId);
+    expect(assistant?.memory_used).toBe(JSON.stringify(rows));
+    // The user turn was not sent with memory: it must not inherit one.
+    expect(state.messages[0].memory_used).toBeNull();
+  });
+
+  it("ignores a snapshot from a stream that is no longer active", async () => {
+    const { streamId, assistantMessageId, state } = await startStream("stale-recall");
+    state._streamId = "stream-b";
+    state._assistantMessageId = "assistant-b";
+
+    callbacks["chat-recall"]({ payload: {
+      conversation_id: "stale-recall",
+      stream_id: streamId,
+      assistant_message_id: assistantMessageId,
+      rows,
+    } });
+    callbacks["chat-chunk"]({ payload: {
+      conversation_id: "stale-recall",
+      stream_id: streamId,
+      assistant_message_id: assistantMessageId,
+      delta: "stale",
+    } });
+    callbacks["chat-done"]({ payload: {
+      conversation_id: "stale-recall",
+      stream_id: streamId,
+      assistant_message_id: assistantMessageId,
+      prompt_tokens: null,
+      output_tokens: null,
+      completed_at: "now",
+    } });
+
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages.some((m) => m.memory_used !== null)).toBe(false);
+  });
+});

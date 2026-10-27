@@ -1299,6 +1299,63 @@ describe("MemoryRoute in the shared vocabulary", () => {
     expect(tint).not.toMatch(/^bg-surface/);
   });
 
+  // The kind filter is a preference about how the page opens, so it is read
+  // back and written out. Both halves are load-bearing: a read that is not
+  // applied makes the setting a decoration, and a click that is not written
+  // makes a per-visit choice pretend to be a preference.
+  it("opens on the kind filter it remembered, and re-reads the list for it", async () => {
+    const calls: Array<[string, unknown]> = [];
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      calls.push([command, args]);
+      if (command === "get_setting") return "skill";
+      if (command === "list_memory") return [];
+      if (command === "list_note_titles" || command === "list_memory_reviews") return [];
+      return null;
+    });
+
+    renderMemory();
+
+    // The re-read is the observable half: the page asked Rust for skills, not
+    // for everything, and it asked after the stored value arrived.
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("list_memory", { kind: "skill" }));
+    expect(screen.getByRole("tab", { name: "Skills" })).toHaveAttribute("aria-selected", "true");
+    // Nothing was written back on open: a visit that only reads a preference
+    // must not be a visit that overwrites it.
+    expect(calls.filter(([command]) => command === "set_setting")).toEqual([]);
+  });
+
+  it("writes the chosen kind, so the next visit opens on it", async () => {
+    serveMemories([]);
+    renderMemory();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Project facts" }));
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("set_setting", {
+        key: "memory.kind_filter",
+        value: "project_fact",
+      }),
+    );
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("list_memory", { kind: "project_fact" }));
+  });
+
+  it("ignores a stored kind it cannot honour, rather than opening on an empty list", async () => {
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "get_setting") return "user_preference";
+      if (command === "list_memory") return [listed("m-1")];
+      if (command === "list_note_titles" || command === "list_memory_reviews") return [];
+      return null;
+    });
+
+    renderMemory();
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("list_memory", { kind: null }));
+    // A typo or a row from a newer build would otherwise filter everything
+    // out and read as "my memories are gone".
+    expect(invoke).not.toHaveBeenCalledWith("list_memory", { kind: "user_preference" });
+    expect(screen.getByRole("tab", { name: "All" })).toHaveAttribute("aria-selected", "true");
+  });
+
   it("still filters by kind", async () => {
     const { container } = renderMemory();
     fireEvent.click(screen.getByRole("tab", { name: "Skills" }));

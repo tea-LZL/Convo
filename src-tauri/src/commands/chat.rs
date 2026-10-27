@@ -18,7 +18,7 @@ pub fn list_messages(
     let conn = pool.get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
-            "SELECT id, session_id, role, content, thinking, attachments_json, prompt_tokens, output_tokens, created_at
+            "SELECT id, session_id, role, content, thinking, attachments_json, prompt_tokens, output_tokens, memory_used, created_at
              FROM messages WHERE session_id = ?1 ORDER BY created_at ASC",
         )
         .map_err(|e| e.to_string())?;
@@ -33,7 +33,8 @@ pub fn list_messages(
                 attachments_json: row.get(5)?,
                 prompt_tokens: row.get(6)?,
                 output_tokens: row.get(7)?,
-                created_at: row.get(8)?,
+                memory_used: row.get(8)?,
+                created_at: row.get(9)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -153,13 +154,14 @@ pub(crate) fn upsert_message_conn(
     };
     let created = m.created_at.clone().unwrap_or_else(now);
     conn.execute(
-        "INSERT INTO messages (id, session_id, role, content, thinking, attachments_json, prompt_tokens, output_tokens, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "INSERT INTO messages (id, session_id, role, content, thinking, attachments_json, prompt_tokens, output_tokens, memory_used, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
          ON CONFLICT(id) DO UPDATE SET content=excluded.content, thinking=excluded.thinking,
            attachments_json=excluded.attachments_json, prompt_tokens=excluded.prompt_tokens,
-           output_tokens=excluded.output_tokens",
+           output_tokens=excluded.output_tokens,
+           memory_used=COALESCE(excluded.memory_used, messages.memory_used)",
         params![id, m.session_id, m.role, m.content, m.thinking, m.attachments_json,
-            m.prompt_tokens, m.output_tokens, created],
+            m.prompt_tokens, m.output_tokens, m.memory_used, created],
     ).map_err(|e| e.to_string())?;
     conn.execute(
         "UPDATE sessions SET updated_at = ?1 WHERE id = ?2",
@@ -180,6 +182,10 @@ pub struct MessageInput {
     pub attachments_json: Option<String>,
     pub prompt_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
+    /// Snapshot of what this send showed the model. Absent from every writer
+    /// that does not own provenance, which the upsert treats as "leave the
+    /// stored snapshot alone" rather than "clear it".
+    pub memory_used: Option<String>,
     pub created_at: Option<String>,
 }
 
@@ -346,7 +352,7 @@ mod tests {
     #[test]
     fn upsert_message_preserves_concurrent_rows() {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("CREATE TABLE sessions (id TEXT PRIMARY KEY, updated_at TEXT NOT NULL); CREATE TABLE messages (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, thinking TEXT, attachments_json TEXT, prompt_tokens INTEGER, output_tokens INTEGER, created_at TEXT NOT NULL); INSERT INTO sessions VALUES ('s1', 'old');").unwrap();
+        conn.execute_batch("CREATE TABLE sessions (id TEXT PRIMARY KEY, updated_at TEXT NOT NULL); CREATE TABLE messages (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, thinking TEXT, attachments_json TEXT, prompt_tokens INTEGER, output_tokens INTEGER, memory_used TEXT, created_at TEXT NOT NULL); INSERT INTO sessions VALUES ('s1', 'old');").unwrap();
         for (id, role, content, created_at) in [
             ("user-1", "user", "hello", "2026-01-01T00:00:00Z"),
             ("assistant-1", "assistant", "hi", "2026-01-01T00:00:01Z"),
@@ -362,6 +368,7 @@ mod tests {
                     attachments_json: None,
                     prompt_tokens: None,
                     output_tokens: None,
+                    memory_used: None,
                     created_at: Some(created_at.into()),
                 },
             )
@@ -371,6 +378,49 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 2);
+    }
+
+    /// A writer that knows nothing about provenance must not erase it. The
+    /// assistant row is written by the stream on every terminal path, and a
+    /// second write — a retry, a reload-and-save — carries no snapshot of
+    /// its own. `COALESCE` is what makes "unset" mean "leave it alone".
+    #[test]
+    fn an_upsert_without_provenance_leaves_the_stored_snapshot_alone() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE sessions (id TEXT PRIMARY KEY, updated_at TEXT NOT NULL); CREATE TABLE messages (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, thinking TEXT, attachments_json TEXT, prompt_tokens INTEGER, output_tokens INTEGER, memory_used TEXT, created_at TEXT NOT NULL); INSERT INTO sessions VALUES ('s1', 'old');").unwrap();
+        let input = |content: &str, memory_used: Option<&str>| MessageInput {
+            id: "assistant-1".into(),
+            session_id: "s1".into(),
+            role: "assistant".into(),
+            content: content.into(),
+            thinking: None,
+            attachments_json: None,
+            prompt_tokens: None,
+            output_tokens: None,
+            memory_used: memory_used.map(str::to_string),
+            created_at: Some("2026-01-01T00:00:01Z".into()),
+        };
+        let snapshot = r#"[{"ownerType":"memory","ownerId":"m1","label":"Project facts","reason":"keyword match on postgres"}]"#;
+
+        upsert_message_conn(&conn, &input("first", Some(snapshot))).unwrap();
+        upsert_message_conn(&conn, &input("first [stopped]", None)).unwrap();
+
+        let (content, stored): (String, Option<String>) = conn
+            .query_row(
+                "SELECT content, memory_used FROM messages WHERE id = 'assistant-1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            content, "first [stopped]",
+            "the later write still wins on content"
+        );
+        assert_eq!(
+            stored.as_deref(),
+            Some(snapshot),
+            "the snapshot was cleared by a writer that never set one"
+        );
     }
 
     #[test]

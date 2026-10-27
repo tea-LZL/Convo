@@ -38,6 +38,10 @@ pub struct Message {
     pub attachments_json: Option<String>,
     pub prompt_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
+    /// JSON array of the rows this send put in front of the model
+    /// (`UsedRow`): id, label, reason. `None` for a message written before
+    /// V013, which recorded nothing.
+    pub memory_used: Option<String>,
     pub created_at: String,
 }
 

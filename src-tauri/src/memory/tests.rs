@@ -191,9 +191,49 @@ fn the_spec_constants_have_the_values_the_spec_pins() {
     assert_eq!(config::REINFORCE_FLOOR, 0.72);
     assert_eq!(config::DUP_FLOOR, 0.92);
     assert_eq!(config::RECENCY_HALF_LIFE_DAYS, 30.0);
+    assert_eq!(config::EXTRACT_EVERY_N_EXCHANGES, 1);
     assert_eq!(config::CONTEXT_BUDGET_FRACTION, 0.15);
     assert_eq!(config::MIN_CONTENT_LENGTH, 8);
     assert_eq!(config::EMBED_BATCH, 32);
+}
+
+#[test]
+fn the_recency_half_life_setting_is_read_and_degenerate_values_fall_back() {
+    // 30 days is the default; a stored value wins; anything that would make
+    // `0.5^(age / half_life)` meaningless falls back to the default rather
+    // than silently turning recency off or producing NaN.
+    assert_eq!(config::recency_half_life_days(&migrated_conn()), 30.0);
+
+    let seven = conn_with_settings(&[("memory.recency_half_life_days", "7")]);
+    assert_eq!(config::recency_half_life_days(&seven), 7.0);
+
+    for degenerate in ["0", "-1", "nan", "inf", "thirty", ""] {
+        let conn = conn_with_settings(&[("memory.recency_half_life_days", degenerate)]);
+        assert_eq!(
+            config::recency_half_life_days(&conn),
+            30.0,
+            "{degenerate:?} was honoured as a half-life"
+        );
+    }
+}
+
+#[test]
+fn the_extraction_interval_setting_is_read_and_zero_falls_back() {
+    // `0` would mean "never extract", which the user has an explicit switch
+    // for; silently honouring it would look like extraction was broken.
+    assert_eq!(config::extract_every_n_exchanges(&migrated_conn()), 1);
+
+    let three = conn_with_settings(&[("memory.extract_every_n_exchanges", "3")]);
+    assert_eq!(config::extract_every_n_exchanges(&three), 3);
+
+    for degenerate in ["0", "-2", "often", ""] {
+        let conn = conn_with_settings(&[("memory.extract_every_n_exchanges", degenerate)]);
+        assert_eq!(
+            config::extract_every_n_exchanges(&conn),
+            1,
+            "{degenerate:?} was honoured as an interval"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -668,9 +708,9 @@ fn a_memory_and_a_note_can_hold_vectors_under_the_same_owner_id() {
 #[test]
 fn recency_weight_halves_at_the_half_life_and_is_clamped() {
     let half_life = super::config::RECENCY_HALF_LIFE_DAYS;
-    assert!((recency_weight(0.0) - 1.0).abs() < 1e-9);
+    assert!((recency_weight(0.0, half_life) - 1.0).abs() < 1e-9);
     assert!(
-        (recency_weight(half_life) - 0.5).abs() < 1e-9,
+        (recency_weight(half_life, half_life) - 0.5).abs() < 1e-9,
         "one half-life is 0.5"
     );
     // The floor is 0.5 and is reached at one half-life, not approached
@@ -678,12 +718,12 @@ fn recency_weight_halves_at_the_half_life_and_is_clamped() {
     // purely for being old — that is the "the app forgot" failure mode.
     // Age breaks ties between comparably-relevant items; it does not
     // expire them.
-    assert_eq!(recency_weight(half_life * 2.0), 0.5);
-    assert_eq!(recency_weight(10_000.0), 0.5);
+    assert_eq!(recency_weight(half_life * 2.0, half_life), 0.5);
+    assert_eq!(recency_weight(10_000.0, half_life), 0.5);
     // Monotonic non-increasing across the decay range.
     let mut previous = 1.0;
     for step in 0..=60 {
-        let weight = recency_weight(step as f64);
+        let weight = recency_weight(step as f64, half_life);
         assert!(
             weight <= previous + f64::EPSILON,
             "not monotonic at {}",
@@ -692,8 +732,8 @@ fn recency_weight_halves_at_the_half_life_and_is_clamped() {
         previous = weight;
     }
     // Degenerate input is treated as fresh, not as ancient.
-    assert_eq!(recency_weight(-5.0), 1.0);
-    assert_eq!(recency_weight(f64::NAN), 1.0);
+    assert_eq!(recency_weight(-5.0, half_life), 1.0);
+    assert_eq!(recency_weight(f64::NAN, half_life), 1.0);
 }
 
 #[test]
@@ -1206,6 +1246,121 @@ fn recall_stays_correct_across_a_large_index() {
         "the vector route lost or reordered the one matching row: {:?}",
         ids(&hits)
     );
+}
+
+/// The Phase 9 latency gate, measured instead of asserted by inspection.
+///
+/// Ignored because the number only means something in a release build: an
+/// unoptimised debug run is several times slower, so a wall-clock bound there
+/// would be either vacuous or flaky. Run it with
+///
+/// ```text
+/// cargo test --release --manifest-path src-tauri/Cargo.toml -- \
+///     --ignored recall_latency --nocapture
+/// ```
+///
+/// The corpus is 5,000 memories with 5,000 stored vectors — the shape that
+/// costs the most, because the vector route reads and scores every embedded
+/// row, so it is the route that grows with the corpus. The keyword-only arm
+/// runs too, because a keyword-only install is the degradation path and must
+/// stay under the same gate.
+#[test]
+#[ignore = "release-mode latency gate; debug timings are not meaningful"]
+fn recall_latency_p95_over_five_thousand_items() {
+    use std::time::{Duration, Instant};
+
+    const CORPUS: usize = 5_000;
+    const SAMPLES: usize = 200;
+    const BUDGET: Duration = Duration::from_millis(50);
+    const KEYWORD_QUERY: &str = "an unrelated durable fact about tooling and process";
+
+    let conn = migrated_conn();
+    for i in 0..CORPUS {
+        let id = format!("perf-{i}");
+        add_memory_full(
+            &conn,
+            &id,
+            "project_fact",
+            "Filler",
+            &format!("an unrelated durable fact about tooling and process, entry number {i}"),
+        );
+        // Distinct directions, so no comparison short-circuits: every stored
+        // vector clears the reinforce floor and has to be sorted.
+        let vector = [1.0f32, (i as f32) * 0.0001, 0.5];
+        upsert_embedding(&conn, "memory", &id, STUB_MODEL, &vector).unwrap();
+    }
+    // The one row only the vector route can find, and the row the vector-only
+    // arm asserts on: a timing that stays green because recall returned
+    // nothing would prove nothing about recall.
+    add_semantic_only_memory(&conn, "needle");
+
+    let opts = |query: &'static str, embedding_model: Option<&str>| retrieve::RecallOptions {
+        query,
+        session_id: None,
+        embedding_model: embedding_model.map(str::to_string),
+        embedding_dim: embedding_model.map(|_| 3),
+        kinds: None,
+        top_k: config::TOP_K_DEFAULT as usize,
+        lambda: retrieve::DEFAULT_LAMBDA,
+    };
+    let keyword_opts = opts(KEYWORD_QUERY, None);
+    let fused_opts = opts(KEYWORD_QUERY, Some(STUB_MODEL));
+    let vector_opts = opts(SEMANTIC_QUERY, Some(STUB_MODEL));
+
+    let mut keyword: Vec<Duration> = Vec::with_capacity(SAMPLES);
+    let mut fused: Vec<Duration> = Vec::with_capacity(SAMPLES);
+    let mut vector: Vec<Duration> = Vec::with_capacity(SAMPLES);
+    for _ in 0..SAMPLES {
+        let start = Instant::now();
+        let hits = retrieve::recall(&conn, &keyword_opts);
+        keyword.push(start.elapsed());
+        assert_eq!(
+            hits.len(),
+            config::TOP_K_DEFAULT as usize,
+            "keyword recall stopped filling its page at {CORPUS} items"
+        );
+
+        let start = Instant::now();
+        let hits = retrieve::recall_with_query_vector(&conn, &fused_opts, STUB_VECTOR);
+        fused.push(start.elapsed());
+        assert_eq!(
+            hits.len(),
+            config::TOP_K_DEFAULT as usize,
+            "fused recall stopped filling its page at {CORPUS} items"
+        );
+
+        let start = Instant::now();
+        let hits = retrieve::recall_with_query_vector(&conn, &vector_opts, STUB_VECTOR);
+        vector.push(start.elapsed());
+        assert_eq!(
+            ids(&hits).first().copied(),
+            Some("needle"),
+            "the vector route lost the matching row at {CORPUS} items"
+        );
+    }
+
+    fn p95(mut samples: Vec<Duration>) -> Duration {
+        samples.sort();
+        let rank = ((samples.len() as f64) * 0.95).ceil() as usize;
+        samples[rank.saturating_sub(1)]
+    }
+
+    let keyword_p95 = p95(keyword);
+    let fused_p95 = p95(fused);
+    let vector_p95 = p95(vector);
+    println!(
+        "recall p95 over {CORPUS} items: keyword-only {keyword_p95:?}, both routes {fused_p95:?}, vector-only {vector_p95:?}"
+    );
+    for (arm, measured) in [
+        ("keyword-only", keyword_p95),
+        ("both routes", fused_p95),
+        ("vector-only", vector_p95),
+    ] {
+        assert!(
+            measured < BUDGET,
+            "{arm} recall p95 {measured:?} exceeds the {BUDGET:?} budget"
+        );
+    }
 }
 
 /// No session means no overrides were ever read, so no restriction. A
@@ -3794,6 +3949,7 @@ fn injecting_a_memory_bumps_its_access_count() {
         owner_id: "m1".into(),
         label: "User preferences".into(),
         text: "npm run build".into(),
+        reason: None,
     };
     context::record_injection(&conn, &row, Some("s1")).unwrap();
     context::record_injection(&conn, &row, Some("s1")).unwrap();
@@ -3824,6 +3980,7 @@ fn injecting_a_note_logs_the_recall_without_touching_a_counter() {
         owner_id: "n1".into(),
         label: "Notes".into(),
         text: "step".into(),
+        reason: None,
     };
     context::record_injection(&conn, &row, Some("s1")).unwrap();
     let events: i64 = conn

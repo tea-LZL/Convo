@@ -1,16 +1,16 @@
 # Convo
 
-A self-hosted AI workspace for Linux — multi-provider chat, model comparison, documents, notes, tasks, memory, hardware-aware recommendations, and diagnostics. Inspired by the depth of [Odysseus](https://github.com/pewdiepie-archdaemon/odysseus) and the simplicity of native desktop tools. Built with Tauri v2 (Rust) + React + TypeScript + Tailwind. Local-first, privacy-first, no telemetry.
+A memory-first chat client for Ollama — local and cloud — wrapped in a self-hosted desktop workspace: model comparison, documents, notes, tasks, hardware-aware recommendations, and diagnostics. Chat is the product; the rest of the tabs support it. Inspired by the depth of [Odysseus](https://github.com/pewdiepie-archdaemon/odysseus) and the simplicity of native desktop tools. Built with Tauri v2 (Rust) + React + TypeScript + Tailwind. Local-first, privacy-first, no telemetry.
 
-> **v0.7 — polish & responsive pass.** v0.4 introduced the foundation (SQLite, multi-provider, design system). v0.5 added chat power-user QoL, compare, and documents. v0.6 added hardware scan, model-fit recommendations, diagnostics, backup/restore, a global hotkey, and a guided first-run experience. v0.7 adds error boundaries, responsive layout, animation polish, a decomposed chat component architecture, native dialog replacement, and an attachment picker fix.
+> **v0.7 — polish & responsive pass**, since realigned around a memory-first product statement. v0.4 introduced the foundation (SQLite, multi-provider, design system). v0.5 added chat power-user QoL, compare, and documents. v0.6 added hardware scan, model-fit recommendations, diagnostics, backup/restore, a global hotkey, and a guided first-run experience. v0.7 added error boundaries, responsive layout, animation polish, a decomposed chat component architecture, native dialog replacement, and an attachment picker fix. The realignment moved retrieval, scoring, context assembly, extraction, and revision into Rust over a unified knowledge index — `docs/GOALS.md` is the canonical product statement.
 
 ## Features
 
 ### Chat & providers
 - **Multi-provider chat** — Ollama + any OpenAI-compatible endpoint (OpenRouter, vLLM, llama.cpp). Local server auto-discovery scans ports 8000-8020. API keys in OS keyring.
 - **Per-session model persistence** — reopen a chat and it's the same setup.
-- **Streaming segmenter** — frozen blocks rendered once, live tail re-rendered per token. No code-block flicker.
-- **Slash commands** with autocomplete — `/help /new /clear /regenerate /model /search /note /task`
+- **Block-split streaming** — the stream is cut into blocks that can no longer change plus one live tail; each frozen block renders once through the same renderer settled messages use, so a finished message never restyles and a growing code fence is never re-highlighted.
+- **Slash commands** with autocomplete — `/help /new /clear /regenerate /model /search /note /task /remember`
 - **Web search** — SearXNG / DuckDuckGo / Brave; results prepended as cited context.
 - **File attachments** — drag-drop, paste, paperclip. Vision-capable models receive images inline. Stored in `data_dir/blobs/`.
 - **Message actions** — copy, copy as Markdown, regenerate, edit & resend, delete, toggle thinking, save to note.
@@ -29,11 +29,12 @@ A self-hosted AI workspace for Linux — multi-provider chat, model comparison, 
 - Markdown preview, syntax-highlighted code blocks, word + char count.
 
 ### Memory & skills
-- **Categorized memory items** (user preferences, project facts, skills) with enable/disable.
-- **Auto-injected into chat** — enabled items are prepended to every chat's system prompt, grouped into labelled sections.
-- **Auto-extract from chat** — `extract_facts_from_session` LLM call returns candidate facts for review and bulk save.
+- **Categorized memory items** (user preferences, project facts, skills) with two independent switches: *enabled* means eligible for retrieval, *pinned* means injected on every send regardless of retrieval.
+- **Hybrid recall** — BM25 and embedding routes over memory and notes, fused by reciprocal rank, trimmed to a token budget, all in Rust. Recall never fails a send: no embedder, no vectors, or a dimension mismatch degrades to keyword-only.
+- **Why recalled** — every injected item reports the route that found it and the terms that matched, and each answer carries the list of what it used: `messages.memory_used` holds a provenance snapshot (id, label, reason) so the disclosure survives a reload without duplicating memory bodies into the transcript.
+- **Extraction and revision** — facts are pulled from settled turns on a watermark, judged against what is already stored, and merged, reinforced, or superseded. Confident revisions apply themselves; genuine ambiguities land in the review inbox.
 - **FTS5 search** with snippet highlighting across memory and messages.
-- Tags per item.
+- Tags per item, and bidirectional links between a memory and the note that came from it.
 
 ### Notes & tasks
 - Notes get tags and a link back to the source chat when saved from a message.
@@ -81,13 +82,15 @@ src/
                # ErrorBoundary, AnimatedUnmount, Skeleton, Switch, Select,
                # Slider, Tabs, Tooltip, Badge, Dropdown, Toast, Spinner
     chat/      # ChatViewNew (orchestrator), ChatHeader, MessageList,
-               # MessageRow, StreamingSection, ChatInput, ChatContextMenu,
-               # MarkdownRenderer, AttachmentChip
-    sidebar/   # Sidebar
+               # MessageRow, StreamingTail, ChatInput, ChatContextMenu,
+               # MarkdownRenderer, AttachmentChip, SessionMemoryModal
+    memory/    # RecallPanel, SupersedeHistory, IndexStatusBanner
+    sidebar/   # Sidebar, StatusCard
     tour/      # TourOverlay
-  hooks/       # useChat, useAttachments, useGlobalKeyHandler, useMediaQuery
-  lib/         # api.ts, slashCommands, streamingSegmenter, streamingRenderer,
-               # diff, sounds
+  hooks/       # useChat, useAttachments, useGlobalKeyHandler, useMediaQuery,
+               # useSettings
+  lib/         # api.ts, contracts, slashCommands, markdown, markdownBlocks,
+               # diff, logger, notesDraft, lastUsedChatModel
   stores/      # Zustand stores: theme, toasts, settings, sessions, palette,
                # shortcuts, tour, memory, chatStream
   styles/      # globals.css (CSS variables + keyframes)
@@ -96,8 +99,11 @@ src-tauri/src/
   lib.rs                       # Tauri builder, plugins, global shortcut
   db/                          # SQLite pool + migrations + models + legacy import
     legacy.rs                  # conversations.json -> SQLite import
+  migrations/                  # (sibling of src/: V001..V012 SQL migrations)
+  memory/                      # Retrieval core: retrieve, context, extract,
+                               # revise, index, embed, config
   providers/                   # Provider trait + Ollama + OpenAI-compat + discovery
-  commands/                    # 60+ Tauri commands: chat, sessions,
+  commands/                    # 108 registered Tauri commands: chat, sessions,
                                # providers, themes, notes, tasks, memory,
                                # documents, attachments, search, compare, slash,
                                # settings, hardware, backup, models

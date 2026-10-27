@@ -341,6 +341,7 @@ function chatMessage(over: Partial<ChatMessage> = {}): ChatMessage {
     attachments_json: null,
     prompt_tokens: null,
     output_tokens: null,
+    memory_used: null,
     created_at: NOW,
     ...over,
   };

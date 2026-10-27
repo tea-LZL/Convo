@@ -342,12 +342,17 @@ pub fn recall_count(conn: &Connection, owner_type: &str, owner_id: &str) -> rusq
 /// just ranks below a fresh equivalent. A hard age cutoff would make
 /// recall non-monotonic in time, which reads to a user as the app
 /// forgetting things.
-pub fn recency_weight(age_days: f64) -> f64 {
+///
+/// The half-life is a parameter rather than the constant it used to read,
+/// because it is now a setting: `config::recency_half_life_days` parses
+/// `memory.recency_half_life_days` and falls back to
+/// [`config::RECENCY_HALF_LIFE_DAYS`]. Passing it in keeps this function
+/// pure, which is what its tests rely on.
+pub fn recency_weight(age_days: f64, half_life: f64) -> f64 {
     if !age_days.is_finite() || age_days <= 0.0 {
         return 1.0;
     }
-    let half_life = config::RECENCY_HALF_LIFE_DAYS;
-    if half_life <= 0.0 {
+    if half_life <= 0.0 || !half_life.is_finite() {
         return 1.0;
     }
     let weight = 0.5f64.powf(age_days / half_life);

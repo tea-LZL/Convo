@@ -9,6 +9,7 @@ export const userMessage: ChatMessage = {
   attachments_json: null,
   prompt_tokens: 12,
   output_tokens: null,
+  memory_used: null,
   created_at: "2024-01-01T12:00:00Z",
 };
 
@@ -21,6 +22,7 @@ export const assistantMessage: ChatMessage = {
   attachments_json: null,
   prompt_tokens: 12,
   output_tokens: 9,
+  memory_used: null,
   created_at: "2024-01-01T12:00:05Z",
 };
 
@@ -33,6 +35,7 @@ export const systemMessage: ChatMessage = {
   attachments_json: null,
   prompt_tokens: 6,
   output_tokens: null,
+  memory_used: null,
   created_at: "2024-01-01T11:59:00Z",
 };
 

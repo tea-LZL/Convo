@@ -358,21 +358,21 @@ Documents, Compare, and Tasks are **out of scope** for the memory rewrite and ar
 Every phase ends with `npm run typecheck`, `npm run test:run` (≥ 252 + new), `npm run build`, and `cargo check --manifest-path src-tauri/Cargo.toml` clean.
 
 ### Phase 0 — Foundation
-- [ ] Create `realignment` branch from `main`; leave `main` untouched
-- [ ] Write this spec + generated todos to `docs/superpowers/specs/`
-- [ ] Mark the 2026-08-30 hermes plan superseded; archive, do not delete
-- [ ] Reconcile the test count in `AGENTS.md` (107 → 252) and `README.md` roadmap claims
-- [ ] Add `docs/GOALS.md` as the canonical product statement
-- [ ] **Gate:** baseline suite green on the branch before any rewrite begins
+- [x] Create `realignment` branch from `main`; leave `main` untouched
+- [x] Write this spec + generated todos to `docs/superpowers/specs/`
+- [x] Mark the 2026-08-30 hermes plan superseded; archive, do not delete
+- [x] Reconcile the test count in `AGENTS.md` (107 → 252) and `README.md` roadmap claims (re-reconciled 2026-10-28 at 869/312)
+- [x] Add `docs/GOALS.md` as the canonical product statement
+- [x] **Gate:** baseline suite green on the branch before any rewrite begins
 
 ### Phase 1 — Streaming rewrite
-- [ ] Capture golden render outputs from `streamingRenderer.ts` for ~20 fixtures → `src/components/chat/__tests__/fixtures/`
-- [ ] Write the 5 invariant tests (§8.2) **against the current implementation first** — tests that pass now and must pass after
-- [ ] New `stores/chatStream.ts`: external store, rAF batching, generation-counter cancel
-- [ ] `StreamingTail.tsx` + block-split markdown
-- [ ] Wire `MessageList` / `ChatInput` / `ChatHeader` to the new store
-- [ ] Delete `streamingRenderer.ts`, `streamingSegmenter.ts` and their tests
-- [ ] **Gate:** golden-output parity + all 5 invariants + 60fps perf test
+- [x] Capture golden render outputs → `src/components/chat/__tests__/fixtures/` (31 stream shapes + a structural DOM comparator; the capture tooling was `streamingRenderer.ts`, which is deleted, so the fixtures are the record)
+- [x] Write the 5 invariant tests (§8.2) **against the current implementation first** — `streamPerformance.test.tsx` and `StreamingTail.test.tsx`
+- [x] New `stores/chatStream.ts`: external store, rAF batching, generation-counter cancel
+- [x] `StreamingTail.tsx` + block-split markdown
+- [x] Wire `MessageList` / `ChatInput` / `ChatHeader` to the new store
+- [x] Delete `streamingRenderer.ts`, `streamingSegmenter.ts` and their tests
+- [x] **Gate:** golden-output parity + all 5 invariants + 60fps perf test
 
 ### Phase 2 — Unified index schema — **complete**
 - [x] `V006__unified_index.sql` — `memory_embeddings`, `memory_events`, `notes_fts` + triggers, revision columns on `memory_items` and `notes`
@@ -498,19 +498,19 @@ separately because confusing the two fails silently.
 - [x] Notes tab: pin, linked memories, add-to-chat
 - [x] Review inbox: pending and failed extraction rounds (confident revisions auto-apply in Rust; proposed diff + revision verdict in the inbox is not built)
 - [x] Chat: `/remember` slash command (sidebar `StatusCard` and Memory `IndexStatusBanner` carry the semantic-recall state)
-- [ ] Chat: per-message "memory used" (deferred — needs a Tauri event and a storage decision on persisting memory contents inside assistant messages)
+- [x] Chat: per-message "memory used" — `chat-recall` event + `messages.memory_used` (V013). Storage decision taken: provenance only (id, label, reason), because the body already lives in `memory_items`/`notes` and copying it into every transcript row multiplies private text and stales against the Memory tab.
 - [x] Settings: new Knowledge section (`memory.top_k`, `memory.context_budget_fraction`, `memory.auto_extract`, `memory.embed_all_notes`, `memory.routing`)
-- [ ] Settings: `EXTRACT_EVERY_N_EXCHANGES`, recency half-life, and persisted kind-filter settings (deferred — no Rust config readers)
+- [x] Settings: `memory.extract_every_n_exchanges` and `memory.recency_half_life_days` (readers in `memory/config.rs`, controls in the Knowledge section), plus the Memory kind filter persisted as `memory.kind_filter`
 - [x] Route + a11y tests for every changed surface
 - [x] **Gate:** route smoke tests, a11y sweeps, responsive pass
 
 ### Phase 9 — Release gates
-- [ ] Full suite ≥ 252 + all new tests, 0 failures
-- [ ] `cargo fmt`, `cargo clippy -D warnings`, `cargo test`
-- [ ] Performance: 60fps tail, recall < 50ms p95 on a 5,000-item corpus
-- [ ] Fresh-install and upgrade smoke on a populated DB
-- [ ] Update `docs/GOALS.md`, `README.md`, `AGENTS.md`, `docs/KNOWN_LIMITATIONS.md` to the new truth
-- [ ] **Gate:** all checks green, docs consistent
+- [x] Full suite ≥ 252 + all new tests, 0 failures — 869 frontend (63 files), 0 failures; `typecheck` and `build` clean
+- [x] `cargo fmt`, `cargo clippy -D warnings`, `cargo test` — clean; 312 passing, 1 ignored (the release-only latency gate)
+- [x] Performance: 60fps tail (`streamPerformance.test.tsx`); recall p95 at 5,000 items measured 27.1ms both-routes / 16.2ms vector-only / 9.5ms keyword-only against a 50ms budget (`recall_latency_p95_over_five_thousand_items`)
+- [ ] Fresh-install and upgrade smoke on a populated DB — **manual, no evidence yet.** The migration chain itself has been applied to a copy of a populated 44-session / 121-message database with no row loss, but that is not an install or an upgrade through the packaged app
+- [x] Update `docs/GOALS.md`, `README.md`, `AGENTS.md`, `docs/KNOWN_LIMITATIONS.md` to the new truth
+- [ ] **Gate:** all checks green, docs consistent — blocked only by the manual smoke above
 
 ---
 

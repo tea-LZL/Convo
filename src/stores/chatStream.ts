@@ -174,6 +174,17 @@ interface PendingDeltas {
 const pendingDeltas = new Map<string, PendingDeltas>();
 let flushRafScheduled = false;
 
+/**
+ * What a send put in front of the model, keyed by session and assistant
+ * message id.
+ *
+ * `chat-recall` arrives before the first token, but the assistant message
+ * is appended when the stream terminates, so the snapshot waits here until
+ * `appendAssistantMessage` can attach it. Message-scoped, not stream-scoped:
+ * the row it describes is the message, and a retry produces a new one.
+ */
+const pendingRecall = new Map<string, string>();
+
 function scheduleFlush() {
   if (flushRafScheduled) return;
   flushRafScheduled = true;
@@ -257,6 +268,11 @@ function appendAssistantMessage(
   outputTokens: number | null,
   createdAt: string,
 ) {
+  const key = `${cid}:${assistantMessageId}`;
+  const memoryUsed = pendingRecall.get(key) ?? null;
+  // Released before the guard: a stream that produced no content never
+  // writes a row, and its snapshot must not sit in the map forever.
+  pendingRecall.delete(key);
   if (!content || s.messages.some((message) => message.id === assistantMessageId)) return;
   s.messages = [
     ...s.messages,
@@ -269,6 +285,7 @@ function appendAssistantMessage(
       attachments_json: null,
       prompt_tokens: promptTokens,
       output_tokens: outputTokens,
+      memory_used: memoryUsed,
       created_at: createdAt,
     },
   ];
@@ -329,6 +346,28 @@ async function ensureListeners() {
         s.streaming = true;
         s.status = "streaming";
         scheduleFlush();
+      }
+    )
+  );
+
+  // chat-recall — what this send put in front of the model. Emitted before
+  // the first token, so the row it describes does not exist yet: the
+  // snapshot is staged and attached when the message is appended. A retry
+  // can target an id already on screen, so an existing row is patched too.
+  unlisteners.push(
+    await listen<StreamEventBase & { rows: unknown }>(
+      "chat-recall",
+      (e) => {
+        const cid = e.payload.conversation_id;
+        const s = getOrCreate(cid);
+        if (!isCurrentEvent(s, e.payload)) return;
+        if (!Array.isArray(e.payload.rows) || e.payload.rows.length === 0) return;
+        const json = JSON.stringify(e.payload.rows);
+        pendingRecall.set(`${cid}:${e.payload.assistant_message_id}`, json);
+        const existing = s.messages.find((m) => m.id === e.payload.assistant_message_id);
+        if (!existing) return;
+        s.messages = s.messages.map((m) => (m.id === existing.id ? { ...m, memory_used: json } : m));
+        publish(cid);
       }
     )
   );
@@ -685,6 +724,7 @@ export async function sendMessage(
     attachments_json: opts.attachmentsJson ?? null,
     prompt_tokens: null,
     output_tokens: null,
+    memory_used: null,
     created_at: new Date().toISOString(),
   };
   s.messages = [...s.messages, userMsg];

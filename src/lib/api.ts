@@ -62,6 +62,10 @@ export interface ChatMessage {
   attachments_json: string | null;
   prompt_tokens: number | null;
   output_tokens: number | null;
+  /** JSON array of the rows this send put in front of the model, written by
+   * Rust: `[{ownerType, ownerId, label, reason}]`. `null` on messages
+   * written before V013 recorded it. */
+  memory_used: string | null;
   created_at: string;
 }
 

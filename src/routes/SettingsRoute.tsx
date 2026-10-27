@@ -597,12 +597,18 @@ function ThemeSection() {
         <SettingRow
           label="Mode"
           description="Light, dark, or follow your system preference"
+          htmlFor="theme-mode"
           control={
-            <Select value={mode} onChange={(v) => setMode(v as any)} options={[
-              { value: "dark", label: "Dark" },
-              { value: "light", label: "Light" },
-              { value: "system", label: "System" },
-            ]} />
+            <Select
+              id="theme-mode"
+              value={mode}
+              onChange={(v) => setMode(v === "light" || v === "system" ? v : "dark")}
+              options={[
+                { value: "dark", label: "Dark" },
+                { value: "light", label: "Light" },
+                { value: "system", label: "System" },
+              ]}
+            />
           }
         />
       </Card>
@@ -722,11 +728,19 @@ function SwitchRow({ children }: { children: React.ReactNode }) {
 }
 
 /** The same row, for a `Button` or a `Select`. See the note on `GeneralSection`. */
-function SettingRow({ label, description, control }: { label: string; description?: string; control: React.ReactNode }) {
+function SettingRow({ label, description, control, htmlFor }: { label: string; description?: string; control: React.ReactNode; htmlFor?: string }) {
   return (
     <div className="flex items-center justify-between gap-4 py-3 border-b border-border last:border-b-0">
       <div>
-        <div className="text-sm text-text">{label}</div>
+        {/* A `Select` in the control slot needs a name; a `Button` inside
+            already carries its own text. `htmlFor` is how the caller says
+            which one this row contains — without it the select is announced
+            as "combo box", which is the defect the route axe sweep caught. */}
+        {htmlFor ? (
+          <label htmlFor={htmlFor} className="text-sm text-text block">{label}</label>
+        ) : (
+          <div className="text-sm text-text">{label}</div>
+        )}
         {description && <div className="text-xs text-text-muted mt-0.5">{description}</div>}
       </div>
       {control}

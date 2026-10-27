@@ -5,6 +5,8 @@ import {
   KnowledgeSection,
   effectiveAutoExtract,
   effectiveBudgetFraction,
+  effectiveExtractEvery,
+  effectiveRecencyHalfLife,
   effectiveTopK,
   parseRoutingRow,
   readRoute,
@@ -61,6 +63,32 @@ describe("KnowledgeSection — the fallbacks are the backend's, not the UI's", (
     expect(effectiveBudgetFraction("Infinity")).toBe(0.15);
     expect(effectiveBudgetFraction("0.4")).toBe(0.4);
     expect(effectiveBudgetFraction("1")).toBe(1);
+  });
+
+  it("falls back for the recency half-life exactly where the Rust reader does", () => {
+    expect(effectiveRecencyHalfLife(null)).toBe(30);
+    expect(effectiveRecencyHalfLife("")).toBe(30);
+    expect(effectiveRecencyHalfLife("0")).toBe(30);
+    expect(effectiveRecencyHalfLife("-7")).toBe(30);
+    expect(effectiveRecencyHalfLife("Infinity")).toBe(30);
+    expect(effectiveRecencyHalfLife("NaN")).toBe(30);
+    expect(effectiveRecencyHalfLife("a while")).toBe(30);
+    // A large half-life is a preference ("stop discounting old items"), not a
+    // typo, so it is honoured rather than capped.
+    expect(effectiveRecencyHalfLife("0.5")).toBe(0.5);
+    expect(effectiveRecencyHalfLife("90")).toBe(90);
+    expect(effectiveRecencyHalfLife("3650")).toBe(3650);
+  });
+
+  it("falls back for the extraction interval exactly where the Rust reader does", () => {
+    expect(effectiveExtractEvery(null)).toBe(1);
+    expect(effectiveExtractEvery("")).toBe(1);
+    expect(effectiveExtractEvery("0")).toBe(1);
+    expect(effectiveExtractEvery("-2")).toBe(1);
+    expect(effectiveExtractEvery("1.5")).toBe(1);
+    expect(effectiveExtractEvery("often")).toBe(1);
+    expect(effectiveExtractEvery(" 3 ")).toBe(3);
+    expect(effectiveExtractEvery("10")).toBe(10);
   });
 
   it("treats anything but the literal false as auto-extract on", () => {
@@ -142,14 +170,15 @@ describe("KnowledgeSection — rendering", () => {
       "memory.auto_extract",
       "memory.context_budget_fraction",
       "memory.embed_all_notes",
+      "memory.extract_every_n_exchanges",
+      "memory.recency_half_life_days",
       "memory.routing",
       "memory.top_k",
     ]);
     // Every key above has a reader in src-tauri/src/memory/config.rs and is
     // consulted on the live path: `memory.embed_all_notes` is passed to
-    // `memory_index_fill` by the Build-index action.
-    // EXTRACT_EVERY_N_EXCHANGES has no reader at all and gets no control.
-    expect(keys.some((k) => k.includes("EXCHANGE"))).toBe(false);
+    // `memory_index_fill` by the Build-index action, and both interval keys
+    // are read by `extract_and_revise` and `boost`.
   });
 });
 
@@ -198,6 +227,48 @@ describe("KnowledgeSection — writing", () => {
     expect(api.setSetting).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.getByText(/at least 1/i)).toBeInTheDocument());
     expect(screen.getByText(/between 0 and 1/i)).toBeInTheDocument();
+  });
+
+  it("writes an extraction interval the backend will accept, and refuses one it would replace", async () => {
+    stubReads({ "memory.extract_every_n_exchanges": "1" });
+    vi.spyOn(api, "listProviders").mockResolvedValue(PROVIDERS);
+    setSetting();
+
+    render(<KnowledgeSection />);
+
+    const input = await screen.findByLabelText("Extract every N exchanges");
+    expect(input).toHaveValue(1);
+    fireEvent.change(input, { target: { value: "0" } });
+    fireEvent.blur(input);
+    expect(api.setSetting).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByText(/every 1 exchange or more/i)).toBeInTheDocument());
+
+    fireEvent.change(input, { target: { value: "4" } });
+    fireEvent.blur(input);
+    await waitFor(() =>
+      expect(api.setSetting).toHaveBeenCalledWith("memory.extract_every_n_exchanges", "4"),
+    );
+  });
+
+  it("writes a recency half-life the backend will accept, and refuses a zero one", async () => {
+    stubReads({ "memory.recency_half_life_days": "30" });
+    vi.spyOn(api, "listProviders").mockResolvedValue(PROVIDERS);
+    setSetting();
+
+    render(<KnowledgeSection />);
+
+    const input = await screen.findByLabelText("Recency half-life (days)");
+    expect(input).toHaveValue(30);
+    fireEvent.change(input, { target: { value: "-1" } });
+    fireEvent.blur(input);
+    expect(api.setSetting).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByText(/more than 0 days/i)).toBeInTheDocument());
+
+    fireEvent.change(input, { target: { value: "7" } });
+    fireEvent.blur(input);
+    await waitFor(() =>
+      expect(api.setSetting).toHaveBeenCalledWith("memory.recency_half_life_days", "7"),
+    );
   });
 
   it("toggles auto-extract straight through, in both directions", async () => {

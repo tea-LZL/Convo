@@ -21,6 +21,7 @@ const MIGRATION_V009: &str = include_str!("../../migrations/V009__session_memory
 const MIGRATION_V010: &str = include_str!("../../migrations/V010__repair_skipped_index.sql");
 const MIGRATION_V011: &str = include_str!("../../migrations/V011__backfill_notes_index.sql");
 const MIGRATION_V012: &str = include_str!("../../migrations/V012__repair_unified_index_final.sql");
+const MIGRATION_V013: &str = include_str!("../../migrations/V013__message_memory_used.sql");
 
 fn migrations() -> Migrations<'static> {
     Migrations::new(vec![
@@ -36,6 +37,7 @@ fn migrations() -> Migrations<'static> {
         M::up_with_hook(MIGRATION_V010, repair_skipped_index),
         M::up_with_hook(MIGRATION_V011, backfill_empty_notes_index),
         M::up_with_hook(MIGRATION_V012, repair_unified_index_final),
+        M::up(MIGRATION_V013),
     ])
 }
 
@@ -712,7 +714,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 12);
+        assert_eq!(version, 13);
         let rank_after = nickname_rank(&conn);
         assert!(
             (rank_before - rank_after).abs() < 1e-9,
@@ -967,7 +969,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 12);
+        assert_eq!(version, 13);
         assert_eq!(
             inverted(&conn, "memory_fts_docsize"),
             2,

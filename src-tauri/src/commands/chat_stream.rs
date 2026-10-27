@@ -79,36 +79,50 @@ struct ChatCancelledEvent {
     completed_at: String,
 }
 
-fn persist_assistant(
-    pool: &DbPool,
-    session_id: &str,
-    message_id: &str,
-    content: &str,
-    thinking: &str,
+/// One assistant write, as a terminal event knows it.
+///
+/// A struct rather than six more positional arguments: the fields travel
+/// together, and two adjacent `&str`s of the same shape — content and
+/// thinking, or the snapshot and the timestamp — are exactly the pair a
+/// positional call gets wrong without the compiler noticing.
+struct AssistantTurn<'a> {
+    message_id: &'a str,
+    content: &'a str,
+    thinking: &'a str,
     usage: (Option<u32>, Option<u32>),
-    created_at: &str,
-) {
-    if content.is_empty() && thinking.is_empty() {
+    /// The `UsedRow` snapshot, already serialised for the message row.
+    memory_used: &'a str,
+    created_at: &'a str,
+}
+
+fn persist_assistant(pool: &DbPool, session_id: &str, turn: AssistantTurn<'_>) {
+    if turn.content.is_empty() && turn.thinking.is_empty() {
         return;
     }
     let result = pool.get().map_err(|e| e.to_string()).and_then(|conn| {
         upsert_message_conn(
             &conn,
             &MessageInput {
-                id: message_id.to_string(),
+                id: turn.message_id.to_string(),
                 session_id: session_id.to_string(),
                 role: "assistant".to_string(),
-                content: content.to_string(),
-                thinking: (!thinking.is_empty()).then(|| thinking.to_string()),
+                content: turn.content.to_string(),
+                thinking: (!turn.thinking.is_empty()).then(|| turn.thinking.to_string()),
                 attachments_json: None,
-                prompt_tokens: usage.0.map(|v| v as i64),
-                output_tokens: usage.1.map(|v| v as i64),
-                created_at: Some(created_at.to_string()),
+                prompt_tokens: turn.usage.0.map(|v| v as i64),
+                output_tokens: turn.usage.1.map(|v| v as i64),
+                memory_used: Some(turn.memory_used.to_string()),
+                created_at: Some(turn.created_at.to_string()),
             },
         )
     });
     if let Err(error) = result {
-        tracing::error!(session_id, message_id, %error, "could not persist assistant message");
+        tracing::error!(
+            session_id,
+            message_id = turn.message_id,
+            %error,
+            "could not persist assistant message"
+        );
     }
 }
 
@@ -123,16 +137,44 @@ fn persist_assistant(
 // Everything below degrades. Nothing in this section returns an error, and
 // nothing in it can prevent a send.
 
+/// One row that reached the model, as a send records it.
+///
+/// Provenance only: the body is not copied. It stays in `memory_items` /
+/// `notes` where the user can edit or delete it, and a copy on every
+/// assistant message would multiply what a backup carries and let a stale
+/// copy disagree with the Memory tab.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UsedRow {
+    pub owner_type: String,
+    pub owner_id: String,
+    /// The heading the prompt grouped the row under.
+    pub label: String,
+    /// `None` for a pinned row or a session note: it is in the block because
+    /// of what it is, not because it ranked.
+    pub reason: Option<String>,
+}
+
 /// What one send will use, and how much of it was memory.
 ///
-/// `recalled` is the number of rows the model was actually shown, not the
-/// number retrieval returned: a row the budget cut was never injected, and
-/// counting it would make the reinforcement signal drift toward whatever
-/// retrieval happened to produce.
+/// `used` is the rows the model was actually shown, not the rows retrieval
+/// returned: a row the budget cut was never injected, and counting it would
+/// make the reinforcement signal drift toward whatever retrieval happened
+/// to produce.
 #[derive(Debug, Clone)]
 pub struct SendPlan {
     pub system: String,
-    pub recalled: usize,
+    pub used: Vec<UsedRow>,
+}
+
+/// Emitted once per send, before the first token, so the answer can carry
+/// its own provenance while it streams.
+#[derive(Debug, Serialize, Clone)]
+struct ChatRecallEvent {
+    conversation_id: String,
+    stream_id: String,
+    assistant_message_id: String,
+    rows: Vec<UsedRow>,
 }
 
 /// The budget for a model whose context window is not known, in tokens.
@@ -263,6 +305,7 @@ async fn recall_rows(
                 }
                 _ => h.content,
             },
+            reason: Some(h.reason),
         })
         .collect())
 }
@@ -372,7 +415,16 @@ pub async fn plan_send(
 
     SendPlan {
         system: out.system_prompt,
-        recalled: out.injected.len(),
+        used: out
+            .injected
+            .iter()
+            .map(|row| UsedRow {
+                owner_type: row.owner_type.clone(),
+                owner_id: row.owner_id.clone(),
+                label: row.label.clone(),
+                reason: row.reason.clone(),
+            })
+            .collect(),
     }
 }
 
@@ -463,9 +515,29 @@ pub async fn chat_stream_v2(
     tracing::info!(
         session_id = %args.session_id,
         model = %args.model,
-        recalled = plan.recalled,
+        recalled = plan.used.len(),
         "planned send"
     );
+
+    // What this send put in front of the model, serialised once: the event
+    // and the stored message must say the same thing, and a second
+    // serialisation is a second chance to disagree. Emitted before the
+    // first token so the answer can carry its provenance while it streams.
+    let memory_used_json = serde_json::to_string(&plan.used).unwrap_or_else(|e| {
+        tracing::warn!("could not serialise the recall snapshot: {}", e);
+        "[]".to_string()
+    });
+    if !plan.used.is_empty() {
+        let _ = app.emit(
+            "chat-recall",
+            ChatRecallEvent {
+                conversation_id: args.session_id.clone(),
+                stream_id: args.stream_id.clone(),
+                assistant_message_id: args.assistant_message_id.clone(),
+                rows: plan.used.clone(),
+            },
+        );
+    }
 
     let req = ChatRequest {
         model: args.model.clone(),
@@ -533,11 +605,14 @@ pub async fn chat_stream_v2(
                                 persist_assistant(
                                     &pool_clone,
                                     &session_id,
-                                    &assistant_message_id_for_events,
-                                    &full_content,
-                                    &full_thinking,
-                                    (prompt_tokens, output_tokens),
-                                    &completed_at,
+                                    AssistantTurn {
+                                        message_id: &assistant_message_id_for_events,
+                                        content: &full_content,
+                                        thinking: &full_thinking,
+                                        usage: (prompt_tokens, output_tokens),
+                                        memory_used: &memory_used_json,
+                                        created_at: &completed_at,
+                                    },
                                 );
                                 let _ = app_clone.emit(
                                     "chat-done",
@@ -585,11 +660,14 @@ pub async fn chat_stream_v2(
                             persist_assistant(
                                 &pool_clone,
                                 &session_id,
-                                &assistant_message_id_for_events,
-                                    &full_content,
-                                    &full_thinking,
-                                    (None, None),
-                                    &completed_at,
+                                AssistantTurn {
+                                    message_id: &assistant_message_id_for_events,
+                                    content: &full_content,
+                                    thinking: &full_thinking,
+                                    usage: (None, None),
+                                    memory_used: &memory_used_json,
+                                    created_at: &completed_at,
+                                },
                             );
                             let _ = app_clone.emit(
                                 "chat-error",
@@ -629,11 +707,14 @@ pub async fn chat_stream_v2(
             persist_assistant(
                 &pool_clone,
                 &session_id,
-                &assistant_message_id_for_events,
-                &content,
-                &full_thinking,
-                (None, None),
-                &completed_at,
+                AssistantTurn {
+                    message_id: &assistant_message_id_for_events,
+                    content: &content,
+                    thinking: &full_thinking,
+                    usage: (None, None),
+                    memory_used: &memory_used_json,
+                    created_at: &completed_at,
+                },
             );
             let _ = app_clone.emit(
                 "chat-cancelled",
@@ -653,11 +734,14 @@ pub async fn chat_stream_v2(
             persist_assistant(
                 &pool_clone,
                 &session_id,
-                &assistant_message_id_for_events,
-                &full_content,
-                &full_thinking,
-                (None, None),
-                &completed_at,
+                AssistantTurn {
+                    message_id: &assistant_message_id_for_events,
+                    content: &full_content,
+                    thinking: &full_thinking,
+                    usage: (None, None),
+                    memory_used: &memory_used_json,
+                    created_at: &completed_at,
+                },
             );
             let _ = app_clone.emit(
                 "chat-done",

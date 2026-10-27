@@ -240,13 +240,15 @@ pub(crate) async fn extract_and_revise(
         if !config::auto_extract(&conn) {
             return Ok(Vec::new());
         }
-        // `every_n = 1` is "run on every completed exchange". The previous
-        // fixed value of 2 meant a first exchange never qualified — a fresh
-        // chat that says "remember my cat is named Mao Mao" and gets its
-        // answer produced two messages, below the four-message threshold,
-        // and nothing was extracted or even recorded. The `memory.auto_extract`
-        // setting is the user's off switch; the window is the cost control.
-        let window = crate::memory::extract::should_extract(&conn, session_id, 1)
+        // `every_n` is `memory.extract_every_n_exchanges`, defaulting to 1:
+        // run on every completed exchange. The old fixed value of 2 meant a
+        // first exchange never qualified — a fresh chat that says "remember
+        // my cat is named Mao Mao" and gets its answer produced two
+        // messages, below the four-message threshold, and nothing was
+        // extracted or even recorded. The `memory.auto_extract` setting is
+        // the user's off switch; the window is the cost control.
+        let every_n = config::extract_every_n_exchanges(&conn);
+        let window = crate::memory::extract::should_extract(&conn, session_id, every_n)
             .map_err(|e| e.to_string())?;
         let routing = config::load_routing(&conn);
         (
@@ -668,6 +670,57 @@ mod tests {
             first_is_a_note,
             "the note was applied second, so its id did not exist when the fact was written: {applied:?}"
         );
+    }
+
+    /// The extraction interval is a setting, not a constant. With an interval
+    /// of two, one completed exchange is not yet worth a model call — and a
+    /// reader that was never wired would extract here and pass every other
+    /// test in this file.
+    #[tokio::test]
+    async fn the_extraction_interval_setting_gates_a_single_exchange() {
+        let pool = migrated_pool();
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('memory.extract_every_n_exchanges', '2')",
+            [],
+        )
+        .unwrap();
+        for (i, (role, content)) in [
+            ("user", "Remember my cat is named Mao Mao."),
+            ("assistant", "Noted."),
+        ]
+        .iter()
+        .enumerate()
+        {
+            conn.execute(
+                "INSERT INTO messages (id, session_id, role, content, created_at) VALUES (?1, 's1', ?2, ?3, ?4)",
+                rusqlite::params![
+                    format!("seed-{i}"),
+                    role,
+                    content,
+                    format!("2026-01-01T00:00:0{i}Z"),
+                ],
+            )
+            .unwrap();
+        }
+        drop(conn);
+
+        let applied = extract_and_revise(&pool, "s1", None, None).await.unwrap();
+        assert!(
+            applied.is_empty(),
+            "an interval of two must not extract after one exchange: {applied:?}"
+        );
+
+        let reviews: i64 = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM pending_memory_reviews WHERE session_id = 's1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(reviews, 0, "a round that never ran must queue no review");
     }
 
     /// A failed extraction leaves a failed inbox row and does not advance the

@@ -22,6 +22,41 @@ export function escapeThinkTags(text: string): string {
 
 const EMPTY_MESSAGES_LIST: ChatMessage[] = [];
 
+export interface MemoryUsedRow {
+  ownerType: string;
+  ownerId: string;
+  label: string;
+  /** `null` for a pinned row or a session note: it was not retrieved. */
+  reason: string | null;
+}
+
+/**
+ * Parse the snapshot Rust wrote onto a message.
+ *
+ * Tolerates anything: a row from a newer build, a hand-edited value, or
+ * `null` on a message written before V013. A provenance chip that throws
+ * would take the whole chat down, so every unknown shape is "no
+ * provenance" rather than an error.
+ */
+export function parseMemoryUsed(raw: string | null): MemoryUsedRow[] {
+  if (!raw) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  return parsed.flatMap((entry) => {
+    if (typeof entry !== "object" || entry === null) return [];
+    const { ownerType, ownerId, label, reason } = entry as Record<string, unknown>;
+    if (typeof ownerType !== "string" || typeof ownerId !== "string" || typeof label !== "string") {
+      return [];
+    }
+    return [{ ownerType, ownerId, label, reason: typeof reason === "string" ? reason : null }];
+  });
+}
+
 /**
  * Custom comparator: only re-render when the message content itself
  * changes. Function props (setEditingMessageId, setContextMenu,
@@ -39,6 +74,7 @@ function messageRowAreEqual(prev: MessageRowProps, next: MessageRowProps) {
     pm.thinking === nm.thinking &&
     pm.role === nm.role &&
     pm.attachments_json === nm.attachments_json &&
+    pm.memory_used === nm.memory_used &&
     pm.created_at === nm.created_at &&
     prev.editingMessageId === next.editingMessageId &&
     prev.collapsedThinking === next.collapsedThinking &&
@@ -60,6 +96,7 @@ export const MessageRow = React.memo(function MessageRow({
   const thinkingOpen = !collapsedThinking.has(i);
   const [editText, setEditText] = useState(msg.content);
   const atts = parseAttachments(msg.attachments_json);
+  const memoryUsed = parseMemoryUsed(msg.memory_used);
 
   useEffect(() => {
     if (editingMessageId === msg.id) setEditText(msg.content);
@@ -165,10 +202,32 @@ export const MessageRow = React.memo(function MessageRow({
         </div>
       )}
       {msg.role === "assistant" && msg.created_at && (
-        <div className="mt-3 flex items-center justify-between">
-          <span className="text-[10px] text-text-subtle tabular-nums">
-            {formatTimestamp(msg.created_at)}
-          </span>
+        <div className="mt-3 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="text-[10px] text-text-subtle tabular-nums">
+              {formatTimestamp(msg.created_at)}
+            </span>
+            {memoryUsed.length > 0 && (
+              // A disclosure, not a badge: the count is the answer to "did it
+              // remember anything", and the list is the answer to "what".
+              // Reasons come from retrieval, so a pinned row says "pinned"
+              // rather than inventing one.
+              <details className="text-[10px] text-text-subtle">
+                <summary className="cursor-pointer select-none hover:text-text-muted">
+                  {memoryUsed.length} {memoryUsed.length === 1 ? "memory" : "memories"} used
+                </summary>
+                <ul className="mt-1 space-y-0.5 pl-2 text-text-muted">
+                  {memoryUsed.map((row) => (
+                    <li key={`${row.ownerType}:${row.ownerId}`}>
+                      <span className="text-text">{row.label}</span>
+                      {" — "}
+                      {row.reason ?? "pinned"}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </div>
           <span className="text-[10px] text-text-subtle tabular-nums">
             {msg.prompt_tokens !== null && msg.output_tokens !== null
               ? `${msg.prompt_tokens + msg.output_tokens} tokens`

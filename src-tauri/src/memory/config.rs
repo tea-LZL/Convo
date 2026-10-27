@@ -38,6 +38,15 @@ pub const DUP_FLOOR: f64 = 0.92;
 /// [0.5, 1.0], not a filter: old-but-relevant still surfaces.
 pub const RECENCY_HALF_LIFE_DAYS: f64 = 30.0;
 
+/// Completed exchanges between automatic extraction runs.
+///
+/// One, not two: a first exchange never qualified under the old fixed value
+/// of two — a fresh chat that says "remember my cat is named Mao Mao" and
+/// gets its answer produces two messages, below the four-message threshold,
+/// and nothing was extracted or even recorded. The window is the cost
+/// control; `memory.auto_extract` is the off switch.
+pub const EXTRACT_EVERY_N_EXCHANGES: i64 = 1;
+
 /// Share of the model's context window the memory block may occupy.
 pub const CONTEXT_BUDGET_FRACTION: f64 = 0.15;
 
@@ -202,5 +211,33 @@ pub fn embed_all_notes(conn: &Connection) -> bool {
     match setting(conn, "memory.embed_all_notes") {
         Some(v) => v.trim().eq_ignore_ascii_case("true"),
         None => false,
+    }
+}
+
+/// Effective recency half-life, in days.
+///
+/// A zero or negative value would make `0.5^(age / 0)` meaningless, so
+/// those fall back to the default. A very large value is honoured rather
+/// than capped: it means "stop discounting old items", which is a
+/// preference, not a typo — the multiplier is clamped to [0.5, 1.0]
+/// downstream either way.
+pub fn recency_half_life_days(conn: &Connection) -> f64 {
+    match setting_f64(conn, "memory.recency_half_life_days") {
+        Some(days) if days.is_finite() && days > 0.0 => days,
+        _ => RECENCY_HALF_LIFE_DAYS,
+    }
+}
+
+/// Effective extraction interval, in completed exchanges.
+///
+/// Rejects anything below 1: `0` would mean "never extract", which the user
+/// has an explicit switch for (`memory.auto_extract`), and a silent no-op
+/// interval would look like extraction was broken.
+pub fn extract_every_n_exchanges(conn: &Connection) -> i64 {
+    match setting(conn, "memory.extract_every_n_exchanges")
+        .and_then(|v| v.trim().parse::<i64>().ok())
+    {
+        Some(n) if n >= 1 => n,
+        _ => EXTRACT_EVERY_N_EXCHANGES,
     }
 }

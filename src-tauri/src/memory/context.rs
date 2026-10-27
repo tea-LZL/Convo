@@ -91,6 +91,14 @@ pub struct ContextRow {
     pub owner_id: String,
     pub label: String,
     pub text: String,
+    /// Why retrieval surfaced this row, when retrieval surfaced it.
+    ///
+    /// `None` for a pinned row or a session note: those are in the block
+    /// because of what they are, not because they ranked, and inventing a
+    /// retrieval reason for them would be a lie the Memory tab would repeat.
+    /// This is carried through assembly so a send can record what it used
+    /// without re-running retrieval.
+    pub reason: Option<String>,
 }
 
 /// Everything the assembler needs, in precedence order.
@@ -398,6 +406,7 @@ fn note_rows(
                 owner_id: id,
                 label: label.to_string(),
                 text: with_title(title, body),
+                reason: None,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -425,6 +434,7 @@ fn pinned_memories(conn: &Connection) -> Result<Vec<ContextRow>, String> {
                 owner_id: id,
                 label: PINNED_MEMORY_LABEL.to_string(),
                 text: with_title(title, content),
+                reason: None,
             })
         })
         .map_err(|e| e.to_string())?;

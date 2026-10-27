@@ -86,6 +86,7 @@ import { Tabs, TextArea, TextInput, Badge } from "../components/ui/Form";
 import { Spinner } from "../components/ui/Form";
 import { toast } from "../stores/toasts";
 import { useMemoryStore } from "../stores/memory";
+import { errorClass, recordLog } from "../lib/logger";
 import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { RouteShell } from "../components/ui/RouteShell";
 import { ROW_ACTION, ROW_ACTION_IDLE } from "../components/ui/rowAction";
@@ -95,6 +96,19 @@ import { SupersedeHistory } from "../components/memory/SupersedeHistory";
 import { useNavigate } from "react-router-dom";
 
 type KindFilter = "all" | "user_pref" | "project_fact" | "skill";
+
+/**
+ * Where the kind filter is remembered between visits.
+ *
+ * The filter is a preference about how a page opens, not a filter the user
+ * has to re-apply, so it lives in the `settings` table beside the other
+ * `memory.*` rows rather than in `localStorage`: the same choice should not
+ * have to be made again after a reinstall, and it should be visible in a
+ * backup.
+ */
+const KIND_FILTER_KEY = "memory.kind_filter";
+
+const KIND_FILTERS: KindFilter[] = ["all", "user_pref", "project_fact", "skill"];
 
 const KIND_LABEL: Record<KindFilter, string> = {
   all: "All",
@@ -195,6 +209,42 @@ export function MemoryRoute() {
   };
 
   useEffect(() => { refresh(); }, [filter]);
+
+  // The filter outlives the visit. Read once, and only ever adopt a value
+  // this page can honour: an unknown kind would render an empty list with
+  // no explanation, which reads as "my memories are gone".
+  useEffect(() => {
+    let active = true;
+    api.getSetting(KIND_FILTER_KEY)
+      .then((raw) => {
+        const stored = KIND_FILTERS.find((kind) => kind === raw);
+        if (active && stored) setFilter(stored);
+      })
+      .catch((error) => {
+        recordLog({
+          operation: "read memory.kind_filter",
+          status: "failed",
+          route: "memory",
+          errorClass: errorClass(error),
+        });
+      });
+    return () => { active = false; };
+  }, []);
+
+  // Writing is best-effort: a failed write leaves the choice applied for
+  // this visit, and the next visit opens on "All" rather than on a value
+  // that was never stored.
+  const selectFilter = (next: KindFilter) => {
+    setFilter(next);
+    api.setSetting(KIND_FILTER_KEY, next).catch((error) => {
+      recordLog({
+        operation: "write memory.kind_filter",
+        status: "failed",
+        route: "memory",
+        errorClass: errorClass(error),
+      });
+    });
+  };
   useEffect(() => { void refreshReviews(); }, [refreshReviews]);
 
   useEffect(() => {
@@ -343,7 +393,7 @@ export function MemoryRoute() {
               emission-order claim as before and the same test. */}
           <Tabs
             active={filter}
-            onChange={(v) => setFilter(v as KindFilter)}
+            onChange={(v) => selectFilter(v as KindFilter)}
             tabs={[
               { id: "all", label: "All" },
               { id: "user_pref", label: "Preferences" },

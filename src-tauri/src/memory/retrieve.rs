@@ -71,7 +71,7 @@ pub fn rrf_score(bm25_rank: Option<usize>, cosine_rank: Option<usize>, k: f64) -
     score
 }
 
-/// The default lambda for [`diversify`]: how strongly score outweighs
+/// The default lambda for [`select_order`]: how strongly score outweighs
 /// redundancy. Above 0.5 keeps the best-scoring item first; below it
 /// prefers breadth. The spec pins 0.7.
 pub const DEFAULT_LAMBDA: f64 = 0.7;
@@ -83,13 +83,16 @@ pub const REINFORCEMENT_CAP: i64 = 10;
 pub const REINFORCEMENT_WEIGHT: f64 = 0.15;
 
 /// Reinforcement and recency, applied to a fused score.
-pub fn boost(rrf: f64, access_count: i64, age_days: f64) -> f64 {
+///
+/// `half_life_days` comes from `memory.recency_half_life_days` via
+/// [`config::recency_half_life_days`]; it is a parameter so this stays pure.
+pub fn boost(rrf: f64, access_count: i64, age_days: f64, half_life_days: f64) -> f64 {
     let _ = config::RRF_K;
     let reinforced = 1.0 + REINFORCEMENT_WEIGHT * access_count.clamp(0, REINFORCEMENT_CAP) as f64;
-    rrf * reinforced * super::embed::recency_weight(age_days)
+    rrf * reinforced * super::embed::recency_weight(age_days, half_life_days)
 }
 
-/// Maximal Marginal Relevance.
+/// Maximal Marginal Relevance, over candidate indices.
 ///
 /// Greedy: repeatedly take whichever remaining candidate has the best
 /// `lambda * score - (1 - lambda) * redundancy`, where redundancy is the
@@ -100,39 +103,47 @@ pub fn boost(rrf: f64, access_count: i64, age_days: f64) -> f64 {
 /// chosen, it falls back to pure score order. A keyword-only recall has no
 /// vectors at all, and returning nothing there would be worse than
 /// returning the obvious list.
-pub fn diversify(
-    mut scored: Vec<(RankedMemory, Option<Vec<f32>>)>,
+///
+/// Indices rather than rows, because the caller has thousands of candidates
+/// and keeps six: materialising every candidate as a result row first — five
+/// owned `String`s and a formatted reason each — was the largest cost in a
+/// recall that has to finish inside the 50ms p95 budget.
+fn select_order(
+    scores: &[f64],
+    vectors: &[Option<Vec<f32>>],
     lambda: f64,
     limit: usize,
-) -> Vec<RankedMemory> {
-    // Highest score first, so the greedy pick starts from the best.
-    scored.sort_by(|a, b| {
-        b.0.score
-            .partial_cmp(&a.0.score)
+) -> Vec<usize> {
+    // Highest score first, so the greedy pick starts from the best. The sort
+    // is stable, so equal scores keep the order the routes produced them in.
+    let mut remaining: Vec<usize> = (0..scores.len()).collect();
+    remaining.sort_by(|&a, &b| {
+        scores[b]
+            .partial_cmp(&scores[a])
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    let mut chosen: Vec<(RankedMemory, Option<Vec<f32>>)> = Vec::new();
-    while chosen.len() < limit && !scored.is_empty() {
-        let mut best_index = 0usize;
+    let mut chosen: Vec<usize> = Vec::with_capacity(limit);
+    while chosen.len() < limit && !remaining.is_empty() {
+        let mut best_at = 0usize;
         let mut best_value = f64::NEG_INFINITY;
-        for (index, (item, vector)) in scored.iter().enumerate() {
-            let redundancy = match vector {
+        for (at, &index) in remaining.iter().enumerate() {
+            let redundancy = match vectors[index].as_deref() {
                 None => 0.0,
-                Some(v) => chosen
+                Some(vector) => chosen
                     .iter()
-                    .filter_map(|(_, other)| other.as_ref())
-                    .filter_map(|other| cosine(v, other))
+                    .filter_map(|&other| vectors[other].as_deref())
+                    .filter_map(|other| cosine(vector, other))
                     .fold(0.0f64, f64::max),
             };
-            let value = lambda * item.score - (1.0 - lambda) * redundancy;
+            let value = lambda * scores[index] - (1.0 - lambda) * redundancy;
             if value > best_value {
                 best_value = value;
-                best_index = index;
+                best_at = at;
             }
         }
-        chosen.push(scored.remove(best_index));
+        chosen.push(remaining.remove(best_at));
     }
-    chosen.into_iter().map(|(item, _)| item).collect()
+    chosen
 }
 
 /// Build the reason string.
@@ -212,22 +223,28 @@ mod tests {
 
     #[test]
     fn reinforcement_lifts_a_repeatedly_recalled_item() {
-        let fresh = boost(0.5, 0, 0.0);
-        let reinforced = boost(0.5, 7, 0.0);
+        let fresh = boost(0.5, 0, 0.0, config::RECENCY_HALF_LIFE_DAYS);
+        let reinforced = boost(0.5, 7, 0.0, config::RECENCY_HALF_LIFE_DAYS);
         assert!(reinforced > fresh, "{reinforced} vs {fresh}");
     }
 
     #[test]
     fn reinforcement_is_capped_so_one_item_cannot_dominate_forever() {
-        assert_eq!(boost(0.5, 10, 0.0), boost(0.5, 500, 0.0));
-        assert!(boost(0.5, 9, 0.0) < boost(0.5, 10, 0.0));
+        assert_eq!(
+            boost(0.5, 10, 0.0, config::RECENCY_HALF_LIFE_DAYS),
+            boost(0.5, 500, 0.0, config::RECENCY_HALF_LIFE_DAYS)
+        );
+        assert!(
+            boost(0.5, 9, 0.0, config::RECENCY_HALF_LIFE_DAYS)
+                < boost(0.5, 10, 0.0, config::RECENCY_HALF_LIFE_DAYS)
+        );
     }
 
     #[test]
     fn recency_lowers_but_never_zeroes_a_score() {
-        let now = boost(0.5, 0, 0.0);
-        let week = boost(0.5, 0, 7.0);
-        let month = boost(0.5, 0, 30.0);
+        let now = boost(0.5, 0, 0.0, config::RECENCY_HALF_LIFE_DAYS);
+        let week = boost(0.5, 0, 7.0, config::RECENCY_HALF_LIFE_DAYS);
+        let month = boost(0.5, 0, 30.0, config::RECENCY_HALF_LIFE_DAYS);
         assert!(week < now, "{week} vs {now}");
         assert!(month < week, "within the decay range, older scores lower");
         assert!(
@@ -243,109 +260,88 @@ mod tests {
         // relevance purely for being old, because that is the "the app
         // forgot" failure mode. Age breaks ties between comparably
         // relevant items; it does not expire them.
-        let at_floor = boost(0.5, 0, config::RECENCY_HALF_LIFE_DAYS);
-        let decade = boost(0.5, 0, 3650.0);
-        let century = boost(0.5, 0, 365_000.0);
+        let at_floor = boost(
+            0.5,
+            0,
+            config::RECENCY_HALF_LIFE_DAYS,
+            config::RECENCY_HALF_LIFE_DAYS,
+        );
+        let decade = boost(0.5, 0, 3650.0, config::RECENCY_HALF_LIFE_DAYS);
+        let century = boost(0.5, 0, 365_000.0, config::RECENCY_HALF_LIFE_DAYS);
         assert_eq!(at_floor, decade, "past the floor, age stops mattering");
         assert_eq!(decade, century);
     }
 
     #[test]
     fn a_zero_rrf_stays_zero_through_boosting() {
-        assert_eq!(boost(0.0, 100, 0.0), 0.0);
-    }
-
-    fn ranked(id: &str, score: f64) -> RankedMemory {
-        RankedMemory {
-            owner_type: "memory".into(),
-            owner_id: id.into(),
-            kind: "project_fact".into(),
-            title: None,
-            content: "c".into(),
-            score,
-            reason: "r".into(),
-        }
+        assert_eq!(boost(0.0, 100, 0.0, config::RECENCY_HALF_LIFE_DAYS), 0.0);
     }
 
     #[test]
-    fn diversify_demotes_a_near_duplicate_when_the_limit_forces_a_choice() {
-        let v1 = vec![1.0f32, 0.0, 0.0];
-        let v2 = vec![0.0f32, 1.0, 0.0];
-        let near = vec![0.99f32, 0.01, 0.0];
+    fn select_order_demotes_a_near_duplicate_when_the_limit_forces_a_choice() {
+        // Candidate order is the order the routes produced: "a", "a-dup", "b".
+        let scores = [0.9, 0.89, 0.5];
         let build = || {
             vec![
-                (ranked("a", 0.9), Some(v1.clone())),
-                (ranked("a-dup", 0.89), Some(near.clone())),
-                (ranked("b", 0.5), Some(v2.clone())),
+                Some(vec![1.0f32, 0.0, 0.0]),
+                Some(vec![0.99f32, 0.01, 0.0]),
+                Some(vec![0.0f32, 1.0, 0.0]),
             ]
         };
 
         // With room for everything, MMR reorders rather than drops: the
         // near-duplicate is pushed behind the distinct item even though it
         // scores higher on its own.
-        let picked = diversify(build(), 0.7, 3);
-        let all: Vec<&str> = picked.iter().map(|r| r.owner_id.as_str()).collect();
         assert_eq!(
-            all,
-            vec!["a", "b", "a-dup"],
+            select_order(&scores, &build(), 0.7, 3),
+            vec![0, 2, 1],
             "MMR reorders, it does not drop"
-        );
-        assert!(
-            all.iter().position(|id| *id == "b") < all.iter().position(|id| *id == "a-dup"),
-            "the distinct item should outrank the restatement"
         );
 
         // Under a tighter limit the restatement loses its slot entirely.
-        let picked = diversify(build(), 0.7, 2);
-        let two: Vec<&str> = picked.iter().map(|r| r.owner_id.as_str()).collect();
-        assert_eq!(two, vec!["a", "b"], "a near-duplicate took the slot");
+        assert_eq!(
+            select_order(&scores, &build(), 0.7, 2),
+            vec![0, 2],
+            "a near-duplicate took the slot"
+        );
     }
 
     #[test]
-    fn diversify_keeps_distinct_items() {
-        let a = vec![1.0f32, 0.0, 0.0];
-        let b = vec![0.0f32, 1.0, 0.0];
-        let scored = vec![(ranked("a", 0.9), Some(a)), (ranked("b", 0.89), Some(b))];
-        assert_eq!(diversify(scored, 0.7, 5).len(), 2);
+    fn select_order_keeps_distinct_items() {
+        let scores = [0.9, 0.89];
+        let vectors = [Some(vec![1.0f32, 0.0, 0.0]), Some(vec![0.0f32, 1.0, 0.0])];
+        assert_eq!(select_order(&scores, &vectors, 0.7, 5).len(), 2);
     }
 
     #[test]
-    fn diversify_falls_back_to_score_order_when_vectors_are_absent() {
+    fn select_order_falls_back_to_score_order_when_vectors_are_absent() {
         // A keyword-only recall has no vectors. It must still return a
         // ranked list, not an error and not an empty one.
-        let scored = vec![
-            (ranked("a", 0.9), None),
-            (ranked("b", 0.8), None),
-            (ranked("c", 0.7), None),
-        ];
-        let out = diversify(scored, 0.7, 5);
-        let ids: Vec<&str> = out.iter().map(|r| r.owner_id.as_str()).collect();
-        assert_eq!(ids, vec!["a", "b", "c"]);
+        let scores = [0.9, 0.8, 0.7];
+        let vectors: [Option<Vec<f32>>; 3] = [None, None, None];
+        assert_eq!(select_order(&scores, &vectors, 0.7, 5), vec![0, 1, 2]);
     }
 
     #[test]
-    fn diversify_ignores_a_zero_vector_rather_than_treating_it_as_similar_to_all() {
-        let zero = vec![0.0f32, 0.0, 0.0];
-        let a = vec![1.0f32, 0.0, 0.0];
-        let b = vec![0.0f32, 1.0, 0.0];
-        let scored = vec![
-            (ranked("a", 0.9), Some(a)),
-            (ranked("zero", 0.89), Some(zero)),
-            (ranked("b", 0.5), Some(b)),
+    fn select_order_ignores_a_zero_vector_rather_than_treating_it_as_similar_to_all() {
+        let scores = [0.9, 0.89, 0.5];
+        let vectors = [
+            Some(vec![1.0f32, 0.0, 0.0]),
+            Some(vec![0.0f32, 0.0, 0.0]),
+            Some(vec![0.0f32, 1.0, 0.0]),
         ];
         assert_eq!(
-            diversify(scored, 0.7, 5).len(),
+            select_order(&scores, &vectors, 0.7, 5).len(),
             3,
             "cosine returns None for a zero vector, so nothing is similar to it"
         );
     }
 
     #[test]
-    fn diversify_respects_the_limit() {
-        let scored: Vec<_> = (0..20)
-            .map(|i| (ranked(&format!("m{}", i), 1.0 - i as f64 * 0.01), None))
-            .collect();
-        assert_eq!(diversify(scored, 0.7, 6).len(), 6);
+    fn select_order_respects_the_limit() {
+        let scores: Vec<f64> = (0..20).map(|i| 1.0 - i as f64 * 0.01).collect();
+        let vectors: Vec<Option<Vec<f32>>> = vec![None; 20];
+        assert_eq!(select_order(&scores, &vectors, 0.7, 6).len(), 6);
     }
 
     #[test]
@@ -1009,57 +1005,65 @@ pub fn recall_with_query_vector(
         _ => Vec::new(),
     };
 
-    // Merge into candidates keyed by owner, so a row found by both routes
-    // carries both ranks rather than appearing twice. A `HashSet` guards the
-    // first-seen order: the old `Vec::contains` was a linear scan per
-    // candidate, which is quadratic in the corpus size on a recall path with
-    // a <50ms p95 budget.
-    let mut order: Vec<(String, String)> = Vec::new();
-    let mut order_seen: std::collections::HashSet<(String, String)> =
-        std::collections::HashSet::new();
-    let mut bm25_rank: std::collections::HashMap<(String, String), usize> =
-        std::collections::HashMap::new();
-    let mut terms: std::collections::HashMap<(String, String), Vec<String>> =
-        std::collections::HashMap::new();
-    for hit in &keyword {
-        let key = (hit.row.owner_type.clone(), hit.row.owner_id.clone());
-        if order_seen.insert(key.clone()) {
-            order.push(key.clone());
-        }
-        bm25_rank.insert(key.clone(), hit.rank);
-        terms.insert(key, hit.terms.clone());
+    // One candidate per owner, and it lives here exactly once. The previous
+    // merge pushed the same row into six hash maps keyed by an owned
+    // `(owner_type, owner_id)` pair, then cloned it into a `RankedMemory`
+    // with a formatted reason — tens of thousands of allocations to keep six
+    // rows. `select_order` needs a score and a vector, so the row is
+    // materialised only for the rows actually returned.
+    struct Candidate {
+        row: KnowledgeRow,
+        vector: Option<Vec<f32>>,
+        bm25_rank: Option<usize>,
+        cosine_rank: Option<usize>,
+        cosine: Option<f64>,
+        terms: Vec<String>,
     }
-    let mut cosine_rank: std::collections::HashMap<(String, String), usize> =
-        std::collections::HashMap::new();
-    let mut cosine_score: std::collections::HashMap<(String, String), f64> =
-        std::collections::HashMap::new();
-    let mut vectors: std::collections::HashMap<(String, String), Vec<f32>> =
-        std::collections::HashMap::new();
-    let mut rows: std::collections::HashMap<(String, String), KnowledgeRow> =
-        std::collections::HashMap::new();
-    for (index, (row, score, vector)) in semantic.iter().enumerate() {
+
+    let mut candidates: Vec<Candidate> = Vec::with_capacity(semantic.len() + keyword.len());
+    let mut seen: std::collections::HashMap<(String, String), usize> =
+        std::collections::HashMap::with_capacity(semantic.len() + keyword.len());
+    for (index, (row, score, vector)) in semantic.into_iter().enumerate() {
         let key = (row.owner_type.clone(), row.owner_id.clone());
-        if order_seen.insert(key.clone()) {
-            order.push(key.clone());
-        }
-        cosine_rank.insert(key.clone(), index + 1);
-        cosine_score.insert(key.clone(), *score);
-        vectors.insert(key.clone(), vector.clone());
-        rows.insert(key, row.clone());
+        seen.insert(key, candidates.len());
+        candidates.push(Candidate {
+            row,
+            vector: Some(vector),
+            bm25_rank: None,
+            cosine_rank: Some(index + 1),
+            cosine: Some(score),
+            terms: Vec::new(),
+        });
     }
-    for hit in &keyword {
+    for hit in keyword {
         let key = (hit.row.owner_type.clone(), hit.row.owner_id.clone());
-        rows.entry(key).or_insert_with(|| hit.row.clone());
+        match seen.get(&key) {
+            Some(&at) => {
+                candidates[at].bm25_rank = Some(hit.rank);
+                candidates[at].terms = hit.terms;
+            }
+            None => {
+                seen.insert(key, candidates.len());
+                candidates.push(Candidate {
+                    row: hit.row,
+                    vector: None,
+                    bm25_rank: Some(hit.rank),
+                    cosine_rank: None,
+                    cosine: None,
+                    terms: hit.terms,
+                });
+            }
+        }
     }
 
     // The allowlist is a property of the *result*, not of one route, so it
-    // is enforced here — once, after the merge, keyed on the same
-    // `(owner_type, owner_id)` the merge used. Filtering per route is the
-    // shape that produced this bug: `bm25_route` took the allowlist and
-    // `cosine_route` did not, nothing checked the merged list, and the
-    // vector route handed back whatever the keyword route had filtered out.
-    // A third route would have inherited the same hole, and the next
-    // reviewer would have to know which routes are allowlist-aware.
+    // is enforced here — once, after the merge, keyed on the same owner ids
+    // the merge used. Filtering per route is the shape that produced this
+    // bug: `bm25_route` took the allowlist and `cosine_route` did not,
+    // nothing checked the merged list, and the vector route handed back
+    // whatever the keyword route had filtered out. A third route would have
+    // inherited the same hole, and the next reviewer would have to know
+    // which routes are allowlist-aware.
     //
     // The ids alone, with no owner type, because that is what the keyword
     // route's `id IN (SELECT value FROM json_each(...))` has always
@@ -1072,38 +1076,56 @@ pub fn recall_with_query_vector(
     // cut. Filtering after the merge is the guarantee; the SQL is what
     // keeps the guarantee from costing recall.
     if let Some(admitted) = admitted_ids(&allowlist) {
-        order.retain(|(_, owner_id)| admitted.contains(owner_id));
+        candidates.retain(|candidate| admitted.contains(&candidate.row.owner_id));
     }
 
-    let mut scored: Vec<(RankedMemory, Option<Vec<f32>>)> = Vec::new();
-    for key in &order {
-        let Some(row) = rows.get(key) else { continue };
-        let bm = bm25_rank.get(key).copied();
-        let co = cosine_rank.get(key).copied();
-        let raw = rrf_score(bm, co, config::RRF_K);
-        let age = super::embed::age_days(&row.updated_at);
-        let final_score = boost(raw, row.access_count, age);
-        let reason = build_reason(
-            bm,
-            cosine_score.get(key).copied(),
-            terms.get(key).map(|t| t.as_slice()).unwrap_or(&[]),
-            row.access_count,
-            age,
-        );
-        scored.push((
+    // Score every candidate, then let MMR pick. The age is parsed once per
+    // candidate and reused for the reason, because it is the only part of
+    // the score that costs more than an add.
+    let ages: Vec<f64> = candidates
+        .iter()
+        .map(|candidate| super::embed::age_days(&candidate.row.updated_at))
+        .collect();
+    // Read once per recall, not once per candidate: it is a settings row.
+    let half_life_days = config::recency_half_life_days(conn);
+    let scores: Vec<f64> = candidates
+        .iter()
+        .zip(&ages)
+        .map(|(candidate, age)| {
+            boost(
+                rrf_score(candidate.bm25_rank, candidate.cosine_rank, config::RRF_K),
+                candidate.row.access_count,
+                *age,
+                half_life_days,
+            )
+        })
+        .collect();
+    let vectors: Vec<Option<Vec<f32>>> = candidates
+        .iter_mut()
+        .map(|candidate| candidate.vector.take())
+        .collect();
+
+    select_order(&scores, &vectors, opts.lambda, opts.top_k)
+        .into_iter()
+        .map(|at| {
+            let candidate = &mut candidates[at];
             RankedMemory {
-                owner_type: row.owner_type.clone(),
-                owner_id: row.owner_id.clone(),
-                kind: row.kind.clone(),
-                title: row.title.clone(),
-                content: row.content.clone(),
-                score: final_score,
-                reason,
-            },
-            vectors.get(key).cloned(),
-        ));
-    }
-    diversify(scored, opts.lambda, opts.top_k)
+                owner_type: std::mem::take(&mut candidate.row.owner_type),
+                owner_id: std::mem::take(&mut candidate.row.owner_id),
+                kind: std::mem::take(&mut candidate.row.kind),
+                title: std::mem::take(&mut candidate.row.title),
+                content: std::mem::take(&mut candidate.row.content),
+                score: scores[at],
+                reason: build_reason(
+                    candidate.bm25_rank,
+                    candidate.cosine,
+                    &candidate.terms,
+                    candidate.row.access_count,
+                    ages[at],
+                ),
+            }
+        })
+        .collect()
 }
 
 /// `(needs_embedding, needs_reindex)` for the configured embedding model.

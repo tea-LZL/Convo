@@ -15,17 +15,24 @@ const BUDGET_KEY = "memory.context_budget_fraction";
 const AUTO_EXTRACT_KEY = "memory.auto_extract";
 const ROUTING_KEY = "memory.routing";
 const EMBED_NOTES_KEY = "memory.embed_all_notes";
+const RECENCY_KEY = "memory.recency_half_life_days";
+const EXTRACT_EVERY_KEY = "memory.extract_every_n_exchanges";
 
 // `memory.embed_all_notes` is now wired: the Build-index action below passes
 // its value as `memory_index_fill`'s `embedNotes` argument, and
-// `config::embed_all_notes` reads the same row. `EXTRACT_EVERY_N_EXCHANGES`
-// still has no reader: Rust's `should_extract` owns the threshold, and the
-// frontend trigger in src/stores/chatStream.ts now fires after every turn.
+// `config::embed_all_notes` reads the same row. `memory.extract_every_n_exchanges`
+// is read by `config::extract_every_n_exchanges`, which the auto-extraction
+// path passes to `should_extract`; `memory.recency_half_life_days` is read by
+// `config::recency_half_life_days` and used by `boost` on every recall.
 
 /** config::TOP_K_DEFAULT */
 const TOP_K_DEFAULT = 6;
 /** config::CONTEXT_BUDGET_FRACTION */
 const BUDGET_DEFAULT = 0.15;
+/** config::RECENCY_HALF_LIFE_DAYS */
+const RECENCY_DEFAULT = 30;
+/** config::EXTRACT_EVERY_N_EXCHANGES */
+const EXTRACT_EVERY_DEFAULT = 1;
 
 const ROUTE = "/settings/knowledge";
 
@@ -95,6 +102,42 @@ export function effectiveEmbedNotes(raw: string | null): boolean {
   return (raw ?? "").trim().toLowerCase() === "true";
 }
 
+/**
+ * Effective `memory.recency_half_life_days`.
+ *
+ * The reader falls back rather than clamping, and so does this: zero,
+ * negative, non-finite, or unparseable would make the decay curve
+ * meaningless. A very large value is honoured — it means "stop discounting
+ * old items", which is a preference rather than a typo.
+ */
+export function effectiveRecencyHalfLife(raw: string | null): number {
+  const trimmed = (raw ?? "").trim();
+  if (!DECIMAL.test(trimmed)) return RECENCY_DEFAULT;
+  const parsed = Number.parseFloat(trimmed);
+  if (!Number.isFinite(parsed) || parsed <= 0) return RECENCY_DEFAULT;
+  return parsed;
+}
+
+function acceptsRecency(raw: string): boolean {
+  return DECIMAL.test(raw) && effectiveRecencyHalfLife(raw) === Number.parseFloat(raw);
+}
+
+/**
+ * Effective `memory.extract_every_n_exchanges`. `config::extract_every_n_exchanges`
+ * rejects anything below 1, because `0` would mean "never extract" and the
+ * user has an explicit switch for that.
+ */
+export function effectiveExtractEvery(raw: string | null): number {
+  const trimmed = (raw ?? "").trim();
+  if (!INTEGER.test(trimmed)) return EXTRACT_EVERY_DEFAULT;
+  const parsed = Number.parseInt(trimmed, 10);
+  return Number.isSafeInteger(parsed) && parsed >= 1 ? parsed : EXTRACT_EVERY_DEFAULT;
+}
+
+function acceptsExtractEvery(raw: string): boolean {
+  return INTEGER.test(raw) && effectiveExtractEvery(raw) === Number.parseInt(raw, 10);
+}
+
 /** The raw `memory.routing` row, untyped, exactly as `load_routing` wants it. */
 export type RoutingRow = Record<string, unknown>;
 
@@ -150,9 +193,13 @@ export function KnowledgeSection() {
   const [topK, setTopK] = useState(String(TOP_K_DEFAULT));
   const [budget, setBudget] = useState(String(BUDGET_DEFAULT));
   const [autoExtract, setAutoExtract] = useState(true);
+  const [recency, setRecency] = useState(String(RECENCY_DEFAULT));
+  const [extractEvery, setExtractEvery] = useState(String(EXTRACT_EVERY_DEFAULT));
   const [drafts, setDrafts] = useState<Record<Capability, Draft>>(emptyDrafts);
   const [topKError, setTopKError] = useState<string | null>(null);
   const [budgetError, setBudgetError] = useState<string | null>(null);
+  const [recencyError, setRecencyError] = useState<string | null>(null);
+  const [extractEveryError, setExtractEveryError] = useState<string | null>(null);
   // Keyed by operation, so the retry the user just performed clears its own
   // message instead of leaving a stale one claiming something is still wrong.
   const [problems, setProblems] = useState<Array<{ id: string; message: string }>>([]);
@@ -218,23 +265,31 @@ export function KnowledgeSection() {
       read(AUTO_EXTRACT_KEY),
       read(ROUTING_KEY),
       read(EMBED_NOTES_KEY),
+      read(RECENCY_KEY),
+      read(EXTRACT_EVERY_KEY),
     ])
-      .then(([topKRaw, budgetRaw, autoExtractRaw, routingRaw, embedNotesRaw]) => {
+      .then(([topKRaw, budgetRaw, autoExtractRaw, routingRaw, embedNotesRaw, recencyRaw, extractEveryRaw]) => {
         if (!active) return;
         const topKValue = String(effectiveTopK(topKRaw));
         const budgetValue = String(effectiveBudgetFraction(budgetRaw));
         const autoExtractValue = String(effectiveAutoExtract(autoExtractRaw));
+        const recencyValue = String(effectiveRecencyHalfLife(recencyRaw));
+        const extractEveryValue = String(effectiveExtractEvery(extractEveryRaw));
         seededRef.current = {
           [TOP_K_KEY]: topKValue,
           [BUDGET_KEY]: budgetValue,
           [AUTO_EXTRACT_KEY]: autoExtractValue,
           [ROUTING_KEY]: routingRaw ?? "",
           [EMBED_NOTES_KEY]: String(effectiveEmbedNotes(embedNotesRaw)),
+          [RECENCY_KEY]: recencyValue,
+          [EXTRACT_EVERY_KEY]: extractEveryValue,
         };
         setTopK(topKValue);
         setBudget(budgetValue);
         setAutoExtract(autoExtractValue === "true");
         setEmbedNotes(effectiveEmbedNotes(embedNotesRaw));
+        setRecency(recencyValue);
+        setExtractEvery(extractEveryValue);
         const row = parseRoutingRow(routingRaw);
         rowRef.current = row;
         const parsed = emptyDrafts();
@@ -288,6 +343,24 @@ export function KnowledgeSection() {
     }
     setBudgetError(null);
     void write(BUDGET_KEY, budget.trim(), "set_memory_budget", () => setBudget(String(BUDGET_DEFAULT)));
+  };
+
+  const commitRecency = () => {
+    if (!acceptsRecency(recency.trim())) {
+      setRecencyError(`A half-life must be more than 0 days. Convo is using ${RECENCY_DEFAULT}.`);
+      return;
+    }
+    setRecencyError(null);
+    void write(RECENCY_KEY, recency.trim(), "set_memory_recency", () => setRecency(String(RECENCY_DEFAULT)));
+  };
+
+  const commitExtractEvery = () => {
+    if (!acceptsExtractEvery(extractEvery.trim())) {
+      setExtractEveryError(`Extraction can run every 1 exchange or more. Convo is using ${EXTRACT_EVERY_DEFAULT}.`);
+      return;
+    }
+    setExtractEveryError(null);
+    void write(EXTRACT_EVERY_KEY, extractEvery.trim(), "set_memory_extract_every", () => setExtractEvery(String(EXTRACT_EVERY_DEFAULT)));
   };
 
   const toggleAutoExtract = (next: boolean) => {
@@ -417,6 +490,38 @@ export function KnowledgeSection() {
                 onChange={(value) => { setBudget(value); setBudgetError(null); }}
                 onBlur={commitBudget}
                 onKeyDown={(event) => { if (event.key === "Enter") commitBudget(); }}
+              />
+            </Row>
+            <Row
+              id="memory-recency-half-life"
+              label="Recency half-life (days)"
+              hint={`How fast an older memory loses rank. Convo uses ${RECENCY_DEFAULT} days unless this says otherwise; a value of 0 or less falls back to ${RECENCY_DEFAULT} rather than switching decay off.`}
+              error={recencyError}
+            >
+              <TextInput
+                id="memory-recency-half-life"
+                type="number"
+                className="w-24"
+                value={recency}
+                onChange={(value) => { setRecency(value); setRecencyError(null); }}
+                onBlur={commitRecency}
+                onKeyDown={(event) => { if (event.key === "Enter") commitRecency(); }}
+              />
+            </Row>
+            <Row
+              id="memory-extract-every"
+              label="Extract every N exchanges"
+              hint={`How many completed exchanges to wait between automatic extraction runs. ${EXTRACT_EVERY_DEFAULT} is every exchange; 0 falls back to ${EXTRACT_EVERY_DEFAULT} — use the switch below to turn extraction off.`}
+              error={extractEveryError}
+            >
+              <TextInput
+                id="memory-extract-every"
+                type="number"
+                className="w-24"
+                value={extractEvery}
+                onChange={(value) => { setExtractEvery(value); setExtractEveryError(null); }}
+                onBlur={commitExtractEvery}
+                onKeyDown={(event) => { if (event.key === "Enter") commitExtractEvery(); }}
               />
             </Row>
             <div className="py-3 border-t border-border">

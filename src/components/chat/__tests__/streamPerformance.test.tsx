@@ -417,14 +417,14 @@ describe("paint guard: the streaming subtree stays cheap to repaint", () => {
         thinking: null, attachments_json: JSON.stringify([
           { id: "a1", name: "notes.md", mime: "text/markdown", size: 12, kind: "file" },
         ]),
-        prompt_tokens: null, output_tokens: null, created_at: new Date().toISOString(),
+        prompt_tokens: null, output_tokens: null, memory_used: null, created_at: new Date().toISOString(),
       },
       {
         id: "m-asst", session_id: "s", role: "assistant",
         content: "Here is **bold** text and `code`.\n\n```ts\nconst x = 1;\n```",
         thinking: "considering the options",
         attachments_json: null, prompt_tokens: 10, output_tokens: 20,
-        created_at: new Date().toISOString(),
+        memory_used: null, created_at: new Date().toISOString(),
       },
     ];
     mockedInvoke.mockImplementation(async (command) => {
@@ -504,7 +504,7 @@ const BASE_ROW_PROPS: MessageRowProps = {
   msg: {
     id: "m1", session_id: "s1", role: "assistant", content: "an answer",
     thinking: null, attachments_json: null, prompt_tokens: 1, output_tokens: 2,
-    created_at: "2026-01-01T00:00:00.000Z",
+    memory_used: null, created_at: "2026-01-01T00:00:00.000Z",
   },
   i: 0,
   sessionId: "s1",

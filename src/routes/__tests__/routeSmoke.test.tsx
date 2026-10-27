@@ -8,6 +8,7 @@ import { ErrorBoundary } from "../../components/ui/ErrorBoundary";
 import { useSessionsStore } from "../../stores/sessions";
 import { useShortcutsStore } from "../../stores/shortcuts";
 import { useTourStore } from "../../stores/tour";
+import { axe } from "vitest-axe";
 
 const session = {
   id: "session-1",
@@ -93,6 +94,25 @@ describe("route smoke tests", () => {
     await waitFor(() => {
       expect(screen.queryByText("Something went wrong")).not.toBeInTheDocument();
     });
+  });
+
+  // The shared modal and the responsive shell already had axe coverage; the
+  // routes themselves did not, so a surface could ship a heading jump, an
+  // unnamed control, or a broken landmark list and every existing test would
+  // still pass. One sweep per route through the same fixture the smoke
+  // matrix uses, so a route that renders is also a route that can be
+  // navigated by a screen reader.
+  const accessibleRoutes = routes.filter((route) => route !== "/not-a-route");
+  it.each(accessibleRoutes)("has no axe violations on %s", async (route) => {
+    window.history.replaceState(null, "", `#${route}`);
+    render(<App />);
+
+    const main = await screen.findByRole("main");
+    await waitFor(() =>
+      expect(screen.queryByText("Something went wrong")).not.toBeInTheDocument(),
+    );
+    const results = await axe(main);
+    expect(results.violations).toEqual([]);
   });
 
   it("survives repeated route navigation without a latched boundary", async () => {
